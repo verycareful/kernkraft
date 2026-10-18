@@ -6,7 +6,7 @@
 <!-- MuPDF has no shields.io logo yet; swap this for a logo badge if one appears. -->
 [![mupdf](https://img.shields.io/badge/mupdf-0.6-informational?style=flat-square)](https://crates.io/crates/mupdf)
 <!-- Release -->
-[![Version](https://img.shields.io/badge/Version-0.1.0.0.12-informational?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/Version-0.1.0.0-informational?style=flat-square)](VERSION)
 <!-- Licence and status -->
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)

@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-fs"
-version = "0.1.0+0.12"
+version = "0.1.0+0"
 dependencies = [
  "chrono",
  "percent-encoding",
@@ -632,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-pdf"
-version = "0.1.0+0.12"
+version = "0.1.0+0"
 dependencies = [
  "kernkraft-fs",
  "lopdf",

@@ -15,6 +15,8 @@ mod error;
 mod merge;
 mod pages;
 mod ranges;
+#[cfg(feature = "render")]
+mod render;
 mod split;
 mod tree;
 
@@ -26,5 +28,7 @@ pub use kernkraft_fs::FileStamp;
 pub use merge::merge;
 pub use pages::{remove, reorder, rotate, Rotation};
 pub use ranges::{parse_ranges, PageRange};
+#[cfg(feature = "render")]
+pub use render::{page_size_pt, render_page, RenderedPage, Renderer, MAX_RENDER_DIMENSION};
 pub use split::{extract, split_by_bookmarks, split_per_page, split_ranges, START_PART_TITLE};
 pub use tree::flatten_page_tree;

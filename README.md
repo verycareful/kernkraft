@@ -2,7 +2,7 @@
 <!-- Language -->
 [![Rust](https://img.shields.io/badge/Rust-1.99-000000?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 <!-- Release -->
-[![Version](https://img.shields.io/badge/Version-0.1.0.0.2%20alpha-informational?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/Version-0.1.0.0.3-informational?style=flat-square)](VERSION)
 <!-- Licence and status -->
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)
@@ -14,7 +14,7 @@ around them (atomic save, trash, copy and move). It is a set of plain,
 synchronous library crates with no UI and no network access; each
 application wraps them in its own adapter.
 
-kernkraft is in alpha. Its public API will change.
+kernkraft is in alpha: its public API will change.
 
 ## Crates
 

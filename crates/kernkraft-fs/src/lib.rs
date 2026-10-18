@@ -9,12 +9,19 @@
 
 mod atomic;
 mod error;
+mod naming;
 mod progress;
+mod sys;
+mod trash;
 mod version;
 mod xdg;
 
 pub use atomic::{write_atomic, write_bytes_atomic, FileStamp};
 pub use error::FsError;
 pub use progress::{NoProgress, Progress};
+pub use trash::{
+    choose_target, decode_trash_path, encode_trash_path, parse_trashinfo, Trash, TrashListing,
+    TrashTarget, TrashedItem,
+};
 pub use version::VERSION_LABEL;
 pub use xdg::{base_dirs, base_dirs_from, parse_user_dirs, user_dirs, BaseDirs, UserDirs};

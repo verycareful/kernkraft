@@ -57,7 +57,7 @@ pub struct FileStamp {
 impl FileStamp {
     /// The stamp of the file at `path`, following symlinks.
     pub fn of(path: &Path) -> Result<FileStamp, FsError> {
-        let meta = fs::metadata(path).map_err(|source| io_error(path, source))?;
+        let meta = fs::metadata(path).map_err(|source| FsError::io(path, source))?;
         Self::from_metadata(path, &meta)
     }
 
@@ -65,7 +65,9 @@ impl FileStamp {
         const NANOS_PER_SEC: i128 = 1_000_000_000;
         Ok(FileStamp {
             len: meta.len(),
-            modified: meta.modified().map_err(|source| io_error(path, source))?,
+            modified: meta
+                .modified()
+                .map_err(|source| FsError::io(path, source))?,
             dev: meta.dev(),
             ino: meta.ino(),
             changed_ns: i128::from(meta.ctime()) * NANOS_PER_SEC + i128::from(meta.ctime_nsec()),
@@ -90,16 +92,19 @@ pub fn write_atomic(
     expected: Option<&FileStamp>,
     write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
 ) -> Result<FileStamp, FsError> {
-    let target = resolve_symlinks(path).map_err(|source| io_error(path, source))?;
+    let target = resolve_symlinks(path).map_err(|source| FsError::io(path, source))?;
     let existing = match fs::metadata(&target) {
         Ok(meta) => Some(meta),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
-        Err(source) => return Err(io_error(&target, source)),
+        Err(source) => return Err(FsError::io(&target, source)),
     };
 
     if let Some(meta) = &existing {
         if meta.is_dir() {
-            return Err(io_error(&target, io::Error::from(ErrorKind::IsADirectory)));
+            return Err(FsError::io(
+                &target,
+                io::Error::from(ErrorKind::IsADirectory),
+            ));
         }
     }
     if let Some(stamp) = expected {
@@ -127,9 +132,9 @@ pub fn write_atomic(
         .suffix(".kk-tmp")
         .permissions(Permissions::from_mode(create_mode))
         .tempfile_in(dir)
-        .map_err(|source| io_error(dir, source))?;
+        .map_err(|source| FsError::io(dir, source))?;
     let temp_path = temp.path().to_path_buf();
-    let fail = |source| io_error(&temp_path, source);
+    let fail = |source| FsError::io(&temp_path, source);
 
     let mut out = BufWriter::new(temp.as_file());
     write(&mut out).map_err(fail)?;
@@ -144,10 +149,10 @@ pub fn write_atomic(
     }
     temp.as_file().sync_all().map_err(fail)?;
     temp.persist(&target)
-        .map_err(|e| io_error(&target, e.error))?;
+        .map_err(|e| FsError::io(&target, e.error))?;
     File::open(dir)
         .and_then(|d| d.sync_all())
-        .map_err(|source| io_error(dir, source))?;
+        .map_err(|source| FsError::io(dir, source))?;
 
     FileStamp::of(&target)
 }
@@ -184,12 +189,5 @@ fn parent_dir(path: &Path) -> &Path {
     match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
-    }
-}
-
-fn io_error(path: &Path, source: io::Error) -> FsError {
-    FsError::Io {
-        path: path.to_path_buf(),
-        source,
     }
 }

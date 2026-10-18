@@ -14,6 +14,8 @@ repository.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
 rustix.workspace = true
+chrono.workspace = true
+percent-encoding.workspace = true
 
 [lints]
 workspace = true

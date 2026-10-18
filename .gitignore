@@ -1,0 +1,17 @@
+# Rust
+/target/
+
+# Local only: never published
+# Claude working memory, loaded each session but not shipped.
+CLAUDE.md
+# dev-workflow working-memory file, cleared after every push.
+changes_version.md
+# Maintainer-local plans, audits, runs and scratch.
+/local/
+# Release scripts (set_version.py, stamp_release.py) are maintainer-local.
+/tools/
+
+# Editor and OS
+.vscode/
+.idea/
+.DS_Store

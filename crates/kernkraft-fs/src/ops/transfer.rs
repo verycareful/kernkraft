@@ -17,6 +17,10 @@
 //!   completed and been synced, with no entry inside it failed or skipped.
 //! - A source is never placed inside itself: that is checked for every
 //!   source before the first byte is written.
+//! - A copied file or directory keeps its extended attributes (POSIX ACLs
+//!   among them). One the destination will not take is reported in
+//!   [`OpReport::warnings`], never dropped unsaid. A symlink's own
+//!   attributes are not copied.
 
 use std::fs::{self, File, FileTimes, Metadata, Permissions};
 use std::io::{self, ErrorKind, Read, Write};
@@ -28,6 +32,7 @@ use rustix::io::Errno;
 use super::names::unique_name_for;
 use super::OpReport;
 use crate::sys::{parent_dir, rename_noreplace};
+use crate::xattr::copy_all;
 use crate::{FsError, Progress};
 
 /// Read and write unit for file contents, and the granularity of progress
@@ -306,6 +311,10 @@ impl<'a> Transfer<'a> {
                 .report(self.done_bytes, self.total_bytes, &stage);
         }
 
+        match copy_all(src, temp.as_file()) {
+            Ok(refused) => self.warn_refused(src, target, refused),
+            Err(e) => return self.fail(src, FsError::io(src, e)),
+        }
         let finished =
             apply_metadata(temp.as_file(), meta).and_then(|()| temp.as_file().sync_all());
         if let Err(e) = finished {
@@ -367,7 +376,11 @@ impl<'a> Transfer<'a> {
                 Placed::Failed
             }
             outcome => {
-                let finished = File::open(target).and_then(|d| apply_metadata(&d, meta));
+                let finished = File::open(target).and_then(|d| {
+                    let refused = copy_all(src, &d)?;
+                    self.warn_refused(src, target, refused);
+                    apply_metadata(&d, meta)
+                });
                 if let Err(e) = finished {
                     self.fail(target, FsError::io(target, e));
                     return Placed::Partial;
@@ -413,6 +426,19 @@ impl<'a> Transfer<'a> {
             Placed::Done(target.to_path_buf())
         } else {
             Placed::Partial
+        }
+    }
+
+    /// Records the attributes `target` would not take from `src`.
+    fn warn_refused(&mut self, src: &Path, target: &Path, refused: Vec<String>) {
+        if !refused.is_empty() {
+            self.report.warnings.push((
+                src.to_path_buf(),
+                FsError::XattrsNotKept {
+                    path: target.to_path_buf(),
+                    names: refused,
+                },
+            ));
         }
     }
 

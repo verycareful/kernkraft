@@ -452,3 +452,76 @@ fn outline_without_first_is_invalid() {
         Err(PdfError::Invalid(_))
     ));
 }
+
+/// Appearance bytes of the widget on page 1 in the two-widget field.
+const KEPT_WIDGET: &[u8] = b"0 1 0 rg KEPT-WIDGET";
+
+#[test]
+fn extract_keeps_fields_of_kept_pages() {
+    let bytes = edited(&pdf_n(2), |doc, pages| {
+        let parent = doc.new_object_id();
+        let mut widgets = Vec::new();
+        for (i, look) in [KEPT_WIDGET, WIDGET_APPEARANCE].iter().enumerate() {
+            let ap = doc.add_object(kernkraft_pdf::lopdf::Stream::new(
+                dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()] },
+                look.to_vec(),
+            ));
+            let widget = doc.add_object(dictionary! {
+                "Type" => "Annot", "Subtype" => "Widget", "Parent" => parent,
+                "Rect" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+                "P" => pages[i], "AP" => dictionary! { "N" => ap },
+            });
+            doc.get_dictionary_mut(pages[i])
+                .unwrap()
+                .set("Annots", vec![widget.into()]);
+            widgets.push(Object::Reference(widget));
+        }
+        doc.objects.insert(
+            parent,
+            Object::Dictionary(dictionary! {
+                "FT" => "Btn", "T" => Object::String(b"choice".to_vec(), StringFormat::Literal),
+                "Kids" => widgets,
+            }),
+        );
+        doc.catalog_mut().unwrap().set(
+            "AcroForm",
+            dictionary! { "Fields" => vec![parent.into()], "CO" => vec![parent.into()] },
+        );
+    });
+    let doc = load_bytes(&bytes).unwrap();
+    let mut out = extract(&doc, &[1]).unwrap();
+    let saved = to_bytes(&mut out).unwrap();
+    assert!(contains(&saved, KEPT_WIDGET), "page 1's widget stays");
+    assert!(!contains(&saved, WIDGET_APPEARANCE), "page 2's widget goes");
+    let form = out
+        .catalog()
+        .unwrap()
+        .get(b"AcroForm")
+        .unwrap()
+        .as_dict()
+        .unwrap();
+    let fields = form.get(b"Fields").unwrap().as_array().unwrap();
+    assert_eq!(fields.len(), 1, "the field keeps its kept widget");
+    let parent = out
+        .get_dictionary(fields[0].as_reference().unwrap())
+        .unwrap();
+    assert_eq!(parent.get(b"Kids").unwrap().as_array().unwrap().len(), 1);
+
+    let mut other = extract(&doc, &[2]).unwrap();
+    let form = other
+        .catalog()
+        .unwrap()
+        .get(b"AcroForm")
+        .unwrap()
+        .as_dict()
+        .unwrap();
+    assert_eq!(form.get(b"Fields").unwrap().as_array().unwrap().len(), 1);
+    assert!(!contains(&to_bytes(&mut other).unwrap(), KEPT_WIDGET));
+}
+
+#[test]
+fn remove_drops_form_fields_of_removed_pages() {
+    let mut doc = load_bytes(&with_form_field_on_page_2()).unwrap();
+    kernkraft_pdf::remove(&mut doc, &[2]).unwrap();
+    assert!(!contains(&to_bytes(&mut doc).unwrap(), WIDGET_APPEARANCE));
+}

@@ -13,8 +13,8 @@ pub struct PageRange {
 }
 
 /// Parses a comma-separated list of pages (`5`) and ranges (`1-3`) and
-/// checks each against `page_count`. Whitespace is ignored and empty items
-/// are skipped. A page of 0 or past the last page is
+/// checks each against `page_count`. A page is written in ASCII digits
+/// only. Whitespace is ignored and empty items are skipped. A page of 0 or past the last page is
 /// [`PdfError::PageOutOfRange`], never clamped; a backwards range, a token
 /// that is not a page or range, or a spec with no items at all is
 /// [`PdfError::BadRange`].
@@ -26,8 +26,8 @@ pub fn parse_ranges(spec: &str, page_count: u32) -> Result<Vec<PageRange>, PdfEr
             Some((a, b)) => (a.trim(), b.trim()),
             None => (token, token),
         };
-        let start: u32 = start.parse().map_err(|_| bad())?;
-        let end: u32 = end.parse().map_err(|_| bad())?;
+        let start = page_number(start).ok_or_else(bad)?;
+        let end = page_number(end).ok_or_else(bad)?;
         for page in [start, end] {
             if page == 0 || page > page_count {
                 return Err(PdfError::PageOutOfRange {
@@ -45,4 +45,13 @@ pub fn parse_ranges(spec: &str, page_count: u32) -> Result<Vec<PageRange>, PdfEr
         return Err(PdfError::BadRange(spec.to_string()));
     }
     Ok(out)
+}
+
+/// `token` as a page number: one or more ASCII digits that fit a `u32`.
+/// `u32::from_str` alone would also take a leading `+`.
+fn page_number(token: &str) -> Option<u32> {
+    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    token.parse().ok()
 }

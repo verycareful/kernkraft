@@ -313,6 +313,9 @@ pub fn decode_trash_path(s: &str) -> PathBuf {
 
 /// Reads the `Path=` and `DeletionDate=` values of the `[Trash Info]` group,
 /// which must be the file's first group. `None` when either is missing.
+/// The file is in the Desktop Entry format (Trash spec, "Contents of a
+/// trash directory"), which ignores space before and after the `=`; the
+/// first of a repeated key counts.
 pub fn parse_trashinfo(contents: &str) -> Option<(String, String)> {
     let mut lines = contents.lines().map(str::trim).filter(|l| !l.is_empty());
     if lines.next()? != INFO_HEADER {
@@ -320,11 +323,15 @@ pub fn parse_trashinfo(contents: &str) -> Option<(String, String)> {
     }
     let (mut path, mut date) = (None, None);
     for line in lines.take_while(|l| !l.starts_with('[')) {
-        if let Some(v) = line.strip_prefix("Path=") {
-            path.get_or_insert_with(|| v.to_string());
-        } else if let Some(v) = line.strip_prefix("DeletionDate=") {
-            date.get_or_insert_with(|| v.to_string());
-        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let slot = match key.trim_end() {
+            "Path" => &mut path,
+            "DeletionDate" => &mut date,
+            _ => continue,
+        };
+        slot.get_or_insert_with(|| value.trim_start().to_string());
     }
     Some((path?, date?))
 }

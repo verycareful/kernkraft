@@ -17,8 +17,8 @@ use std::collections::{HashMap, HashSet};
 
 use lopdf::{Dictionary, Document, Object, ObjectId};
 
-use crate::tree::{flatten, keep_pages};
-use crate::{page_count, PageRange, PdfError};
+use crate::tree::{checked_count, flatten, keep_pages, page_ids};
+use crate::{PageRange, PdfError};
 use kernkraft_fs::{FsError, Progress};
 
 /// Title of the part holding the pages before the first bookmark.
@@ -31,11 +31,11 @@ const MAX_WALK: usize = 1 << 16;
 /// A new document holding `pages` (1-based) of `doc`, in the order given.
 ///
 /// Inherited page attributes are kept (the tree is flattened first). Every
-/// reference to a page left out becomes `null`, so no content of those
-/// pages survives in the result. The outline (bookmarks) is not carried
+/// reference to a page left out becomes `null` and its form fields leave
+/// the `/AcroForm`, so no content of those pages survives in the result. The outline (bookmarks) is not carried
 /// over: its items would point at pages that may not be there.
 pub fn extract(doc: &Document, pages: &[u32]) -> Result<Document, PdfError> {
-    let count = page_count(doc);
+    let count = checked_count(doc)?;
     if pages.is_empty() {
         return Err(PdfError::Invalid("no pages to extract".to_string()));
     }
@@ -75,7 +75,7 @@ pub fn split_ranges(doc: &Document, ranges: &[PageRange]) -> Result<Vec<Document
 /// One single-page document per page. `progress` gets pages done out of
 /// the page count; a cancel stops with `PdfError::Fs(FsError::Cancelled)`.
 pub fn split_per_page(doc: &Document, progress: &dyn Progress) -> Result<Vec<Document>, PdfError> {
-    let count = page_count(doc);
+    let count = checked_count(doc)?;
     let mut parts = Vec::with_capacity(count as usize);
     for page in 1..=count {
         if progress.is_cancelled() {
@@ -94,8 +94,7 @@ pub fn split_per_page(doc: &Document, progress: &dyn Progress) -> Result<Vec<Doc
 /// whose destination is not a page of this document, start no part.
 /// [`PdfError::Invalid`] when no bookmark leads to a page.
 pub fn split_by_bookmarks(doc: &Document) -> Result<Vec<(String, Document)>, PdfError> {
-    let page_of: HashMap<ObjectId, u32> =
-        doc.get_pages().into_iter().map(|(n, id)| (id, n)).collect();
+    let page_of: HashMap<ObjectId, u32> = page_ids(doc)?.into_iter().zip(1..).collect();
     let mut starts = top_level_bookmarks(doc)
         .into_iter()
         .filter_map(|(dest, title)| page_of.get(&dest).map(|&p| (p, title)))
@@ -109,7 +108,7 @@ pub fn split_by_bookmarks(doc: &Document) -> Result<Vec<(String, Document)>, Pdf
         starts.insert(0, (1, START_PART_TITLE.to_string()));
     }
 
-    let count = page_count(doc);
+    let count = checked_count(doc)?;
     let mut parts = Vec::with_capacity(starts.len());
     for (i, (start, title)) in starts.iter().enumerate() {
         let end = starts.get(i + 1).map_or(count, |(next, _)| next - 1);

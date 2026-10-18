@@ -242,21 +242,14 @@ fn untyped_page_nodes_count_once() {
     let bytes = edited(&pdf_n(2), |doc, pages| {
         doc.get_dictionary_mut(pages[0]).unwrap().remove(b"Type");
     });
-    let mut doc = kernkraft_pdf::lopdf::Document::load_mem(&bytes).unwrap();
-    assert_eq!(page_count(&doc), 2, "both kids are pages");
-    let first = doc.get_pages()[&1];
+    let raw = kernkraft_pdf::lopdf::Document::load_mem(&bytes).unwrap();
+    assert_eq!(page_count(&raw), 2, "both kids are pages");
+    let mut doc = load_bytes(&bytes).unwrap();
+    assert_eq!(page_count(&doc), 2);
+    assert_eq!(markers(&doc), ["P1", "P2"], "every reader numbers alike");
     kernkraft_pdf::rotate(&mut doc, &[1], kernkraft_pdf::Rotation::Cw90).unwrap();
-    let turned = doc
-        .get_dictionary(first)
-        .unwrap()
-        .get(b"Rotate")
-        .ok()
-        .cloned();
-    assert_eq!(
-        turned,
-        Some(Object::Integer(90)),
-        "page 1 is the page turned"
-    );
+    assert_eq!(page_attr(&doc, 1, b"Rotate"), Some(Object::Integer(90)));
+    assert_eq!(markers(&doc), ["P1", "P2"], "page 1 is the page turned");
 }
 
 #[test]
@@ -285,20 +278,21 @@ fn page_listed_twice_is_an_error() {
         dict.set("Kids", vec![pages[0].into(), pages[0].into()]);
         dict.set("Count", 2);
     });
-    let doc = load_bytes(&bytes).unwrap();
+    assert!(matches!(load_bytes(&bytes), Err(PdfError::Parse(_))));
+    let raw = kernkraft_pdf::lopdf::Document::load_mem(&bytes).unwrap();
+    assert_eq!(page_count(&raw), 0);
     assert!(matches!(
-        flatten_page_tree(&mut doc.clone()),
+        flatten_page_tree(&mut raw.clone()),
         Err(PdfError::Parse(_))
     ));
     assert!(matches!(
-        kernkraft_pdf::extract(&doc, &[1]),
+        kernkraft_pdf::extract(&raw, &[1]),
         Err(PdfError::Parse(_))
     ));
 }
 
-/// The flattening walks the tree recursively and stops at a fixed depth,
-/// so a tree nested past it is refused with a typed error, not a stack
-/// overflow.
+/// The page-tree walk is recursive and stops at a fixed depth, so a tree
+/// nested past it is refused with a typed error, not a stack overflow.
 #[test]
 fn deep_tree_is_an_error_not_a_crash() {
     const DEPTH: usize = 300;
@@ -317,9 +311,10 @@ fn deep_tree_is_an_error_not_a_crash() {
             .unwrap()
             .set("Kids", vec![child.into()]);
     });
-    let mut doc = load_bytes(&bytes).unwrap();
+    assert!(matches!(load_bytes(&bytes), Err(PdfError::Parse(_))));
+    let mut raw = kernkraft_pdf::lopdf::Document::load_mem(&bytes).unwrap();
     assert!(matches!(
-        flatten_page_tree(&mut doc),
+        flatten_page_tree(&mut raw),
         Err(PdfError::Parse(_))
     ));
 }

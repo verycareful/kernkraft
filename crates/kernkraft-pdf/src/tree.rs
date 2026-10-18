@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use lopdf::{Dictionary, Document, Object, ObjectId};
 
+use crate::fields::drop_fields_of;
 use crate::PdfError;
 
 /// The inheritable page attributes (ISO 32000-1:2008, Table 30).
@@ -37,9 +38,7 @@ pub fn flatten_page_tree(doc: &mut Document) -> Result<(), PdfError> {
 /// nothing is pruned yet.
 pub(crate) fn flatten(doc: &mut Document) -> Result<(ObjectId, Vec<ObjectId>), PdfError> {
     let root = root_pages_id(doc)?;
-    let mut pages = Vec::new();
-    let mut visited = HashSet::new();
-    collect(doc, root, &Dictionary::new(), 0, &mut visited, &mut pages)?;
+    let (pages, _) = walk(doc, root)?;
 
     for (id, inherited) in &pages {
         let page = doc
@@ -59,6 +58,59 @@ pub(crate) fn flatten(doc: &mut Document) -> Result<(ObjectId, Vec<ObjectId>), P
     Ok((root, ids))
 }
 
+/// The page ids in document order, as every operation numbers them. A
+/// malformed tree (cyclic, a node reached twice, nested too deeply, a kid
+/// that is not a dictionary) is [`PdfError::Parse`].
+pub(crate) fn page_ids(doc: &Document) -> Result<Vec<ObjectId>, PdfError> {
+    let (pages, _) = walk(doc, root_pages_id(doc)?)?;
+    Ok(pages.into_iter().map(|(id, _)| id).collect())
+}
+
+/// [`page_ids`]'s count, for the operations that check page numbers
+/// against it.
+pub(crate) fn checked_count(doc: &Document) -> Result<u32, PdfError> {
+    let n = page_ids(doc)?.len();
+    u32::try_from(n).map_err(|_| PdfError::Invalid(format!("{n} pages")))
+}
+
+/// Checks the page tree and gives every node the `/Type` ISO 32000-1:2008
+/// requires (`/Page` for a leaf, `/Pages` for a node with kids, Tables 29
+/// and 30) where it is missing, so lopdf, MuPDF and the operations here
+/// all see the same pages. Returns the page count.
+pub(crate) fn check_and_type_pages(doc: &mut Document) -> Result<usize, PdfError> {
+    let (pages, nodes) = walk(doc, root_pages_id(doc)?)?;
+    let leaves: HashSet<ObjectId> = pages.iter().map(|(id, _)| *id).collect();
+    for id in nodes {
+        let dict = doc
+            .get_dictionary_mut(id)
+            .map_err(|e| PdfError::Parse(format!("page tree node {id:?}: {e}")))?;
+        if !dict.has(b"Type") {
+            let kind = if leaves.contains(&id) {
+                "Page"
+            } else {
+                "Pages"
+            };
+            dict.set("Type", Object::Name(kind.as_bytes().to_vec()));
+        }
+    }
+    Ok(pages.len())
+}
+
+/// A page id with the inheritable attributes its ancestors give it.
+type InheritedPage = (ObjectId, Dictionary);
+
+/// Walks the tree under `root`: the pages with their inherited attributes,
+/// in document order, and every node visited (pages included).
+fn walk(
+    doc: &Document,
+    root: ObjectId,
+) -> Result<(Vec<InheritedPage>, HashSet<ObjectId>), PdfError> {
+    let mut pages = Vec::new();
+    let mut visited = HashSet::new();
+    collect(doc, root, &Dictionary::new(), 0, &mut visited, &mut pages)?;
+    Ok((pages, visited))
+}
+
 /// Makes `pages` the root's kids, in that order, and drops every object no
 /// longer reachable from the trailer.
 pub(crate) fn set_pages(
@@ -75,7 +127,8 @@ pub(crate) fn set_pages(
 /// unlinks every other page: each reference to a dropped page, wherever it
 /// sits (a link annotation's destination, a structure element, the open
 /// action), becomes `null`, so the dropped pages and everything only they
-/// used (content streams, images, fonts) are pruned from the result.
+/// used (content streams, images, fonts) are pruned from the result. Their
+/// form fields leave the form first (see [`drop_fields_of`]).
 pub(crate) fn keep_pages(
     doc: &mut Document,
     root: ObjectId,
@@ -89,6 +142,7 @@ pub(crate) fn keep_pages(
         .filter(|id| !kept.contains(id))
         .collect();
     if !dropped.is_empty() {
+        drop_fields_of(doc, &dropped)?;
         for object in doc.objects.values_mut() {
             null_references(object, &dropped);
         }
@@ -176,7 +230,7 @@ fn collect(
     inherited: &Dictionary,
     depth: usize,
     visited: &mut HashSet<ObjectId>,
-    pages: &mut Vec<(ObjectId, Dictionary)>,
+    pages: &mut Vec<InheritedPage>,
 ) -> Result<(), PdfError> {
     if depth > MAX_TREE_DEPTH {
         return Err(PdfError::Parse("page tree nested too deeply".to_string()));

@@ -231,3 +231,37 @@ fn flattened_nested_page_uses_inherited_cropbox() {
     let page = render_page(&path, 2, CORPUS_WIDTH).unwrap();
     assert_eq!((page.width, page.height), (CORPUS_WIDTH, CORPUS_WIDTH));
 }
+
+/// A CropBox away from the origin: what lies in its top-left corner is
+/// drawn in the rendered page's top-left corner.
+#[test]
+fn offset_cropbox_maps_to_the_pixmap_origin() {
+    let bytes = edited(&pdf_n(1), |doc, pages| {
+        // A black square filling the top-left quarter of the crop box
+        // [100 100 200 200]; PDF y grows upward, so its top is y = 200.
+        let ops = b"0 g 100 150 50 50 re f".to_vec();
+        let content = doc.add_object(kernkraft_pdf::lopdf::Stream::new(
+            kernkraft_pdf::lopdf::dictionary! {},
+            ops,
+        ));
+        let page = doc.get_dictionary_mut(pages[0]).unwrap();
+        page.set("MediaBox", rect_of([0, 0, 300, 300]));
+        page.set("CropBox", rect_of([100, 100, 200, 200]));
+        page.set("Contents", content);
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(&dir, "crop.pdf", &bytes);
+    let page = render_page(&path, 1, CORPUS_WIDTH).unwrap();
+    assert_eq!((page.width, page.height), (CORPUS_WIDTH, CORPUS_WIDTH));
+    let quarter = CORPUS_WIDTH / 4;
+    assert_eq!(
+        pixel(&page, quarter, quarter),
+        [0, 0, 0, 255],
+        "inside the square"
+    );
+    assert_eq!(
+        pixel(&page, 3 * quarter, 3 * quarter),
+        [255, 255, 255, 255],
+        "outside it"
+    );
+}

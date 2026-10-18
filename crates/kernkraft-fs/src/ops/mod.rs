@@ -27,6 +27,10 @@ pub struct OpReport {
     pub skipped: Vec<PathBuf>,
     /// Items that failed, with the reason. The rest still ran.
     pub failed: Vec<(PathBuf, FsError)>,
+    /// Items that completed with something not carried over: a copy whose
+    /// destination would not take some extended attributes
+    /// ([`FsError::XattrsNotKept`], naming them).
+    pub warnings: Vec<(PathBuf, FsError)>,
     /// The operation stopped early because its [`Progress`] asked to.
     pub cancelled: bool,
 }

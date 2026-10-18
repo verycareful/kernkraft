@@ -633,3 +633,26 @@ fn copy_keeps_user_xattr() {
     let n = rustix::fs::getxattr(dest.join("f"), NAME, &mut buf[..]).ok();
     assert_eq!(n.map(|n| &buf[..n]), Some(&b"v"[..]));
 }
+
+#[test]
+fn copy_keeps_directory_xattr() {
+    const NAME: &str = "user.kernkraft.dir";
+    let root = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let (src, dest) = (root.path().join("src"), root.path().join("dest"));
+    fs::create_dir_all(src.join("d")).unwrap();
+    fs::create_dir(&dest).unwrap();
+    let dir = src.join("d");
+    match rustix::fs::setxattr(&dir, NAME, b"d", rustix::fs::XattrFlags::empty()) {
+        Ok(()) => {}
+        Err(rustix::io::Errno::OPNOTSUPP) => {
+            eprintln!("skipped: user xattrs unsupported here");
+            return;
+        }
+        Err(e) => panic!("setxattr: {e}"),
+    }
+    let report = copy(std::slice::from_ref(&dir), &dest, &never, &NoProgress).unwrap();
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let mut buf = [0u8; 16];
+    let n = rustix::fs::getxattr(dest.join("d"), NAME, &mut buf[..]).ok();
+    assert_eq!(n.map(|n| &buf[..n]), Some(&b"d"[..]));
+}

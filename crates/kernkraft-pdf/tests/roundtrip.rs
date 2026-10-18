@@ -68,9 +68,9 @@ fn save_then_load_keeps_objects() {
     }
 }
 
-/// A load and save that edits nothing must not change the file. lopdf keeps
-/// the loaded cross-reference stream as an object and writes a new one at
-/// the next free id, so each save moves it up by one.
+/// A load and save that edits nothing must not change the file: a kept
+/// copy of the loaded cross-reference stream would be written again under
+/// the next free object number on every save.
 #[test]
 fn second_round_trip_is_byte_identical() {
     for f in corpus() {

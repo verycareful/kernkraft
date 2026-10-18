@@ -2,6 +2,31 @@
 
 All notable changes documented here. Format: [Keep a Changelog](https://keepachangelog.com/), with one deviation: dated release entries are timestamped to the minute with timezone (`YYYY-MM-DD HH:MM (TZ)`).
 
+## [0.1.0.2] - 2026-10-18 21:55 (IST)
+
+The fixes for the seven known issues 0.1.0.1 pinned. All eleven tests that shipped red now pass.
+
+### Added
+- **`FsError::OwnershipNotKept`**: an atomic save that would change a file's owner or group (the file belongs to another user, or to a group this process is not in) is refused, the file untouched.
+- **`FsError::XattrsNotKept`**: names the extended attributes a destination would not take.
+- **`OpReport::warnings`**: items a copy or move completed without carrying everything over, today only extended attributes the destination refused.
+
+### Changed
+- **Loading a PDF checks its page tree.** A cyclic tree, a page reached twice or a tree nested too deeply is now a `PdfError::Parse` at load, not at the first operation. A page-tree node without `/Type` is given the type ISO 32000 requires, and the file's cross-reference and object streams are dropped on load, since every save writes its own.
+- `page_count` counts pages with the same walk as every operation. On a document built by hand whose page tree is malformed it is 0, and every operation reports `PdfError::Parse`.
+
+### Fixed
+- A page node without `/Type` is numbered the same way by `page_count`, every page operation and the renderer.
+- `extract`, every split and `remove` drop the form fields whose widgets were all on dropped pages, together with their appearances. A field with widgets on kept pages keeps those.
+- A load and save that edits nothing writes the same bytes again.
+- A rendered page is the requested width and the width times the aspect ratio rounded to the nearest pixel, as Kern Android renders it. The page fills that exact size.
+- `parse_ranges` takes page numbers in ASCII digits only, so `+1` is a bad range.
+- `.trashinfo` files with space around `=` are read.
+- Atomic save keeps the owner, group, extended attributes and POSIX ACLs. Copy and move keep the extended attributes of files and directories, reporting any the destination refuses.
+
+### Results
+- 260 tests across 16 suites, all passed (0.23s, CachyOS x86-64, rustc 1.99.1).
+
 ## [0.1.0.1] - 2026-10-18 21:33 (IST)
 
 The test release for 0.1.0.0: a round-trip corpus, property tests of every page operation, and edge cases for both crates. No library code changed. Eleven of the new tests fail on purpose: each pins a defect that 0.1.0.2 fixes, and they stay red until then.

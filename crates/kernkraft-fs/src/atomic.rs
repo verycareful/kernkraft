@@ -6,8 +6,9 @@
 //!
 //! The new contents go to a temp file in the target's own directory (so the
 //! final step is a same-filesystem `rename(2)`, which POSIX makes atomic),
-//! are flushed and `fsync`ed, take the old file's permission bits, and are
-//! renamed over the target. The directory is then `fsync`ed so the rename
+//! are flushed and `fsync`ed, take the old file's owner, group, extended
+//! attributes (POSIX ACLs among them) and permission bits, and are renamed
+//! over the target. The directory is then `fsync`ed so the rename
 //! itself survives a crash.
 
 use std::fs::{self, File, Permissions};
@@ -16,7 +17,11 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use rustix::fs::{fchown, Gid, Uid};
+use rustix::io::Errno;
+
 use crate::sys::parent_dir;
+use crate::xattr::copy_all;
 use crate::FsError;
 
 /// Linux's `MAXSYMLINKS` (include/linux/namei.h): the kernel gives up with
@@ -82,8 +87,13 @@ impl FileStamp {
 /// A symlink at `path` is followed, through any chain, and its final target
 /// is written; the links stay as they are. With `expected = Some(stamp)` the
 /// target must still match `stamp`, else nothing is written and the result
-/// is [`FsError::ExternalModification`]. An existing target's permission bits
-/// carry over; a new file gets `0o666` less the process umask.
+/// is [`FsError::ExternalModification`]. An existing target's owner, group,
+/// extended attributes (POSIX ACLs among them) and permission bits carry
+/// over; a new file gets `0o666` less the process umask. A save that would
+/// change the owner or group (the file belongs to another user, or to a
+/// group this process is not in) is refused with
+/// [`FsError::OwnershipNotKept`], and one that cannot set an attribute with
+/// [`FsError::XattrsNotKept`].
 ///
 /// On any error, including one returned by `write`, the target and its
 /// directory are left exactly as they were. Returns the stamp of the file
@@ -143,6 +153,16 @@ pub fn write_atomic(
     drop(out);
 
     if let Some(meta) = &existing {
+        // fchown(2) clears the setuid and setgid bits, so ownership goes
+        // first and the mode is applied after it.
+        keep_ownership(temp.as_file(), meta, &target, &temp_path)?;
+        let refused = copy_all(&target, temp.as_file()).map_err(fail)?;
+        if !refused.is_empty() {
+            return Err(FsError::XattrsNotKept {
+                path: target,
+                names: refused,
+            });
+        }
         let mode = meta.permissions().mode() & PERMISSION_BITS;
         temp.as_file()
             .set_permissions(Permissions::from_mode(mode))
@@ -156,6 +176,29 @@ pub fn write_atomic(
         .map_err(|source| FsError::io(dir, source))?;
 
     FileStamp::of(&target)
+}
+
+/// Gives `temp` the owner and group of the file `meta` describes, where
+/// they differ from what the temp file was created with.
+fn keep_ownership(
+    temp: &File,
+    meta: &fs::Metadata,
+    target: &Path,
+    temp_path: &Path,
+) -> Result<(), FsError> {
+    let now = temp.metadata().map_err(|e| FsError::io(temp_path, e))?;
+    let uid = (now.uid() != meta.uid()).then(|| Uid::from_raw(meta.uid()));
+    let gid = (now.gid() != meta.gid()).then(|| Gid::from_raw(meta.gid()));
+    if uid.is_none() && gid.is_none() {
+        return Ok(());
+    }
+    match fchown(temp, uid, gid) {
+        Ok(()) => Ok(()),
+        Err(Errno::PERM) => Err(FsError::OwnershipNotKept {
+            path: target.to_path_buf(),
+        }),
+        Err(e) => Err(FsError::io(temp_path, e.into())),
+    }
 }
 
 /// [`write_atomic`] with the contents given as bytes.

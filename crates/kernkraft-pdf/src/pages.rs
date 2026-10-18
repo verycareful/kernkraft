@@ -11,8 +11,8 @@ use std::collections::HashSet;
 
 use lopdf::{Document, Object, ObjectId};
 
-use crate::tree::{flatten, keep_pages, set_pages};
-use crate::{page_count, PdfError};
+use crate::tree::{checked_count, flatten, keep_pages, set_pages};
+use crate::PdfError;
 
 /// Degrees in a quarter turn; `/Rotate` must be a multiple of it
 /// (ISO 32000-1:2008, Table 30).
@@ -42,7 +42,7 @@ impl Rotation {
 /// is normalised to 0, 90, 180 or 270. A page whose rotation is not a
 /// multiple of 90 is [`PdfError::Invalid`] and nothing is changed.
 pub fn rotate(doc: &mut Document, pages: &[u32], by: Rotation) -> Result<(), PdfError> {
-    let count = page_count(doc);
+    let count = checked_count(doc)?;
     let targets: Vec<u32> = if pages.is_empty() {
         (1..=count).collect()
     } else {
@@ -66,7 +66,7 @@ pub fn rotate(doc: &mut Document, pages: &[u32], by: Rotation) -> Result<(), Pdf
 /// page that ends up at position `i + 1`. `order` must name every page
 /// exactly once.
 pub fn reorder(doc: &mut Document, order: &[u32]) -> Result<(), PdfError> {
-    let count = page_count(doc);
+    let count = checked_count(doc)?;
     if order.len() != count as usize {
         return Err(PdfError::Invalid(format!(
             "the new order lists {} pages, the document has {count}",
@@ -84,7 +84,7 @@ pub fn reorder(doc: &mut Document, order: &[u32]) -> Result<(), PdfError> {
 /// kept: a bookmark that led to a removed page keeps its title and no
 /// longer leads anywhere.
 pub fn remove(doc: &mut Document, pages: &[u32]) -> Result<(), PdfError> {
-    let count = page_count(doc);
+    let count = checked_count(doc)?;
     if pages.is_empty() {
         return Err(PdfError::Invalid("no pages to remove".to_string()));
     }

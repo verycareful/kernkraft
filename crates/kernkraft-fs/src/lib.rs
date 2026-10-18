@@ -17,6 +17,7 @@ mod scan;
 mod sys;
 mod trash;
 mod version;
+mod xattr;
 mod xdg;
 
 pub use atomic::{write_atomic, write_bytes_atomic, FileStamp};

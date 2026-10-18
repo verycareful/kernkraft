@@ -5,7 +5,8 @@
 //!
 //! The contract matches Kern Android's `renderPage(index, widthPx)`, with
 //! 1-based pages: a page is rendered to a requested pixel width, its height
-//! following the page's aspect ratio, as opaque RGBA8 on a white page. Page
+//! the width times the page's aspect ratio rounded to the nearest pixel, as
+//! opaque RGBA8 on a white page. Page
 //! sizes come from MuPDF's page bounds, which already account for the
 //! page's `/Rotate`.
 
@@ -99,21 +100,16 @@ impl Renderer {
         if !(w_pt > 0.0 && h_pt > 0.0) {
             return Err(PdfError::Invalid(format!("page {page} has no area")));
         }
-        let scale = width_px as f32 / w_pt;
-        let height_px = (h_pt * scale).round();
-        if height_px > MAX_RENDER_DIMENSION as f32 {
+        let height = (h_pt * width_px as f32 / w_pt).round();
+        if height > MAX_RENDER_DIMENSION as f32 {
             return Err(PdfError::Invalid(format!(
-                "page {page} would render {height_px} pixels tall at width {width_px}"
+                "page {page} would render {height} pixels tall at width {width_px}"
             )));
         }
-        let pixmap = loaded
-            .to_pixmap(
-                &Matrix::new_scale(scale, scale),
-                &Colorspace::device_rgb(),
-                false,
-                true,
-            )
-            .map_err(render_error)?;
+        // `height` is at most MAX_RENDER_DIMENSION here; a sliver of a page
+        // still gets one row.
+        let height_px = height.max(1.0) as u32;
+        let pixmap = draw(&loaded, &bounds, width_px, height_px)?;
         let (width, height) = (pixmap.width(), pixmap.height());
         let stride = usize::try_from(pixmap.stride())
             .map_err(|_| PdfError::Render("negative pixmap stride".to_string()))?;
@@ -150,6 +146,35 @@ impl Renderer {
         let index = i32::try_from(page - 1).unwrap_or(i32::MAX);
         self.doc.load_page(index).map_err(render_error)
     }
+}
+
+/// Draws `page` onto a white pixmap of exactly `width` x `height`, the
+/// page's displayed bounds scaled to fill it. MuPDF's own `to_pixmap`
+/// rounds the pixel rectangle outward, which makes the height one pixel
+/// more than the rounded aspect height whenever that has a fraction.
+fn draw(
+    page: &mupdf::Page,
+    bounds: &mupdf::Rect,
+    width: u32,
+    height: u32,
+) -> Result<mupdf::Pixmap, PdfError> {
+    let side = |v: u32| i32::try_from(v).map_err(|_| PdfError::Render(format!("{v} pixels")));
+    let mut pixmap = mupdf::Pixmap::new_with_w_h(
+        &Colorspace::device_rgb(),
+        side(width)?,
+        side(height)?,
+        false,
+    )
+    .map_err(render_error)?;
+    pixmap.clear_with(i32::from(OPAQUE)).map_err(render_error)?;
+    let (w_pt, h_pt) = (bounds.x1 - bounds.x0, bounds.y1 - bounds.y0);
+    let mut ctm = Matrix::new_translate(-bounds.x0, -bounds.y0);
+    ctm.concat(Matrix::new_scale(width as f32 / w_pt, height as f32 / h_pt));
+    {
+        let device = mupdf::Device::from_pixmap(&pixmap).map_err(render_error)?;
+        page.run(&device, &ctm).map_err(render_error)?;
+    }
+    Ok(pixmap)
 }
 
 /// Renders one page of the file at `path`. See [`Renderer::render_page`].

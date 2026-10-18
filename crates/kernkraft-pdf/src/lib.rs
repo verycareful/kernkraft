@@ -12,6 +12,7 @@
 
 mod doc;
 mod error;
+mod fields;
 mod merge;
 mod pages;
 mod ranges;

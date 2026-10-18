@@ -28,6 +28,10 @@ pub enum FsError {
     BadTrashInfo { path: PathBuf },
     #[error("unsafe cache directory {path}")]
     UnsafeCacheDir { path: PathBuf },
+    #[error("{path} belongs to another user or group, which saving it would change")]
+    OwnershipNotKept { path: PathBuf },
+    #[error("{path}: extended attributes not kept: {}", names.join(", "))]
+    XattrsNotKept { path: PathBuf, names: Vec<String> },
     #[error("cancelled")]
     Cancelled,
 }

@@ -245,3 +245,163 @@ fn returned_stamp_matches_disk() {
     assert_eq!(FileStamp::of(&path).unwrap(), stamp);
     assert_eq!(stamp.len, 8);
 }
+
+fn running_as_root() -> bool {
+    rustix::process::geteuid().is_root()
+}
+
+#[test]
+fn read_only_directory_fails_and_leaves_target() {
+    if running_as_root() {
+        eprintln!("skipped: running as root");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f");
+    fs::write(&path, "old").unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+    let result = write_bytes_atomic(&path, None, b"new");
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(result, Err(FsError::Io { .. })), "{result:?}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "old");
+    assert_eq!(entries(dir.path()), ["f"]);
+}
+
+#[test]
+fn special_permission_bits_carry_over() {
+    const SETGID_RWX_RX: u32 = 0o2750;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f");
+    fs::write(&path, "old").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(SETGID_RWX_RX)).unwrap();
+    write_bytes_atomic(&path, None, b"new").unwrap();
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, SETGID_RWX_RX);
+}
+
+#[test]
+fn empty_and_multi_chunk_writes() {
+    const LEN: usize = 3 << 20;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f");
+    fs::write(&path, "old").unwrap();
+    write_bytes_atomic(&path, None, b"").unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"");
+    let pattern: Vec<u8> = (0..LEN).map(|i| (i % 251) as u8).collect();
+    write_bytes_atomic(&path, None, &pattern).unwrap();
+    assert!(fs::read(&path).unwrap() == pattern);
+}
+
+#[test]
+fn non_utf8_target_name() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(std::ffi::OsStr::from_bytes(b"\xff.txt"));
+    write_bytes_atomic(&path, None, b"v").unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"v");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+/// A directory on Cargo's target filesystem, which (unlike a tmpfs `/tmp`
+/// on some kernels) keeps extended attributes and POSIX ACLs.
+fn xattr_dir() -> tempfile::TempDir {
+    tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
+}
+
+/// Sets `name` on `path`; `false` when the filesystem does not support it.
+fn try_setxattr(path: &Path, name: &str, value: &[u8]) -> bool {
+    match rustix::fs::setxattr(path, name, value, rustix::fs::XattrFlags::empty()) {
+        Ok(()) => true,
+        Err(rustix::io::Errno::OPNOTSUPP) => {
+            eprintln!("skipped: {name} unsupported here");
+            false
+        }
+        Err(e) => panic!("setxattr {name}: {e}"),
+    }
+}
+
+fn xattr(path: &Path, name: &str) -> Option<Vec<u8>> {
+    let mut buf = vec![0u8; 1024];
+    let n = rustix::fs::getxattr(path, name, &mut buf[..]).ok()?;
+    buf.truncate(n);
+    Some(buf)
+}
+
+const USER_XATTR: &str = "user.kernkraft.test";
+
+#[test]
+fn atomic_save_keeps_user_xattr() {
+    let dir = xattr_dir();
+    let path = dir.path().join("f");
+    fs::write(&path, "old").unwrap();
+    if !try_setxattr(&path, USER_XATTR, b"v") {
+        return;
+    }
+    write_bytes_atomic(&path, None, b"new").unwrap();
+    assert_eq!(xattr(&path, USER_XATTR).as_deref(), Some(&b"v"[..]));
+}
+
+/// A `system.posix_acl_access` value in the kernel's xattr layout
+/// (include/uapi/linux/posix_acl_xattr.h): a little-endian version 2
+/// header, then (tag, perm, id) entries in tag order.
+fn acl_granting_read_to(uid: u32) -> Vec<u8> {
+    const VERSION: u32 = 2;
+    const USER_OBJ: u16 = 0x01;
+    const USER: u16 = 0x02;
+    const GROUP_OBJ: u16 = 0x04;
+    const MASK: u16 = 0x10;
+    const OTHER: u16 = 0x20;
+    const UNDEFINED_ID: u32 = u32::MAX;
+    const READ: u16 = 4;
+    const WRITE: u16 = 2;
+    let mut out = VERSION.to_le_bytes().to_vec();
+    for (tag, perm, id) in [
+        (USER_OBJ, READ | WRITE, UNDEFINED_ID),
+        (USER, READ, uid),
+        (GROUP_OBJ, READ, UNDEFINED_ID),
+        (MASK, READ, UNDEFINED_ID),
+        (OTHER, 0, UNDEFINED_ID),
+    ] {
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&perm.to_le_bytes());
+        out.extend_from_slice(&id.to_le_bytes());
+    }
+    out
+}
+
+const ACL_XATTR: &str = "system.posix_acl_access";
+/// The conventional `nobody` uid, granted access by the test ACL.
+const NOBODY_UID: u32 = 65534;
+
+#[test]
+fn atomic_save_keeps_posix_acl() {
+    let dir = xattr_dir();
+    let path = dir.path().join("f");
+    fs::write(&path, "old").unwrap();
+    if !try_setxattr(&path, ACL_XATTR, &acl_granting_read_to(NOBODY_UID)) {
+        return;
+    }
+    let before = xattr(&path, ACL_XATTR).unwrap();
+    write_bytes_atomic(&path, None, b"new").unwrap();
+    assert_eq!(xattr(&path, ACL_XATTR), Some(before));
+}
+
+#[test]
+fn atomic_save_keeps_group() {
+    let primary = rustix::process::getegid();
+    let Some(other) = rustix::process::getgroups()
+        .unwrap()
+        .into_iter()
+        .find(|g| *g != primary)
+    else {
+        eprintln!("skipped: no supplementary group");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f");
+    fs::write(&path, "old").unwrap();
+    rustix::fs::chown(&path, None, Some(other)).unwrap();
+    write_bytes_atomic(&path, None, b"new").unwrap();
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(fs::metadata(&path).unwrap().gid(), other.as_raw());
+}

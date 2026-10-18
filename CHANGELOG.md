@@ -2,6 +2,30 @@
 
 All notable changes documented here. Format: [Keep a Changelog](https://keepachangelog.com/), with one deviation: dated release entries are timestamped to the minute with timezone (`YYYY-MM-DD HH:MM (TZ)`).
 
+## [0.1.0.1] - 2026-10-18 21:33 (IST)
+
+The test release for 0.1.0.0: a round-trip corpus, property tests of every page operation, and edge cases for both crates. No library code changed. Eleven of the new tests fail on purpose: each pins a defect that 0.1.0.2 fixes, and they stay red until then.
+
+### Tests
+- **PDF corpus**: ten files, built in code so every expectation follows from how each was made: a classic cross-reference table, a cross-reference stream with object streams, Flate-compressed content, an incremental update, a nested page tree, a page whose contents are an array of streams, an indirect `/Kids` array, an image shared by two pages, an `/Info` dictionary, and the sample from `testdata/`.
+- **`kernkraft-pdf` round trip** (`roundtrip`): every corpus file loads with its page count and markers; a save and reload keeps every content object, the trailer's `/Root` and `/Info`, and each page's inherited attributes; an atomic save to disk reads back the same.
+- **`kernkraft-pdf` properties** (`properties`): over the whole corpus, an identity reorder changes nothing, a reorder and its inverse restore the document, four quarter turns restore every rotation, a split per page or by ranges merges back to the original, extracting every page keeps it whole, and removing any one page leaves the others. Every result holds no reference to a missing object and survives a save and reload.
+- **`kernkraft-pdf` edge cases**: page trees that are cyclic, list a page twice, nest 300 deep or have pages without `/Type`; `/Rotate` given by reference, as a real or negative; malformed page ranges; form fields and an open action that point at dropped pages; untitled, foreign and nested-name-tree bookmarks; merging one document twice and inputs with unparsable versions; empty input and bytes after `%%EOF`; every corpus page rendered at the size its boxes and rotation give.
+- **`kernkraft-fs` edge cases**: atomic save into a read-only directory, with setgid bits, of 0 bytes and of 3 MiB, under a non-UTF-8 name, and keeping the group, extended attributes and POSIX ACL; trash round trips of non-UTF-8 names and names holding spaces, `%`, newlines and `#`, restoring into a removed folder, restoring onto a path already taken, an info file whose item is gone, and `.trashinfo` parsing (space around `=`, CRLF, repeated keys, a following group); copying a FIFO, onto a dangling symlink, a read-only tree and hard links; cancelling during the second source; progress that never runs backwards or past its total; moving a symlink; extended attributes through copy; duplicate `user-dirs.dirs` keys; scanning duplicate roots, a file root and a FIFO; staging a directory.
+
+### Known issues
+Each item below is pinned by a failing test and fixed in 0.1.0.2.
+- A page node without `/Type` is a page to the renderer and to every page operation, but `page_count` leaves it out, so page numbers can name different pages.
+- `extract`, and every split built on it, keeps the `/AcroForm` fields of dropped pages, and with them those pages' field appearances.
+- A load and save that edits nothing rewrites the file: the cross-reference stream moves to a new object number on every save.
+- A rendered page is one pixel taller than the width times the aspect ratio, rounded, whenever the exact height has a fraction (MuPDF rounds outward); Kern Android rounds to the nearest pixel, and the height limit check rounds to nearest too.
+- `parse_ranges` accepts `+1` as page 1.
+- `.trashinfo` files with space around `=` are reported as malformed.
+- Atomic save keeps permission bits but drops the group, extended attributes and POSIX ACLs; copy drops extended attributes.
+
+### Results
+- 256 tests across 16 suites: 245 passed, 11 failed, every failure a known issue above (0.14s, CachyOS x86-64, rustc 1.99.1).
+
 ## [0.1.0.0] - 2026-10-18 13:39 (IST)
 
 The first alpha: the workspace, a complete `kernkraft-fs` and the page operations of `kernkraft-pdf`.

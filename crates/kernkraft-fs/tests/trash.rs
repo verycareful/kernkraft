@@ -364,3 +364,113 @@ fn list_reports_non_utf8_trash_name() {
         FsError::InvalidName { .. }
     ));
 }
+
+/// The trash name of a non-UTF-8 file is shown lossily, but `Path=` keeps
+/// the real bytes, so a restore puts back exactly the name that was trashed.
+#[test]
+fn non_utf8_name_restores_exact_bytes() {
+    use std::os::unix::ffi::OsStrExt;
+    let f = fixture();
+    let path = f.src.join(std::ffi::OsStr::from_bytes(b"caf\xe9.txt"));
+    fs::write(&path, "v").unwrap();
+    f.trash.put(&path).unwrap();
+    let listing = f.trash.list().unwrap();
+    assert!(listing.unreadable.is_empty(), "{:?}", listing.unreadable);
+    assert_eq!(listing.items[0].original, path);
+    f.trash.restore(&listing.items[0]).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "v");
+}
+
+#[test]
+fn special_characters_restore() {
+    let f = fixture();
+    for name in ["a b.txt", "100%.txt", "line\nbreak", "#hash"] {
+        let path = f.src.join(name);
+        fs::write(&path, name).unwrap();
+        f.trash.put(&path).unwrap();
+        assert!(!path.exists(), "{name:?}");
+    }
+    let listing = f.trash.list().unwrap();
+    assert!(listing.unreadable.is_empty(), "{:?}", listing.unreadable);
+    assert_eq!(listing.items.len(), 4);
+    for item in &listing.items {
+        let restored = f.trash.restore(item).unwrap();
+        let name = restored.file_name().unwrap().to_str().unwrap().to_string();
+        assert_eq!(fs::read_to_string(&restored).unwrap(), name);
+    }
+}
+
+#[test]
+fn restore_recreates_missing_parent() {
+    let f = fixture();
+    let parent = f.src.join("gone");
+    fs::create_dir(&parent).unwrap();
+    let path = parent.join("a.txt");
+    fs::write(&path, "v").unwrap();
+    let item = f.trash.put(&path).unwrap();
+    fs::remove_dir(&parent).unwrap();
+    assert_eq!(f.trash.restore(&item).unwrap(), path);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "v");
+}
+
+#[test]
+fn restore_twice_same_original_refuses_second() {
+    let f = fixture();
+    let path = f.src.join("a.txt");
+    fs::write(&path, "one").unwrap();
+    let first = f.trash.put(&path).unwrap();
+    fs::write(&path, "two").unwrap();
+    let second = f.trash.put(&path).unwrap();
+    f.trash.restore(&first).unwrap();
+    assert!(matches!(
+        f.trash.restore(&second),
+        Err(FsError::Exists { .. })
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "one");
+    let listing = f.trash.list().unwrap();
+    assert_eq!(listing.items, [second]);
+}
+
+#[test]
+fn info_without_file_is_unreadable_not_found() {
+    let f = fixture();
+    let path = f.src.join("a.txt");
+    fs::write(&path, "v").unwrap();
+    let item = f.trash.put(&path).unwrap();
+    fs::remove_file(f.trash_dir.join("files").join(&item.name)).unwrap();
+    let listing = f.trash.list().unwrap();
+    assert!(listing.items.is_empty());
+    assert!(matches!(
+        listing.unreadable[..],
+        [(_, FsError::NotFound { .. })]
+    ));
+}
+
+/// The Trash spec stores `.trashinfo` in the Desktop Entry format, which
+/// ignores space before and after the `=`.
+#[test]
+fn parse_trashinfo_ignores_space_around_equals() {
+    let parsed = parse_trashinfo("[Trash Info]\nPath = /x\nDeletionDate = 2026-10-18T12:00:00\n");
+    assert_eq!(
+        parsed,
+        Some(("/x".to_string(), "2026-10-18T12:00:00".to_string()))
+    );
+}
+
+#[test]
+fn parse_trashinfo_accepts_crlf_and_first_key_wins() {
+    let parsed = parse_trashinfo(
+        "[Trash Info]\r\nPath=/x\r\nPath=/y\r\nDeletionDate=2026-10-18T12:00:00\r\n",
+    );
+    assert_eq!(
+        parsed,
+        Some(("/x".to_string(), "2026-10-18T12:00:00".to_string()))
+    );
+}
+
+#[test]
+fn parse_trashinfo_stops_at_next_group() {
+    let parsed =
+        parse_trashinfo("[Trash Info]\nPath=/x\n[Other]\nDeletionDate=2026-10-18T12:00:00\n");
+    assert_eq!(parsed, None);
+}

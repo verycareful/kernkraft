@@ -202,3 +202,18 @@ fn delete_stops_between_items_when_cancelled() {
     assert!(!paths[0].exists());
     assert!(paths[1].exists() && paths[2].exists());
 }
+
+#[test]
+fn rename_directory_and_missing_same_name() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("d");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("f"), "v").unwrap();
+    let renamed = rename(&dir, "e").unwrap();
+    assert_eq!(fs::read_to_string(renamed.join("f")).unwrap(), "v");
+    let missing = root.path().join("missing");
+    assert!(matches!(
+        rename(&missing, "missing"),
+        Err(FsError::NotFound { .. })
+    ));
+}

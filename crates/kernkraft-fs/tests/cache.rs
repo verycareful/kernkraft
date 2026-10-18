@@ -117,3 +117,13 @@ fn staging_missing_source_is_not_found() {
     assert!(matches!(err, FsError::NotFound { .. }), "{err:?}");
     assert_eq!(fs::read_dir(cache.dir()).unwrap().count(), 0);
 }
+
+#[test]
+fn stage_copy_of_directory_fails_and_leaves_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = PrivateCache::open(&root.path().join("cache"), "kern").unwrap();
+    let dir = root.path().join("d.pdf");
+    fs::create_dir(&dir).unwrap();
+    assert!(cache.stage_copy(&dir).is_err());
+    assert_eq!(fs::read_dir(cache.dir()).unwrap().count(), 0);
+}

@@ -206,3 +206,43 @@ fn scan_stops_when_cancelled() {
     assert!(report.cancelled);
     assert!(report.entries.is_empty());
 }
+
+#[test]
+fn scan_duplicate_roots_walk_once() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("f"), "").unwrap();
+    let r = root.path().to_path_buf();
+    let report = scan(&[r.clone(), r], &ScanOptions::default(), &all, &NoProgress);
+    assert_eq!(names(&report.entries), ["f"]);
+}
+
+#[test]
+fn scan_file_root_is_unreadable() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("f");
+    fs::write(&file, "").unwrap();
+    let report = scan(
+        std::slice::from_ref(&file),
+        &ScanOptions::default(),
+        &all,
+        &NoProgress,
+    );
+    assert!(report.entries.is_empty());
+    assert_eq!(report.unreadable, [file]);
+}
+
+#[test]
+fn fifo_is_kind_other() {
+    let root = tempfile::tempdir().unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        root.path().join("pipe"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let entries = list_dir(root.path(), false).unwrap();
+    assert_eq!(entries[0].kind, EntryKind::Other);
+    assert!(!entries[0].target_is_dir);
+}

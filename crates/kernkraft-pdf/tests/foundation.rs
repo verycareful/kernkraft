@@ -6,7 +6,7 @@
 mod common;
 
 use common::*;
-use kernkraft_pdf::lopdf::Object;
+use kernkraft_pdf::lopdf::{dictionary, Object};
 use kernkraft_pdf::{
     flatten_page_tree, load, load_bytes, page_count, parse_ranges, save, to_bytes, PageRange,
     PdfError,
@@ -221,4 +221,146 @@ fn deeply_nested_object_does_not_abort() {
         body.find("2 0 obj").unwrap()
     );
     assert!(load_bytes(pdf.as_bytes()).is_err());
+}
+
+/// Root `Pages` id of a fixture being edited.
+fn root_of(doc: &kernkraft_pdf::lopdf::Document) -> kernkraft_pdf::lopdf::ObjectId {
+    doc.catalog()
+        .unwrap()
+        .get(b"Pages")
+        .unwrap()
+        .as_reference()
+        .unwrap()
+}
+
+/// ISO 32000-1, Table 30 requires `/Type /Page`, but readers meet files
+/// without it. MuPDF shows such a kid as a page, and so does the
+/// flattening every page operation runs; the page count and the page
+/// numbers the operations take must agree with them.
+#[test]
+fn untyped_page_nodes_count_once() {
+    let bytes = edited(&pdf_n(2), |doc, pages| {
+        doc.get_dictionary_mut(pages[0]).unwrap().remove(b"Type");
+    });
+    let mut doc = kernkraft_pdf::lopdf::Document::load_mem(&bytes).unwrap();
+    assert_eq!(page_count(&doc), 2, "both kids are pages");
+    let first = doc.get_pages()[&1];
+    kernkraft_pdf::rotate(&mut doc, &[1], kernkraft_pdf::Rotation::Cw90).unwrap();
+    let turned = doc
+        .get_dictionary(first)
+        .unwrap()
+        .get(b"Rotate")
+        .ok()
+        .cloned();
+    assert_eq!(
+        turned,
+        Some(Object::Integer(90)),
+        "page 1 is the page turned"
+    );
+}
+
+#[test]
+fn cyclic_page_tree_is_an_error() {
+    let bytes = edited(&pdf_n(1), |doc, _| {
+        let root = root_of(doc);
+        let dict = doc.get_dictionary_mut(root).unwrap();
+        let mut kids = dict.get(b"Kids").unwrap().as_array().unwrap().clone();
+        kids.push(Object::Reference(root));
+        dict.set("Kids", kids);
+    });
+    match load_bytes(&bytes) {
+        Ok(mut doc) => assert!(matches!(
+            flatten_page_tree(&mut doc),
+            Err(PdfError::Parse(_))
+        )),
+        Err(e) => assert!(matches!(e, PdfError::Parse(_) | PdfError::NoPages), "{e:?}"),
+    }
+}
+
+#[test]
+fn page_listed_twice_is_an_error() {
+    let bytes = edited(&pdf_n(1), |doc, pages| {
+        let root = root_of(doc);
+        let dict = doc.get_dictionary_mut(root).unwrap();
+        dict.set("Kids", vec![pages[0].into(), pages[0].into()]);
+        dict.set("Count", 2);
+    });
+    let doc = load_bytes(&bytes).unwrap();
+    assert!(matches!(
+        flatten_page_tree(&mut doc.clone()),
+        Err(PdfError::Parse(_))
+    ));
+    assert!(matches!(
+        kernkraft_pdf::extract(&doc, &[1]),
+        Err(PdfError::Parse(_))
+    ));
+}
+
+/// The flattening walks the tree recursively and stops at a fixed depth,
+/// so a tree nested past it is refused with a typed error, not a stack
+/// overflow.
+#[test]
+fn deep_tree_is_an_error_not_a_crash() {
+    const DEPTH: usize = 300;
+    let bytes = edited(&pdf_n(1), |doc, pages| {
+        let root = root_of(doc);
+        let mut child = pages[0];
+        for _ in 0..DEPTH {
+            let node = doc.add_object(dictionary! {
+                "Type" => "Pages", "Kids" => vec![child.into()], "Count" => 1,
+            });
+            doc.get_dictionary_mut(child).unwrap().set("Parent", node);
+            child = node;
+        }
+        doc.get_dictionary_mut(child).unwrap().set("Parent", root);
+        doc.get_dictionary_mut(root)
+            .unwrap()
+            .set("Kids", vec![child.into()]);
+    });
+    let mut doc = load_bytes(&bytes).unwrap();
+    assert!(matches!(
+        flatten_page_tree(&mut doc),
+        Err(PdfError::Parse(_))
+    ));
+}
+
+#[test]
+fn parse_ranges_rejects_malformed_tokens() {
+    for spec in ["1-", "-3", "1-2-3", "1--3", "a", "4294967296"] {
+        assert!(
+            matches!(parse_ranges(spec, 5), Err(PdfError::BadRange(_))),
+            "{spec:?}"
+        );
+    }
+}
+
+/// A page number is digits; `u32::from_str` also takes a leading `+`.
+#[test]
+fn parse_ranges_rejects_plus_sign() {
+    assert!(matches!(parse_ranges("+1", 5), Err(PdfError::BadRange(_))));
+}
+
+#[test]
+fn parse_ranges_keeps_overlap_and_order() {
+    assert_eq!(
+        parse_ranges("3, 1-2, 2", 3).unwrap(),
+        [range(3, 3), range(1, 2), range(2, 2)]
+    );
+}
+
+#[test]
+fn empty_and_header_only_are_parse_errors() {
+    for bytes in [&b""[..], b"%PDF-1.7\n"] {
+        assert!(
+            matches!(load_bytes(bytes), Err(PdfError::Parse(_))),
+            "{bytes:?}"
+        );
+    }
+}
+
+#[test]
+fn trailing_bytes_after_eof_load() {
+    let mut bytes = pdf_n(1);
+    bytes.extend_from_slice(b"\njunk");
+    assert_eq!(page_count(&load_bytes(&bytes).unwrap()), 1);
 }

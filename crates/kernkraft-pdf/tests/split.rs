@@ -300,3 +300,155 @@ fn split_per_page_cancel_is_reported() {
         Err(PdfError::Fs(FsError::Cancelled))
     ));
 }
+
+/// Bytes only page 2's form field draws.
+const WIDGET_APPEARANCE: &[u8] = b"0 0 1 rg WIDGET-ONLY-ON-PAGE-2";
+
+/// `pdf_n(2)` whose page 2 holds a text field: a widget annotation listed
+/// both in the page's `/Annots` and in the catalog's `/AcroForm /Fields`
+/// (ISO 32000-1, 12.7.2), drawn by its own appearance stream.
+fn with_form_field_on_page_2() -> Vec<u8> {
+    edited(&pdf_n(2), |doc, pages| {
+        let appearance = doc.add_object(kernkraft_pdf::lopdf::Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => vec![0.into(), 0.into(), 100.into(), 20.into()] },
+            WIDGET_APPEARANCE.to_vec(),
+        ));
+        let widget = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx",
+            "T" => Object::String(b"name".to_vec(), StringFormat::Literal),
+            "Rect" => vec![10.into(), 10.into(), 110.into(), 30.into()],
+            "P" => pages[1],
+            "AP" => dictionary! { "N" => appearance },
+        });
+        doc.get_dictionary_mut(pages[1])
+            .unwrap()
+            .set("Annots", vec![widget.into()]);
+        doc.catalog_mut()
+            .unwrap()
+            .set("AcroForm", dictionary! { "Fields" => vec![widget.into()] });
+    })
+}
+
+#[test]
+fn extract_drops_form_fields_of_dropped_pages() {
+    let doc = load_bytes(&with_form_field_on_page_2()).unwrap();
+    let mut out = extract(&doc, &[1]).unwrap();
+    let bytes = to_bytes(&mut out).unwrap();
+    assert!(
+        !contains(&bytes, WIDGET_APPEARANCE),
+        "page 2's field survives through /AcroForm"
+    );
+}
+
+#[test]
+fn open_action_to_dropped_page_saves_and_reloads() {
+    let bytes = edited(&pdf_n(3), |doc, pages| {
+        doc.catalog_mut()
+            .unwrap()
+            .set("OpenAction", vec![pages[2].into(), "Fit".into()]);
+    });
+    let doc = load_bytes(&bytes).unwrap();
+    let mut out = extract(&doc, &[1]).unwrap();
+    let back = load_bytes(&to_bytes(&mut out).unwrap()).unwrap();
+    assert_eq!(markers(&back), ["P1"]);
+}
+
+/// The fixture's outline item ids, in order.
+fn outline_items(doc: &kernkraft_pdf::lopdf::Document) -> Vec<kernkraft_pdf::lopdf::ObjectId> {
+    let outlines = doc
+        .catalog()
+        .unwrap()
+        .get(b"Outlines")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    let mut next = doc
+        .get_dictionary(outlines)
+        .unwrap()
+        .get(b"First")
+        .and_then(Object::as_reference)
+        .ok();
+    let mut ids = Vec::new();
+    while let Some(id) = next {
+        ids.push(id);
+        next = doc
+            .get_dictionary(id)
+            .unwrap()
+            .get(b"Next")
+            .and_then(Object::as_reference)
+            .ok();
+    }
+    ids
+}
+
+#[test]
+fn bookmark_without_title_is_numbered() {
+    let bytes = edited(&with_outline(2, &[(1, "A"), (2, "B")]), |doc, _| {
+        for id in outline_items(doc) {
+            doc.get_dictionary_mut(id).unwrap().remove(b"Title");
+        }
+    });
+    let parts = split_by_bookmarks(&load_bytes(&bytes).unwrap()).unwrap();
+    assert_eq!(summary(&parts), ["Section 1:P1", "Section 2:P2"]);
+}
+
+#[test]
+fn bookmarks_all_on_page_one_give_one_part() {
+    let doc = load_bytes(&with_outline(3, &[(1, "A"), (1, "B")])).unwrap();
+    let parts = split_by_bookmarks(&doc).unwrap();
+    assert_eq!(summary(&parts), ["A:P1,P2,P3"]);
+}
+
+#[test]
+fn bookmark_to_foreign_page_is_ignored() {
+    let bytes = edited(&with_outline(3, &[(1, "A"), (3, "C")]), |doc, _| {
+        let stray = doc.add_object(dictionary! { "Type" => "Page" });
+        let second = outline_items(doc)[1];
+        doc.get_dictionary_mut(second)
+            .unwrap()
+            .set("Dest", vec![stray.into(), "Fit".into()]);
+    });
+    let parts = split_by_bookmarks(&load_bytes(&bytes).unwrap()).unwrap();
+    assert_eq!(summary(&parts), ["A:P1,P2,P3"]);
+}
+
+#[test]
+fn named_destination_in_nested_name_tree() {
+    let bytes = edited(&with_outline(2, &[(1, "A"), (2, "B")]), |doc, pages| {
+        let leaf = doc.add_object(dictionary! {
+            "Limits" => vec![
+                Object::String(b"two".to_vec(), StringFormat::Literal),
+                Object::String(b"two".to_vec(), StringFormat::Literal),
+            ],
+            "Names" => vec![
+                Object::String(b"two".to_vec(), StringFormat::Literal),
+                vec![Object::Reference(pages[1]), "Fit".into()].into(),
+            ],
+        });
+        let mid = doc.add_object(dictionary! { "Kids" => vec![leaf.into()] });
+        let root = doc.add_object(dictionary! { "Kids" => vec![mid.into()] });
+        let second = outline_items(doc)[1];
+        doc.get_dictionary_mut(second).unwrap().set(
+            "Dest",
+            Object::String(b"two".to_vec(), StringFormat::Literal),
+        );
+        doc.catalog_mut()
+            .unwrap()
+            .set("Names", dictionary! { "Dests" => root });
+    });
+    let parts = split_by_bookmarks(&load_bytes(&bytes).unwrap()).unwrap();
+    assert_eq!(summary(&parts), ["A:P1", "B:P2"]);
+}
+
+#[test]
+fn outline_without_first_is_invalid() {
+    let bytes = edited(&pdf_n(2), |doc, _| {
+        let outlines = doc.add_object(dictionary! { "Type" => "Outlines", "Count" => 0 });
+        doc.catalog_mut().unwrap().set("Outlines", outlines);
+    });
+    let doc = load_bytes(&bytes).unwrap();
+    assert!(matches!(
+        split_by_bookmarks(&doc),
+        Err(PdfError::Invalid(_))
+    ));
+}

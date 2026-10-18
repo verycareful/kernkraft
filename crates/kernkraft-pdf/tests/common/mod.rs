@@ -7,6 +7,8 @@
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod corpus;
+
 use kernkraft_pdf::lopdf::{dictionary, Document, Object, ObjectId, Stream, StringFormat};
 
 pub const NESTED_MEDIABOX: [i64; 4] = [0, 0, 200, 300];

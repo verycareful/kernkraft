@@ -134,3 +134,20 @@ fn user_dirs_reject_non_utf8_file() {
     let err = user_dirs(&base_with_config(config.path())).unwrap_err();
     assert!(matches!(err, kernkraft_fs::FsError::Io { .. }), "{err:?}");
 }
+
+/// `user-dirs.dirs` is shell assignments: a later line wins.
+#[test]
+fn user_dirs_last_duplicate_wins() {
+    let parsed = parse_user_dirs(
+        "XDG_DOCUMENTS_DIR=\"$HOME/one\"\nXDG_DOCUMENTS_DIR=\"$HOME/two\"\n",
+        Path::new("/h"),
+    );
+    assert_eq!(parsed["DOCUMENTS"], PathBuf::from("/h/two"));
+}
+
+#[test]
+fn user_dirs_home_alone_and_indented_lines() {
+    let parsed = parse_user_dirs("   XDG_DESKTOP_DIR=\"$HOME\"\n\t# c\n", Path::new("/h"));
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed["DESKTOP"], PathBuf::from("/h"));
+}

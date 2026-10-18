@@ -160,3 +160,22 @@ fn remove_refuses_all_pages() {
     ));
     assert_eq!(page_count(&doc), 2);
 }
+
+#[test]
+fn rotate_reads_referenced_real_and_negative_values() {
+    let referenced = edited(&pdf_n(1), |doc, pages| {
+        let value = doc.add_object(Object::Integer(90));
+        doc.get_dictionary_mut(pages[0])
+            .unwrap()
+            .set("Rotate", Object::Reference(value));
+    });
+    for (bytes, expected) in [
+        (referenced, 180),
+        (with_rotate(Object::Real(90.0)), 180),
+        (with_rotate(Object::Integer(-90)), 0),
+    ] {
+        let mut doc = load_bytes(&bytes).unwrap();
+        rotate(&mut doc, &[], Rotation::Cw90).unwrap();
+        assert_eq!(rotation(&doc, 1), Some(Object::Integer(expected)));
+    }
+}

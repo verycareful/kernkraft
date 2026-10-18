@@ -448,3 +448,188 @@ fn move_across_devices_copies_then_deletes() {
         Path::new("sub/f")
     );
 }
+
+fn make_fifo(path: &Path) {
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        path,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+}
+
+#[test]
+fn copy_fifo_fails_others_continue() {
+    let s = setup();
+    let fifo = s.src.join("pipe");
+    make_fifo(&fifo);
+    let file = s.src.join("f");
+    fs::write(&file, "v").unwrap();
+    let report = copy(&[fifo.clone(), file.clone()], &s.dest, &never, &NoProgress).unwrap();
+    assert!(matches!(
+        &report.failed[..],
+        [(p, FsError::Io { source, .. })] if p == &fifo && source.kind() == std::io::ErrorKind::Unsupported
+    ));
+    assert_eq!(report.done.len(), 1);
+    assert_eq!(names(&s.dest), ["f"]);
+}
+
+#[test]
+fn copy_onto_dangling_symlink_asks() {
+    let s = setup();
+    let file = s.src.join("f");
+    fs::write(&file, "v").unwrap();
+    symlink("nowhere", s.dest.join("f")).unwrap();
+    let asked = AtomicU32::new(0);
+    let skip = |_: &Path, _: &Path| {
+        asked.fetch_add(1, Ordering::SeqCst);
+        Conflict::Skip
+    };
+    let report = copy(std::slice::from_ref(&file), &s.dest, &skip, &NoProgress).unwrap();
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert_eq!(report.skipped, [file]);
+    assert_eq!(
+        fs::read_link(s.dest.join("f")).unwrap(),
+        Path::new("nowhere")
+    );
+}
+
+#[test]
+fn copy_read_only_tree_keeps_modes() {
+    let s = setup();
+    let dir = s.src.join("ro");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("f"), "v").unwrap();
+    fs::set_permissions(dir.join("f"), fs::Permissions::from_mode(0o444)).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    let report = copy(std::slice::from_ref(&dir), &s.dest, &never, &NoProgress).unwrap();
+    let copied = s.dest.join("ro");
+    let mode = |p: &Path| fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777;
+    let modes = (mode(&copied), mode(&copied.join("f")));
+    let contents = fs::read_to_string(copied.join("f")).ok();
+    for d in [&dir, &copied] {
+        let _ = fs::set_permissions(d, fs::Permissions::from_mode(0o755));
+    }
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert_eq!(modes, (0o555, 0o444));
+    assert_eq!(contents.as_deref(), Some("v"));
+}
+
+#[test]
+fn hardlinks_copy_as_separate_files() {
+    let s = setup();
+    let dir = s.src.join("d");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("a"), "v").unwrap();
+    fs::hard_link(dir.join("a"), dir.join("b")).unwrap();
+    copy(std::slice::from_ref(&dir), &s.dest, &never, &NoProgress).unwrap();
+    let (a, b) = (s.dest.join("d/a"), s.dest.join("d/b"));
+    assert_ne!(
+        fs::metadata(&a).unwrap().ino(),
+        fs::metadata(&b).unwrap().ino()
+    );
+    fs::write(&a, "changed").unwrap();
+    assert_eq!(fs::read_to_string(&b).unwrap(), "v");
+}
+
+/// Cancels once a report names `stage`.
+struct CancelAt {
+    stage: PathBuf,
+    hit: AtomicBool,
+}
+
+impl Progress for CancelAt {
+    fn report(&self, _done: u64, _total: u64, stage: &str) {
+        if Path::new(stage) == self.stage {
+            self.hit.store(true, Ordering::SeqCst);
+        }
+    }
+    fn is_cancelled(&self) -> bool {
+        self.hit.load(Ordering::SeqCst)
+    }
+}
+
+#[test]
+fn cancel_during_second_source_keeps_first() {
+    let s = setup();
+    let (first, second) = (s.src.join("a"), s.src.join("b"));
+    fs::write(&first, vec![1u8; MIB]).unwrap();
+    fs::write(&second, vec![2u8; 2 * MIB]).unwrap();
+    let progress = CancelAt {
+        stage: second.clone(),
+        hit: AtomicBool::new(false),
+    };
+    let report = copy(&[first.clone(), second], &s.dest, &never, &progress).unwrap();
+    assert!(report.cancelled);
+    assert_eq!(report.done, [(first, Some(s.dest.join("a")))]);
+    assert_eq!(names(&s.dest), ["a"]);
+}
+
+#[derive(Default)]
+struct Record(Mutex<Vec<(u64, u64)>>);
+
+impl Progress for Record {
+    fn report(&self, done: u64, total: u64, _stage: &str) {
+        self.0.lock().unwrap().push((done, total));
+    }
+}
+
+#[test]
+fn progress_is_monotonic_and_bounded() {
+    let s = setup();
+    let sizes = [0, 5, 2 * MIB + MIB / 2];
+    let sources: Vec<PathBuf> = sizes
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| {
+            let p = s.src.join(format!("f{i}"));
+            fs::write(&p, vec![0u8; n]).unwrap();
+            p
+        })
+        .collect();
+    let record = Record::default();
+    copy(&sources, &s.dest, &never, &record).unwrap();
+    let total: u64 = sizes.iter().map(|&n| n as u64).sum();
+    let seen = record.0.into_inner().unwrap();
+    assert!(seen.iter().all(|&(d, t)| t == total && d <= t), "{seen:?}");
+    assert!(seen.windows(2).all(|w| w[0].0 <= w[1].0), "{seen:?}");
+    assert_eq!(seen.last(), Some(&(total, total)));
+}
+
+#[test]
+fn move_symlink_moves_the_link() {
+    let s = setup();
+    let link = s.src.join("l");
+    symlink("target-text", &link).unwrap();
+    move_items(std::slice::from_ref(&link), &s.dest, &never, &NoProgress).unwrap();
+    assert!(fs::symlink_metadata(&link).is_err());
+    assert_eq!(
+        fs::read_link(s.dest.join("l")).unwrap(),
+        Path::new("target-text")
+    );
+}
+
+#[test]
+fn copy_keeps_user_xattr() {
+    const NAME: &str = "user.kernkraft.test";
+    let root = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let (src, dest) = (root.path().join("src"), root.path().join("dest"));
+    fs::create_dir(&src).unwrap();
+    fs::create_dir(&dest).unwrap();
+    let file = src.join("f");
+    fs::write(&file, "v").unwrap();
+    match rustix::fs::setxattr(&file, NAME, b"v", rustix::fs::XattrFlags::empty()) {
+        Ok(()) => {}
+        Err(rustix::io::Errno::OPNOTSUPP) => {
+            eprintln!("skipped: user xattrs unsupported here");
+            return;
+        }
+        Err(e) => panic!("setxattr: {e}"),
+    }
+    copy(std::slice::from_ref(&file), &dest, &never, &NoProgress).unwrap();
+    let mut buf = [0u8; 16];
+    let n = rustix::fs::getxattr(dest.join("f"), NAME, &mut buf[..]).ok();
+    assert_eq!(n.map(|n| &buf[..n]), Some(&b"v"[..]));
+}

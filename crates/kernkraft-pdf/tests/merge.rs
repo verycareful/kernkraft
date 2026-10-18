@@ -148,3 +148,28 @@ fn merge_cancel_is_reported() {
         Err(PdfError::Fs(FsError::Cancelled))
     ));
 }
+
+#[test]
+fn merge_same_document_twice() {
+    let doc = load_bytes(&pdf_n(2)).unwrap();
+    let mut out = merge(vec![doc.clone(), doc], &NoProgress).unwrap();
+    assert_eq!(markers(&out), ["P1", "P2", "P1", "P2"]);
+    common::corpus::assert_no_dangling(&out, "merged");
+    assert_eq!(
+        page_count(&load_bytes(&to_bytes(&mut out).unwrap()).unwrap()),
+        4
+    );
+}
+
+#[test]
+fn merge_version_handles_unparsable() {
+    let with_version = |v: &str| {
+        let mut doc = load_bytes(&pdf_n(1)).unwrap();
+        doc.version = v.to_string();
+        doc
+    };
+    let out = merge(vec![with_version("2.0"), with_version("abc")], &NoProgress).unwrap();
+    assert_eq!(out.version, "2.0");
+    let out = merge(vec![with_version("abc"), with_version("1.3")], &NoProgress).unwrap();
+    assert_eq!(out.version, "1.4", "the floor when every input is older");
+}

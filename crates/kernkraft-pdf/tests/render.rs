@@ -139,3 +139,95 @@ fn render_refuses_encrypted() {
     let err = render_page(&path, 1, 100).unwrap_err();
     assert!(matches!(err, PdfError::Encrypted), "{err:?}");
 }
+
+const CORPUS_WIDTH: u32 = 100;
+
+// The rendered height is the width times the page's aspect ratio, rounded
+// to the nearest pixel, as Kern Android's `renderPage` computes it (the
+// contract `render_page` matches).
+
+fn number(o: &kernkraft_pdf::lopdf::Object) -> f32 {
+    match o {
+        kernkraft_pdf::lopdf::Object::Integer(i) => *i as f32,
+        kernkraft_pdf::lopdf::Object::Real(r) => *r,
+        other => panic!("not a number: {other:?}"),
+    }
+}
+
+fn rect(o: Option<kernkraft_pdf::lopdf::Object>) -> Option<[f32; 4]> {
+    let items = o?.as_array().ok()?.clone();
+    let v: Vec<f32> = items.iter().map(number).collect();
+    Some([
+        v[0].min(v[2]),
+        v[1].min(v[3]),
+        v[0].max(v[2]),
+        v[1].max(v[3]),
+    ])
+}
+
+/// Displayed size of page `n` in points: the CropBox clipped to the
+/// MediaBox (ISO 32000-1, 14.11.2), the CropBox defaulting to the
+/// MediaBox, with width and height swapped for a quarter or three-quarter
+/// turn (7.7.3.3, `/Rotate`).
+fn displayed_size(doc: &kernkraft_pdf::lopdf::Document, n: u32) -> (f32, f32) {
+    let media = rect(corpus::effective(doc, n, b"MediaBox")).expect("every page has a MediaBox");
+    let crop = rect(corpus::effective(doc, n, b"CropBox")).unwrap_or(media);
+    let w = crop[2].min(media[2]) - crop[0].max(media[0]);
+    let h = crop[3].min(media[3]) - crop[1].max(media[1]);
+    let turns = match corpus::effective(doc, n, b"Rotate") {
+        Some(o) => number(&o) as i64,
+        None => 0,
+    };
+    if turns.rem_euclid(180) == 90 {
+        (h, w)
+    } else {
+        (w, h)
+    }
+}
+
+#[test]
+fn every_corpus_page_renders() {
+    let dir = tempfile::tempdir().unwrap();
+    for f in corpus::corpus() {
+        let doc = kernkraft_pdf::load_bytes(&f.bytes).unwrap();
+        let path = write(&dir, &format!("{}.pdf", f.name), &f.bytes);
+        let renderer = Renderer::open(&path).unwrap();
+        assert_eq!(renderer.page_count(), f.pages, "{}", f.name);
+        for n in 1..=f.pages {
+            let (w, h) = displayed_size(&doc, n);
+            let page = renderer.render_page(n, CORPUS_WIDTH).unwrap();
+            let expected = (h * CORPUS_WIDTH as f32 / w).round() as u32;
+            assert_eq!(
+                (page.width, page.height),
+                (CORPUS_WIDTH, expected),
+                "{} page {n}",
+                f.name
+            );
+        }
+    }
+}
+
+#[test]
+fn rotated_output_renders_swapped() {
+    const LETTER: (f32, f32) = (612.0, 792.0);
+    let dir = tempfile::tempdir().unwrap();
+    let mut doc = kernkraft_pdf::load_bytes(&pdf_n(1)).unwrap();
+    kernkraft_pdf::rotate(&mut doc, &[1], kernkraft_pdf::Rotation::Cw90).unwrap();
+    let path = dir.path().join("turned.pdf");
+    kernkraft_pdf::save(&mut doc, &path, None).unwrap();
+    let page = render_page(&path, 1, CORPUS_WIDTH).unwrap();
+    let expected = (LETTER.0 * CORPUS_WIDTH as f32 / LETTER.1).round() as u32;
+    assert_eq!((page.width, page.height), (CORPUS_WIDTH, expected));
+}
+
+#[test]
+fn flattened_nested_page_uses_inherited_cropbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut doc = kernkraft_pdf::load_bytes(&nested_pdf()).unwrap();
+    kernkraft_pdf::flatten_page_tree(&mut doc).unwrap();
+    let path = dir.path().join("flat.pdf");
+    kernkraft_pdf::save(&mut doc, &path, None).unwrap();
+    // NESTED_CROPBOX is square and lies inside NESTED_MEDIABOX.
+    let page = render_page(&path, 2, CORPUS_WIDTH).unwrap();
+    assert_eq!((page.width, page.height), (CORPUS_WIDTH, CORPUS_WIDTH));
+}

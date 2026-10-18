@@ -11,7 +11,7 @@
 //! hangs all pages directly off the root `Pages` node. After that, any
 //! reordering of the root's `Kids` keeps every page as it was.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use lopdf::{Dictionary, Document, Object, ObjectId};
 
@@ -220,4 +220,46 @@ fn collect(
         collect(doc, kid_id, &here, depth + 1, visited, pages)?;
     }
     Ok(())
+}
+
+/// Gives every object a new id, consecutive from `start` in the order of
+/// the old ids, generation 0, and rewrites every reference (objects and
+/// trailer) to match. Returns the first id left free.
+pub(crate) fn renumber(doc: &mut Document, start: u32) -> Result<u32, PdfError> {
+    let overflow = || PdfError::Invalid("too many objects to renumber".to_string());
+    let mut map: HashMap<ObjectId, ObjectId> = HashMap::with_capacity(doc.objects.len());
+    let mut next = start;
+    for &old in doc.objects.keys() {
+        map.insert(old, (next, 0));
+        next = next.checked_add(1).ok_or_else(overflow)?;
+    }
+    let objects = std::mem::take(&mut doc.objects);
+    for (old, mut object) in objects {
+        remap_references(&mut object, &map);
+        doc.objects.insert(map[&old], object);
+    }
+    for (_, value) in doc.trailer.iter_mut() {
+        remap_references(value, &map);
+    }
+    doc.max_id = next.saturating_sub(1);
+    Ok(next)
+}
+
+/// Rewrites references through `map`. A reference to an object the
+/// document does not hold has no new id; it becomes `null`, which is what
+/// ISO 32000-1:2008, 7.3.10 says such a reference means.
+fn remap_references(object: &mut Object, map: &HashMap<ObjectId, ObjectId>) {
+    match object {
+        Object::Reference(id) => match map.get(id) {
+            Some(new) => *id = *new,
+            None => *object = Object::Null,
+        },
+        Object::Array(items) => items.iter_mut().for_each(|o| remap_references(o, map)),
+        Object::Dictionary(dict) => dict.iter_mut().for_each(|(_, o)| remap_references(o, map)),
+        Object::Stream(stream) => stream
+            .dict
+            .iter_mut()
+            .for_each(|(_, o)| remap_references(o, map)),
+        _ => {}
+    }
 }

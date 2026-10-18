@@ -2,7 +2,7 @@
 <!-- Language -->
 [![Rust](https://img.shields.io/badge/Rust-1.99-000000?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 <!-- Release -->
-[![Version](https://img.shields.io/badge/Version-0.1.0.0.1%20alpha-informational?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/Version-0.1.0.0.2%20alpha-informational?style=flat-square)](VERSION)
 <!-- Licence and status -->
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)
@@ -45,7 +45,8 @@ Unlike the plain GPL, the AGPL extends that obligation to network use: if you
 run a modified version and let others interact with it over a network, you
 must offer them the source of your modified version.
 
-Code moved from [Qyra](https://github.com/zParik/Qyra) keeps its original
-copyright line in each file's header.
+Every file is licensed under AGPL-3.0-or-later. Files holding code moved
+from [Qyra](https://github.com/zParik/Qyra) also name the Qyra authors as
+copyright holders in their header, since they wrote it.
 
 See the [LICENSE](LICENSE) file for the full license text.

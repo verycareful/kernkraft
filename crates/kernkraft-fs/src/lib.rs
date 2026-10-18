@@ -7,11 +7,13 @@
 //! Every public function is synchronous, takes paths and owned data, and
 //! reports failure as [`FsError`]. Long operations take a [`Progress`].
 
+mod atomic;
 mod error;
 mod progress;
 mod version;
 mod xdg;
 
+pub use atomic::{write_atomic, write_bytes_atomic, FileStamp};
 pub use error::FsError;
 pub use progress::{NoProgress, Progress};
 pub use version::VERSION_LABEL;

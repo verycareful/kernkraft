@@ -209,3 +209,18 @@ pub fn page_attr(doc: &Document, n: u32, key: &[u8]) -> Option<Object> {
 pub fn rect_of(r: [i64; 4]) -> Object {
     rect(r)
 }
+
+/// Edits the catalog of a fixture: `edit` gets the document and the page
+/// ids in order, and may add objects and catalog entries.
+pub fn edited(bytes: &[u8], edit: impl FnOnce(&mut Document, &[ObjectId])) -> Vec<u8> {
+    let mut doc = Document::load_mem(bytes).unwrap();
+    let pages: Vec<ObjectId> = doc.get_pages().into_values().collect();
+    edit(&mut doc, &pages);
+    let mut out = Vec::new();
+    doc.save_to(&mut out).unwrap();
+    out
+}
+
+pub fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}

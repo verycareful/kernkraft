@@ -11,7 +11,7 @@
 //! hangs all pages directly off the root `Pages` node. After that, any
 //! reordering of the root's `Kids` keeps every page as it was.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use lopdf::{Dictionary, Document, Object, ObjectId};
 
@@ -67,8 +67,81 @@ pub(crate) fn set_pages(
     pages: &[ObjectId],
 ) -> Result<(), PdfError> {
     write_kids(doc, root, pages)?;
-    doc.prune_objects();
+    prune(doc);
     Ok(())
+}
+
+/// Keeps only `keep` (page ids from [`flatten`], in the order given) and
+/// unlinks every other page: each reference to a dropped page, wherever it
+/// sits (a link annotation's destination, a structure element, the open
+/// action), becomes `null`, so the dropped pages and everything only they
+/// used (content streams, images, fonts) are pruned from the result.
+pub(crate) fn keep_pages(
+    doc: &mut Document,
+    root: ObjectId,
+    all: &[ObjectId],
+    keep: &[ObjectId],
+) -> Result<(), PdfError> {
+    let kept: HashSet<ObjectId> = keep.iter().copied().collect();
+    let dropped: HashSet<ObjectId> = all
+        .iter()
+        .copied()
+        .filter(|id| !kept.contains(id))
+        .collect();
+    if !dropped.is_empty() {
+        for object in doc.objects.values_mut() {
+            null_references(object, &dropped);
+        }
+        for (_, value) in doc.trailer.iter_mut() {
+            null_references(value, &dropped);
+        }
+    }
+    set_pages(doc, root, keep)
+}
+
+fn null_references(object: &mut Object, dropped: &HashSet<ObjectId>) {
+    match object {
+        Object::Reference(id) if dropped.contains(id) => *object = Object::Null,
+        Object::Array(items) => items.iter_mut().for_each(|o| null_references(o, dropped)),
+        Object::Dictionary(dict) => dict
+            .iter_mut()
+            .for_each(|(_, o)| null_references(o, dropped)),
+        Object::Stream(stream) => stream
+            .dict
+            .iter_mut()
+            .for_each(|(_, o)| null_references(o, dropped)),
+        _ => {}
+    }
+}
+
+/// Removes every object not reachable from the trailer. Same result as
+/// `lopdf::Document::prune_objects`, in linear time.
+pub(crate) fn prune(doc: &mut Document) {
+    let mut reachable: HashSet<ObjectId> = HashSet::new();
+    let mut queue: VecDeque<ObjectId> = VecDeque::new();
+    let push_refs = |object: &Object, queue: &mut VecDeque<ObjectId>| {
+        let mut stack = vec![object];
+        while let Some(o) = stack.pop() {
+            match o {
+                Object::Reference(id) => queue.push_back(*id),
+                Object::Array(items) => stack.extend(items.iter()),
+                Object::Dictionary(dict) => stack.extend(dict.iter().map(|(_, v)| v)),
+                Object::Stream(stream) => stack.extend(stream.dict.iter().map(|(_, v)| v)),
+                _ => {}
+            }
+        }
+    };
+    for (_, value) in doc.trailer.iter() {
+        push_refs(value, &mut queue);
+    }
+    while let Some(id) = queue.pop_front() {
+        if reachable.insert(id) {
+            if let Some(object) = doc.objects.get(&id) {
+                push_refs(object, &mut queue);
+            }
+        }
+    }
+    doc.objects.retain(|id, _| reachable.contains(id));
 }
 
 fn write_kids(doc: &mut Document, root: ObjectId, pages: &[ObjectId]) -> Result<(), PdfError> {

@@ -13,6 +13,7 @@
 mod doc;
 mod error;
 mod ranges;
+mod split;
 mod tree;
 
 pub use lopdf;
@@ -21,4 +22,5 @@ pub use doc::{load, load_bytes, page_count, save, to_bytes};
 pub use error::PdfError;
 pub use kernkraft_fs::FileStamp;
 pub use ranges::{parse_ranges, PageRange};
+pub use split::{extract, split_by_bookmarks, split_per_page, split_ranges, START_PART_TITLE};
 pub use tree::flatten_page_tree;

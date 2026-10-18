@@ -10,15 +10,17 @@ resolver = "2"
 # commit index on a dev branch) is written as its first three parts with the
 # rest as build metadata: label 0.1.0.0 is 0.1.0+0, label 0.1.0.0.3 is
 # 0.1.0+0.3. The kernkraft-fs version test checks the two agree.
-version = "0.1.0+0.6"
+version = "0.1.0+0.7"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
 repository = "https://github.com/verycareful/kernkraft"
+# Consumers pin kernkraft by git rev; it is not published to a registry.
+publish = false
 
 [workspace.dependencies]
 kernkraft-fs = { path = "crates/kernkraft-fs" }
-lopdf = "0.40"
+lopdf = { version = "0.45", default-features = false }
 mupdf = "0.6"
 thiserror = "2"
 tempfile = "3"

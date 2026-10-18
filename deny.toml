@@ -54,3 +54,15 @@ allow = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+# The mupdf crates declare "AGPL-3.0", a deprecated SPDX identifier that
+# meant the -only form. MuPDF itself is AGPL-3.0 (https://mupdf.com/licensing).
+[[licenses.clarify]]
+crate = "mupdf"
+expression = "AGPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mupdf-sys"
+expression = "AGPL-3.0-only"
+license-files = []

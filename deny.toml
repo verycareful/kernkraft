@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+# kernkraft never touches the network: HTTP clients, async runtimes and raw
+# socket crates are banned outright. tauri and jni are banned here and will be
+# re-allowed only for their adapter crates (kernkraft-tauri, kernkraft-jni)
+# through `wrappers`, so no core crate can pull them in.
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    { name = "reqwest" },
+    { name = "hyper" },
+    { name = "ureq" },
+    { name = "curl" },
+    { name = "isahc" },
+    { name = "surf" },
+    { name = "attohttpc" },
+    { name = "tokio" },
+    { name = "async-std" },
+    { name = "socket2" },
+    { name = "tauri" },
+    { name = "jni" },
+]
+
+[licenses]
+confidence-threshold = 0.9
+# The list covers licences kernkraft accepts, not only those in use today.
+unused-allowed-license = "allow"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

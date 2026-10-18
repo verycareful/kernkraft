@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+# Cargo takes strict semver, so the label in VERSION (four parts, plus a
+# commit index on a dev branch) is written as its first three parts with the
+# rest as build metadata: label 0.1.0.0 is 0.1.0+0, label 0.1.0.0.3 is
+# 0.1.0+0.3. The kernkraft-fs version test checks the two agree.
+version = "0.1.0+0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+rust-version = "1.99"
+repository = "https://github.com/verycareful/kernkraft"
+
+[workspace.dependencies]
+kernkraft-fs = { path = "crates/kernkraft-fs" }
+lopdf = "0.40"
+mupdf = "0.6"
+thiserror = "2"
+tempfile = "3"
+rustix = { version = "1", features = ["fs", "process"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+percent-encoding = "2"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

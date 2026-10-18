@@ -10,7 +10,9 @@
 mod error;
 mod progress;
 mod version;
+mod xdg;
 
 pub use error::FsError;
 pub use progress::{NoProgress, Progress};
 pub use version::VERSION_LABEL;
+pub use xdg::{base_dirs, base_dirs_from, parse_user_dirs, user_dirs, BaseDirs, UserDirs};

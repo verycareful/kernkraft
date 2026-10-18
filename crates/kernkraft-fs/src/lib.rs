@@ -10,6 +10,7 @@
 mod atomic;
 mod error;
 mod naming;
+mod ops;
 mod progress;
 mod sys;
 mod trash;
@@ -18,6 +19,9 @@ mod xdg;
 
 pub use atomic::{write_atomic, write_bytes_atomic, FileStamp};
 pub use error::FsError;
+pub use ops::{
+    create_dir, create_file, delete_permanently, rename, unique_name, validate_name, OpReport,
+};
 pub use progress::{NoProgress, Progress};
 pub use trash::{
     choose_target, decode_trash_path, encode_trash_path, parse_trashinfo, Trash, TrashListing,

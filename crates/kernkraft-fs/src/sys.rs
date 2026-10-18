@@ -33,9 +33,10 @@ pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-/// The real user id of this process.
+/// The effective user id of this process: the owner of everything it
+/// creates, and so the uid ownership checks compare against.
 pub(crate) fn uid() -> u32 {
-    rustix::process::getuid().as_raw()
+    rustix::process::geteuid().as_raw()
 }
 
 /// The directory holding `path`; a bare file name lives in `.`.

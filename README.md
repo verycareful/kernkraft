@@ -2,7 +2,7 @@
 <!-- Language -->
 [![Rust](https://img.shields.io/badge/Rust-1.99-000000?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 <!-- Release -->
-[![Version](https://img.shields.io/badge/Version-0.1.0.0.4-informational?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/Version-0.1.0.0.5-informational?style=flat-square)](VERSION)
 <!-- Licence and status -->
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)

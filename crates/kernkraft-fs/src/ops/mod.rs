@@ -5,12 +5,14 @@
 //! replaces an existing entry unless the caller asked for exactly that.
 
 mod names;
+mod transfer;
 
 use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 pub use names::{unique_name, validate_name};
+pub use transfer::{copy, move_items, Conflict};
 
 use crate::sys::rename_noreplace;
 use crate::{FsError, Progress};

@@ -16,6 +16,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::sys::parent_dir;
 use crate::FsError;
 
 /// Linux's `MAXSYMLINKS` (include/linux/namei.h): the kernel gives up with
@@ -182,12 +183,4 @@ fn resolve_symlinks(path: &Path) -> io::Result<PathBuf> {
         }
     }
     Err(io::Error::from(rustix::io::Errno::LOOP))
-}
-
-/// The directory holding `path`; a bare file name lives in `.`.
-fn parent_dir(path: &Path) -> &Path {
-    match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    }
 }

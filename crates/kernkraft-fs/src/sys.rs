@@ -37,3 +37,11 @@ pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
 pub(crate) fn uid() -> u32 {
     rustix::process::getuid().as_raw()
 }
+
+/// The directory holding `path`; a bare file name lives in `.`.
+pub(crate) fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    }
+}

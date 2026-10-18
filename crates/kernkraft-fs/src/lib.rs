@@ -20,7 +20,8 @@ mod xdg;
 pub use atomic::{write_atomic, write_bytes_atomic, FileStamp};
 pub use error::FsError;
 pub use ops::{
-    create_dir, create_file, delete_permanently, rename, unique_name, validate_name, OpReport,
+    copy, create_dir, create_file, delete_permanently, move_items, rename, unique_name,
+    validate_name, Conflict, OpReport,
 };
 pub use progress::{NoProgress, Progress};
 pub use trash::{

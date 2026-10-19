@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+# Publishes a GitHub Release for a version tag, with the notes taken from the
+# matching CHANGELOG.md section so the release page and the changelog are the
+# same text. kernkraft is a library workspace, so there are no binaries to
+# attach.
+#
+# Separate from ci.yml: it fires only when a version tag is pushed, or when it
+# is dispatched by hand to republish an existing tag.
+name: Release
+
+on:
+  push:
+    # Four-component version tags only, e.g. 0.1.1.0, with no prefix. A tag
+    # that is not a version publishes nothing.
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to publish a release for"
+        required: true
+        type: string
+
+# Creating a release writes to the repository; nothing else needs a token.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: publish release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Resolve the tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            echo "value=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.tag.outputs.value }}
+
+      # The tag must name the tree it points at: VERSION holds the full label.
+      - name: Check the tag matches the tree
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          TREE=$(cat VERSION)
+          echo "tag:  $TAG"
+          echo "tree: $TREE"
+          if [ "$TAG" != "$TREE" ]; then
+            echo "::error::tag $TAG does not match VERSION $TREE"
+            exit 1
+          fi
+
+      # Fails when the section is missing or empty, so a release page is never
+      # published with nothing on it.
+      - name: Extract release notes from CHANGELOG.md
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          python3 -I scripts/changelog_section.py "$TAG" CHANGELOG.md \
+            > release-notes.md
+          echo "notes that will be published:"
+          cat release-notes.md
+
+      # gh ships on the runner, so no third-party action is needed.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file release-notes.md \
+            --verify-tag

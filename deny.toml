@@ -2,9 +2,12 @@
 # Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
 # kernkraft never touches the network: HTTP clients, async runtimes and raw
-# socket crates are banned outright. tauri and jni are banned here and will be
-# re-allowed only for their adapter crates (kernkraft-tauri, kernkraft-jni)
-# through `wrappers`, so no core crate can pull them in.
+# socket crates are banned outright. tauri is banned except as a dependency of
+# kernkraft-tauri, so no core crate can pull it in; jni is banned outright
+# until kernkraft-jni exists. tokio is banned except as a dependency of the
+# tauri crates (tauri, its runtime and windowing crates) and kernkraft-tauri,
+# which use it for the app runtime and open no socket. `wrappers` names the
+# only crates allowed to depend on a banned crate.
 
 [graph]
 all-features = true
@@ -24,10 +27,10 @@ deny = [
     { name = "isahc" },
     { name = "surf" },
     { name = "attohttpc" },
-    { name = "tokio" },
+    { name = "tokio", wrappers = ["tauri", "tauri-runtime", "tauri-runtime-wry", "wry", "tao", "kernkraft-tauri"] },
     { name = "async-std" },
     { name = "socket2" },
-    { name = "tauri" },
+    { name = "tauri", wrappers = ["kernkraft-tauri"] },
     { name = "jni" },
 ]
 

@@ -8,7 +8,7 @@
 [![image](https://img.shields.io/badge/image-0.25-informational?style=flat-square)](https://crates.io/crates/image)
 [![resvg](https://img.shields.io/badge/resvg-0.48-informational?style=flat-square)](https://crates.io/crates/resvg)
 <!-- Release -->
-[![Version](https://img.shields.io/badge/Version-0.1.1.0.11-informational?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/Version-0.1.1.0.12-informational?style=flat-square)](VERSION)
 <!-- Licence and status -->
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)
@@ -31,6 +31,7 @@ kernkraft is in alpha: its public API will change.
 | `kernkraft-text` | core | text decode, UTF-8 BOM and line-ending preservation, read-only reasons, atomic save |
 | `kernkraft-xdg-apps` | core | MIME type lookup (Shared MIME-info Database), desktop entries, default applications |
 | `kernkraft-thumb` | core | image thumbnails (PNG, JPEG, WebP, GIF, SVG) and the freedesktop thumbnail cache shared with other file managers |
+| `kernkraft-theme` | system theme sources (Hyprland `hyprtoolkit.conf`, portal appearance, GTK, fontconfig), Kern's design tokens and the token resolver that emits CSS custom properties |
 
 Core crates never depend on a UI or platform crate (`tauri`, `jni`); CI
 checks every core crate's dependency tree. No crate may depend on an HTTP,

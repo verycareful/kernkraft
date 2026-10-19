@@ -98,6 +98,7 @@ impl Drop for Watcher {
 /// session bus, calling `on_change` with a fresh [`Gathered`] after each
 /// burst of changes. See [`watch_with`].
 ///
+/// The bus is reached over its Unix socket only (see `kernkraft-bus`).
 /// Without a session bus the file watch still runs and the portal is left
 /// out, the same as a bus with no portal on it. Any other failure to reach
 /// the bus is an error.
@@ -105,12 +106,14 @@ pub fn watch(
     base: &BaseDirs,
     on_change: Box<dyn Fn(Gathered) + Send>,
 ) -> Result<Watcher, ThemeError> {
-    let conn = match Connection::session() {
+    // Only a missing bus is tolerated; every other failure, including a
+    // non-Unix address, is reported.
+    let conn = match kernkraft_bus::session() {
         Ok(c) => Some(c),
-        Err(zbus::Error::Address(_)) => None,
-        Err(zbus::Error::InputOutput(e))
+        Err(kernkraft_bus::BusError::NoAddress(_)) => None,
+        Err(kernkraft_bus::BusError::Connect { source, .. })
             if matches!(
-                e.kind(),
+                source.kind(),
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
             ) =>
         {

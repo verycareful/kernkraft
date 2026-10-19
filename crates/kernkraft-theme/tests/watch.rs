@@ -196,7 +196,7 @@ fn gather_reports_unreadable_sources() {
 /// optional: `Ok(None)` is a valid answer.
 #[test]
 fn live_bus_read_and_drop_ends_portal_thread() {
-    let Ok(conn) = zbus::blocking::Connection::session() else {
+    let Ok(conn) = kernkraft_bus::session() else {
         eprintln!("no session bus: skipping");
         return;
     };

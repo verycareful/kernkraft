@@ -16,6 +16,8 @@ all-features = true
 yanked = "deny"
 # zbus 5 is the newest release whose dependency tree opens no socket crate:
 # zbus 6 folds in zbus_utils and always pulls socket2, which is banned below.
+# zbus's TCP transport code is compiled in but unreachable: connections are
+# only built from a Unix stream that kernkraft-bus opens itself.
 # These three advisories only say that zvariant, zvariant_derive and
 # zbus_names moved into zbus 6; none reports a vulnerability.
 ignore = [

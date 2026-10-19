@@ -16,6 +16,7 @@ thiserror.workspace = true
 serde.workspace = true
 kernkraft-fs.workspace = true
 zbus.workspace = true
+kernkraft-bus.workspace = true
 notify.workspace = true
 
 [dev-dependencies]

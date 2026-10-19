@@ -60,9 +60,11 @@ fn strip_comment(line: &str) -> String {
 const MAX_VALUE_LEN: usize = 4096;
 
 /// Most bytes of variable definitions held at once. A real file defines a
-/// handful of short variables; 1 MiB matches the file size cap, so no input
-/// the reader accepts can be refused for this alone, while memory stays
-/// bounded for text handed straight to [`parse_hyprtoolkit`].
+/// handful of short variables, so it stays far below this. 1 MiB matches the
+/// file size cap, yet a file under that cap can still reach it (a few hundred
+/// lines, each defining a variable of [`MAX_VALUE_LEN`] bytes through
+/// doubling); a definition that would pass it is ignored and listed. The cap
+/// bounds memory for text handed straight to [`parse_hyprtoolkit`].
 const MAX_VARS_TOTAL: usize = 1 << 20;
 
 /// Replaces each `$name` in `value` with its definition. `None` when a

@@ -10,7 +10,7 @@ resolver = "2"
 # commit index on a dev branch) is written as its first three parts with the
 # rest as build metadata: label 0.1.0.0 is 0.1.0+0, label 0.1.0.0.3 is
 # 0.1.0+0.3. The kernkraft-fs version test checks the two agree.
-version = "0.1.1+0.14"
+version = "0.1.1+0.15"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -41,6 +41,10 @@ simplecss = "0.2"
 md-5 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# zbus keeps its default async-io backend and is used through the blocking API
+# only; the tokio feature stays off (zero network, and no async runtime).
+zbus = "5"
+notify = { version = "8", default-features = false }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

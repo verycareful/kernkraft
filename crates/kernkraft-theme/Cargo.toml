@@ -14,6 +14,9 @@ publish.workspace = true
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true
+kernkraft-fs.workspace = true
+zbus.workspace = true
+notify.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

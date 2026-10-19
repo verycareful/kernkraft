@@ -121,6 +121,29 @@ fn variable_doubling_is_bounded() {
 }
 
 #[test]
+fn variable_total_cap_reported() {
+    // Each definition holds 4000 bytes, under the 4 KiB value cap, so only
+    // the 1 MiB total cap can refuse one: 1 MiB / 4000 is 262.1, so
+    // $v0..$v261 fit and $v262 onwards do not.
+    let value = "x".repeat(4000);
+    let mut conf = String::new();
+    for i in 0..300 {
+        conf.push_str(&format!("$v{i} = {value}\n"));
+    }
+    conf.push_str("font_family = $v261\nfont_family_monospace = $v262\n");
+    let h = parse_hyprtoolkit(&conf);
+    assert_eq!(h.font_family.as_deref(), Some(value.as_str()));
+    assert_eq!(h.font_family_monospace, None);
+    for i in 262..300 {
+        assert!(h.ignored.contains(&format!("$v{i} = {value}")), "v{i}");
+    }
+    assert!(!h.ignored.contains(&format!("$v261 = {value}")));
+    assert!(h
+        .ignored
+        .contains(&"font_family_monospace = $v262".to_string()));
+}
+
+#[test]
 fn oversize_theme_file_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("hyprtoolkit.conf");

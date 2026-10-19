@@ -15,16 +15,22 @@
 pub mod color;
 mod css;
 mod error;
+mod gather;
 pub mod kern_tokens;
+mod portal;
 mod resolve;
 mod sources;
+mod watch;
 
 pub use color::{contrast_ratio, Rgba, WCAG_AA_BODY};
 pub use css::to_css;
 pub use error::ThemeError;
+pub use gather::{gather, Gathered};
 pub use kern_tokens::{Density, KernAccent, Scheme};
+pub use portal::read_portal;
 pub use resolve::{resolve, Follow, Mode, Origin, Tokens, UserChoice};
 pub use sources::{
     fc_default, fc_resolves, parse_gtk, parse_hyprtoolkit, read_gtk, read_hyprtoolkit, Fontconfig,
     Gtk, HyprToolkit, Portal, Sources,
 };
+pub use watch::{watch, watch_with, Watcher, DEBOUNCE};

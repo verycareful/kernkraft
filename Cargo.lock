@@ -1089,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-bus"
-version = "0.1.1+0.17"
+version = "0.1.1+0.18"
 dependencies = [
  "thiserror",
  "zbus",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-fs"
-version = "0.1.1+0.17"
+version = "0.1.1+0.18"
 dependencies = [
  "chrono",
  "percent-encoding",
@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-pdf"
-version = "0.1.1+0.17"
+version = "0.1.1+0.18"
 dependencies = [
  "kernkraft-fs",
  "lopdf",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-text"
-version = "0.1.1+0.17"
+version = "0.1.1+0.18"
 dependencies = [
  "kernkraft-fs",
  "rustix",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-theme"
-version = "0.1.1+0.17"
+version = "0.1.1+0.18"
 dependencies = [
  "inotify",
  "kernkraft-bus",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-thumb"
-version = "0.1.1+0.17"
+version = "0.1.1+0.18"
 dependencies = [
  "flate2",
  "image",
@@ -1159,8 +1159,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernkraft-volumes"
+version = "0.1.1+0.18"
+dependencies = [
+ "kernkraft-bus",
+ "rustix",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "zbus",
+]
+
+[[package]]
 name = "kernkraft-xdg-apps"
-version = "0.1.1+0.17"
+version = "0.1.1+0.18"
 dependencies = [
  "kernkraft-fs",
  "percent-encoding",

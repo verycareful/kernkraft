@@ -190,7 +190,7 @@ fn escape(s: &str) -> String {
     out
 }
 
-fn open(addr: &BusAddress) -> Result<Connection, BusError> {
+fn open(addr: &BusAddress, timeout: Option<Duration>) -> Result<Connection, BusError> {
     let target = parse_address(&addr.address)?;
     let (label, stream) = match &target {
         UnixTarget::Path(p) => (p.display().to_string(), UnixStream::connect(p)),
@@ -204,13 +204,15 @@ fn open(addr: &BusAddress) -> Result<Connection, BusError> {
         defaulted: addr.defaulted,
         source,
     })?;
-    Builder::async_io_unix_stream(stream)
-        .method_timeout(METHOD_TIMEOUT)
-        .build()
-        .map_err(|source| BusError::Handshake {
-            target: label,
-            source: Box::new(source),
-        })
+    let builder = Builder::async_io_unix_stream(stream);
+    let builder = match timeout {
+        Some(t) => builder.method_timeout(t),
+        None => builder,
+    };
+    builder.build().map_err(|source| BusError::Handshake {
+        target: label,
+        source: Box::new(source),
+    })
 }
 
 fn process_env(k: &str) -> Option<String> {
@@ -219,10 +221,19 @@ fn process_env(k: &str) -> Option<String> {
 
 /// Connects to the session bus over its Unix socket.
 pub fn session() -> Result<Connection, BusError> {
-    open(&session_address(&process_env)?)
+    open(&session_address(&process_env)?, Some(METHOD_TIMEOUT))
 }
 
 /// Connects to the system bus over its Unix socket.
 pub fn system() -> Result<Connection, BusError> {
-    open(&system_address(&process_env)?)
+    system_with_timeout(Some(METHOD_TIMEOUT))
+}
+
+/// Connects to the system bus over its Unix socket with its own method
+/// timeout (`None` waits forever). zbus fixes the timeout per connection,
+/// not per call, so a caller whose calls legitimately outlast
+/// [`METHOD_TIMEOUT`] (a UDisks unmount waiting on a polkit prompt) opens a
+/// second connection here for them.
+pub fn system_with_timeout(timeout: Option<Duration>) -> Result<Connection, BusError> {
+    open(&system_address(&process_env)?, timeout)
 }

@@ -10,7 +10,7 @@ resolver = "2"
 # commit index on a dev branch) is written as its first three parts with the
 # rest as build metadata: label 0.1.0.0 is 0.1.0+0, label 0.1.0.0.3 is
 # 0.1.0+0.3. The kernkraft-fs version test checks the two agree.
-version = "0.1.1+0.7"
+version = "0.1.1+0.8"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -22,6 +22,7 @@ publish = false
 kernkraft-fs = { path = "crates/kernkraft-fs" }
 kernkraft-text = { path = "crates/kernkraft-text" }
 kernkraft-xdg-apps = { path = "crates/kernkraft-xdg-apps" }
+kernkraft-thumb = { path = "crates/kernkraft-thumb" }
 lopdf = { version = "0.45", default-features = false }
 mupdf = "0.6"
 thiserror = "2"
@@ -29,6 +30,10 @@ tempfile = "3"
 rustix = { version = "1", features = ["fs", "process"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 percent-encoding = "2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+resvg = "0.48"
+png = "0.18"
+md-5 = "0.10"
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+[package]
+name = "kernkraft-thumb"
+description = "Image thumbnails and the freedesktop thumbnail cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+kernkraft-fs.workspace = true
+thiserror.workspace = true
+percent-encoding.workspace = true
+image = { workspace = true }
+resvg = { workspace = true }
+png = { workspace = true }
+md-5 = { workspace = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

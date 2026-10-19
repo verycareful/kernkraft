@@ -12,7 +12,10 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+kernkraft-fs.workspace = true
 thiserror.workspace = true
+percent-encoding.workspace = true
+rustix.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

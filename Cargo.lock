@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-fs"
-version = "0.1.1+0.4"
+version = "0.1.1+0.5"
 dependencies = [
  "chrono",
  "percent-encoding",
@@ -632,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-pdf"
-version = "0.1.1+0.4"
+version = "0.1.1+0.5"
 dependencies = [
  "kernkraft-fs",
  "lopdf",
@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-text"
-version = "0.1.1+0.4"
+version = "0.1.1+0.5"
 dependencies = [
  "kernkraft-fs",
  "rustix",
@@ -653,8 +653,11 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-xdg-apps"
-version = "0.1.1+0.4"
+version = "0.1.1+0.5"
 dependencies = [
+ "kernkraft-fs",
+ "percent-encoding",
+ "rustix",
  "tempfile",
  "thiserror",
 ]

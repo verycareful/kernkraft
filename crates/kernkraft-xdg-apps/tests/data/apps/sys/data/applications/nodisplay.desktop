@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+[Desktop Entry]
+Type=Application
+Name=No Display
+Exec=nodisplay %f
+NoDisplay=true
+MimeType=image/png;

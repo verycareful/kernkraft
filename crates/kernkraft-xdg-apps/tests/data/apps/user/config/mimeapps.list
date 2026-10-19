@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+# Fixture, MIME Applications Associations 1.0.1 sections 3 and 4.
+[Default Applications]
+image/png=mine.desktop
+image/gif=missing.desktop;viewer.desktop;
+text/plain=editor.desktop;
+application/pdf=viewer.desktop
+
+[Added Associations]
+image/png=editor.desktop;
+
+[Removed Associations]
+image/png=gimp.desktop;

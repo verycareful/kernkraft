@@ -29,6 +29,17 @@ pub struct BaseDirs {
     pub cache: PathBuf,
     pub state: PathBuf,
     pub data: PathBuf,
+    /// `$XDG_CONFIG_DIRS`, most important first; `/etc/xdg` when unset.
+    pub config_dirs: Vec<PathBuf>,
+    /// `$XDG_DATA_DIRS`, most important first; `/usr/local/share:/usr/share`
+    /// when unset.
+    pub data_dirs: Vec<PathBuf>,
+    /// `$XDG_CURRENT_DESKTOP` (desktop-entry spec, "Recognized desktop entry
+    /// keys", `OnlyShowIn`): the colon-separated names, in order, as set.
+    /// Empty when unset. Not a base directory; it sits here because the
+    /// desktop-specific `mimeapps.list` lookup needs it beside the
+    /// directories.
+    pub current_desktop: Vec<String>,
 }
 
 /// The user directories kernkraft consumers show, all absolute.
@@ -42,6 +53,11 @@ pub struct UserDirs {
     pub videos: PathBuf,
 }
 
+/// XDG Base Directory Specification 0.8, `$XDG_DATA_DIRS` default.
+const DEFAULT_DATA_DIRS: &str = "/usr/local/share:/usr/share";
+/// XDG Base Directory Specification 0.8, `$XDG_CONFIG_DIRS` default.
+const DEFAULT_CONFIG_DIRS: &str = "/etc/xdg";
+
 /// Resolves the base directories from `env`. `None` when `HOME` is unset,
 /// empty or relative, since every default is defined relative to it.
 pub fn base_dirs_from(env: &dyn Fn(&str) -> Option<OsString>) -> Option<BaseDirs> {
@@ -49,7 +65,28 @@ pub fn base_dirs_from(env: &dyn Fn(&str) -> Option<OsString>) -> Option<BaseDirs
     let pick = |var: &str, default: &[&str]| {
         absolute(env(var)).unwrap_or_else(|| default.iter().fold(home.clone(), |p, c| p.join(c)))
     };
+    let dir_list = |var: &str, default: &str| {
+        let value = env(var)
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| OsString::from(default));
+        // Relative entries are invalid and ignored (XDG Base Directory 0.8).
+        std::env::split_paths(&value)
+            .filter(|p| p.is_absolute())
+            .collect::<Vec<_>>()
+    };
+    let current_desktop = env("XDG_CURRENT_DESKTOP")
+        .map(|v| {
+            v.to_string_lossy()
+                .split(':')
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     Some(BaseDirs {
+        config_dirs: dir_list("XDG_CONFIG_DIRS", DEFAULT_CONFIG_DIRS),
+        data_dirs: dir_list("XDG_DATA_DIRS", DEFAULT_DATA_DIRS),
+        current_desktop,
         config: pick("XDG_CONFIG_HOME", &[".config"]),
         cache: pick("XDG_CACHE_HOME", &[".cache"]),
         state: pick("XDG_STATE_HOME", &[".local", "state"]),

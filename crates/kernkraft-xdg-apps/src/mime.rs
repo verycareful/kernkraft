@@ -429,6 +429,57 @@ impl MimeDb {
         mime.starts_with("text/") || self.is_a(mime, TEXT_PLAIN)
     }
 
+    /// Every name `mime` goes by: `mime` itself first, then its canonical
+    /// type when `mime` is an alias, then the other aliases of that type.
+    /// Association files written by older tools may use any of them, so a
+    /// lookup tries all.
+    pub fn names(&self, mime: &str) -> Vec<String> {
+        let canonical = self.canonical(mime);
+        let mut out = vec![mime.to_string()];
+        if canonical != mime {
+            out.push(canonical.to_string());
+        }
+        let mut others: Vec<&str> = self
+            .aliases
+            .iter()
+            .filter(|(alias, target)| target.as_str() == canonical && alias.as_str() != mime)
+            .map(|(alias, _)| alias.as_str())
+            .collect();
+        others.sort_unstable();
+        out.extend(others.into_iter().map(str::to_string));
+        out
+    }
+
+    /// The types `mime` is a subclass of, nearest first (breadth first
+    /// through `subclasses`), as canonical names, without `mime` itself and
+    /// without repeats. Every `text/*` type has `text/plain` among them
+    /// (section 2.5). `application/octet-stream`, which section 2.5 makes
+    /// the root of every non-directory type, is not listed: it carries no
+    /// information for choosing an application. Cycles terminate.
+    pub fn ancestors(&self, mime: &str) -> Vec<String> {
+        let start = self.canonical(mime);
+        let mut seen: HashSet<&str> = HashSet::from([start]);
+        let mut out: Vec<String> = Vec::new();
+        let mut queue: std::collections::VecDeque<&str> = std::collections::VecDeque::from([start]);
+        while let Some(current) = queue.pop_front() {
+            let mut next: Vec<&str> = self
+                .parents
+                .get(current)
+                .map(|direct| direct.iter().map(|p| self.canonical(p)).collect())
+                .unwrap_or_default();
+            if current.starts_with("text/") && current != TEXT_PLAIN {
+                next.push(TEXT_PLAIN);
+            }
+            for parent in next {
+                if seen.insert(parent) {
+                    out.push(parent.to_string());
+                    queue.push_back(parent);
+                }
+            }
+        }
+        out
+    }
+
     fn canonical<'a>(&'a self, mime: &'a str) -> &'a str {
         self.aliases.get(mime).map_or(mime, String::as_str)
     }

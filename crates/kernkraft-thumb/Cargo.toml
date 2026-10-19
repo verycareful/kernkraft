@@ -17,6 +17,7 @@ thiserror.workspace = true
 percent-encoding.workspace = true
 image = { workspace = true }
 resvg = { workspace = true }
+simplecss = { workspace = true }
 png = { workspace = true }
 md-5 = { workspace = true }
 

@@ -13,6 +13,7 @@
 //! outside the SVG's own directory is ever read and no URL is ever followed;
 //! `data:` URLs are decoded in place.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Read};
@@ -58,10 +59,27 @@ const RENDER_STACK_BYTES: usize = 16 * 1024 * 1024;
 /// the 10 to 15 levels graphics editors write.
 const MAX_SVG_DEPTH: usize = 32;
 
-/// Most elements the SVG scan keeps. The table holds a few dozen bytes per
-/// element, so this bounds its memory at tens of megabytes; no drawing a
-/// person browses has a million elements.
-const MAX_ELEMENTS: usize = 1_000_000;
+/// Most elements the SVG scan keeps. The table holds about a hundred bytes
+/// per element, attributes aside, so this bounds its memory at tens of
+/// megabytes; no drawing a person browses has a quarter of a million.
+const MAX_ELEMENTS: usize = 250_000;
+
+/// Deepest chain of entities defined in terms of entities the scan follows.
+/// Real files declare namespace URIs and nothing nested; a few levels leave
+/// room, and the expansion of a deeper chain is how entity bombs are built.
+const MAX_ENTITY_DEPTH: usize = 3;
+
+/// Longest entity or character reference name accepted, in bytes.
+const MAX_ENTITY_NAME: usize = 64;
+
+/// Largest value an entity expansion may reach, 1 MiB.
+const MAX_DECODED_BYTES: usize = 1024 * 1024;
+
+/// Most (rule, element) selector tests the style sheet may cost: rules that
+/// carry a `url(#id)` reference times elements. Each test is a few
+/// comparisons, so 50 million is about a second; Illustrator exports are
+/// tens of rules over thousands of elements.
+const MAX_CSS_MATCHES: usize = 50_000_000;
 
 /// Most elements instantiated through references (`<use>` copies and the
 /// like) in one SVG. usvg builds a node for every copy, so a chain of
@@ -287,6 +305,16 @@ fn read_inside(dir: &Path, href: &str) -> Option<Vec<u8>> {
 /// expanded tree depth first. That walk is itself bounded by the depth cap,
 /// so its recursion is at most [`MAX_SVG_DEPTH`] frames.
 ///
+/// References are seen as the XML parser sees them: attribute values have
+/// their predefined entities, character references and DOCTYPE internal
+/// entities decoded first, and a reference to an undeclared entity, or one
+/// nested deeper than [`MAX_ENTITY_DEPTH`], is refused, as is any general
+/// entity used in element content (it could expand to markup). References
+/// that arrive through CSS (`<style>` text, CDATA included) are attached to
+/// every element the rule's selector matches, with the same selector engine
+/// usvg uses; a pseudo-class other than `first-child` is treated as matching,
+/// which can only add references.
+///
 /// A reference cycle is refused. A reference to an id that does not exist,
 /// or to something outside the document, is skipped: usvg skips it too, so
 /// it adds no depth. A document the scan cannot follow to its end (an
@@ -296,23 +324,131 @@ fn read_inside(dir: &Path, href: &str) -> Option<Vec<u8>> {
 /// cannot see, so it is refused.
 fn check_depth(path: &Path, data: &[u8]) -> Result<(), ThumbError> {
     scan(data)
-        .and_then(|doc| doc.check())
+        .and_then(|mut doc| {
+            doc.apply_css()?;
+            doc.check()
+        })
         .map_err(|reason| ThumbError::decode(path, reason))
 }
 
-/// One element: its children, its `id`, and the ids it refers to.
+type Bytes<'a> = Cow<'a, [u8]>;
+type Entities<'a> = HashMap<&'a [u8], &'a [u8]>;
+
+/// One element of the scanned document.
 struct Element<'a> {
+    parent: Option<usize>,
+    prev_sibling: Option<usize>,
     children: Vec<usize>,
-    refs: Vec<&'a [u8]>,
+    /// Local name (after any prefix).
+    name: &'a [u8],
+    /// Attributes, kept only when the document has a style sheet to match.
+    attrs: Vec<(&'a [u8], Bytes<'a>)>,
+    /// Ids this element refers to.
+    refs: Vec<Vec<u8>>,
+    /// Index into `Doc::styles` when this is a `<style>` element.
+    style: Option<usize>,
 }
 
 struct Doc<'a> {
     elements: Vec<Element<'a>>,
     roots: Vec<usize>,
-    by_id: HashMap<&'a [u8], Vec<usize>>,
+    by_id: HashMap<Vec<u8>, Vec<usize>>,
+    /// Text of each `<style>` element, entities decoded, CDATA literal.
+    styles: Vec<String>,
+}
+
+/// An element as simplecss's selector matching sees it.
+#[derive(Clone, Copy)]
+struct ElementRef<'e, 'a> {
+    elements: &'e [Element<'a>],
+    index: usize,
+}
+
+impl ElementRef<'_, '_> {
+    fn at(&self, index: usize) -> Self {
+        ElementRef {
+            elements: self.elements,
+            index,
+        }
+    }
+}
+
+impl simplecss::Element for ElementRef<'_, '_> {
+    fn parent_element(&self) -> Option<Self> {
+        self.elements[self.index].parent.map(|i| self.at(i))
+    }
+
+    fn prev_sibling_element(&self) -> Option<Self> {
+        self.elements[self.index].prev_sibling.map(|i| self.at(i))
+    }
+
+    fn has_local_name(&self, name: &str) -> bool {
+        self.elements[self.index].name == name.as_bytes()
+    }
+
+    fn attribute_matches(
+        &self,
+        local_name: &str,
+        operator: simplecss::AttributeOperator<'_>,
+    ) -> bool {
+        let found = self.elements[self.index]
+            .attrs
+            .iter()
+            .find(|(name, _)| *name == local_name.as_bytes());
+        match found {
+            None => false,
+            Some((_, value)) => std::str::from_utf8(value).map_or(true, |v| operator.matches(v)),
+        }
+    }
+
+    fn pseudo_class_matches(&self, class: simplecss::PseudoClass<'_>) -> bool {
+        match class {
+            simplecss::PseudoClass::FirstChild => self.elements[self.index].prev_sibling.is_none(),
+            _ => true,
+        }
+    }
 }
 
 impl Doc<'_> {
+    /// Adds the references in style rules to every element they select.
+    fn apply_css(&mut self) -> Result<(), String> {
+        if self.styles.is_empty() {
+            return Ok(());
+        }
+        let mut sheet = simplecss::StyleSheet::new();
+        for text in &self.styles {
+            sheet.parse_more(text);
+        }
+        let mut additions: Vec<(usize, Vec<Vec<u8>>)> = Vec::new();
+        let mut rules_with_refs = 0usize;
+        for rule in &sheet.rules {
+            let mut ids = Vec::new();
+            for declaration in &rule.declarations {
+                collect_urls(declaration.value.as_bytes(), &mut ids);
+            }
+            if ids.is_empty() {
+                continue;
+            }
+            rules_with_refs += 1;
+            if rules_with_refs.saturating_mul(self.elements.len()) > MAX_CSS_MATCHES {
+                return Err("SVG style sheet with too many rules using references".to_string());
+            }
+            for index in 0..self.elements.len() {
+                let element = ElementRef {
+                    elements: &self.elements,
+                    index,
+                };
+                if rule.selector.matches(&element) {
+                    additions.push((index, ids.clone()));
+                }
+            }
+        }
+        for (index, ids) in additions {
+            self.elements[index].refs.extend(ids);
+        }
+        Ok(())
+    }
+
     fn check(&self) -> Result<(), String> {
         let mut instanced = 0usize;
         let mut path = Vec::new();
@@ -344,10 +480,21 @@ impl Doc<'_> {
             }
         }
         let element = &self.elements[i];
-        for target in element.refs.iter().filter_map(|r| self.by_id.get(r)) {
+        for target in element
+            .refs
+            .iter()
+            .filter_map(|r| self.by_id.get(r.as_slice()))
+        {
             for &t in target {
                 if path.contains(&t) || t == i {
-                    return Err("SVG references form a cycle".to_string());
+                    // With one element of that id the reference is a cycle.
+                    // With several, which one usvg resolves is not known
+                    // here (icon sets reuse a name for a shape and its
+                    // gradient), so the edge back into the path is skipped.
+                    if target.len() == 1 {
+                        return Err("SVG references form a cycle".to_string());
+                    }
+                    continue;
                 }
                 path.push(t);
                 let result = self.visit(t, depth + 1, true, path, instanced);
@@ -370,36 +517,55 @@ fn scan(data: &[u8]) -> Result<Doc<'_>, String> {
             .map(|p| from + p + needle.len())
             .ok_or_else(|| UNFINISHED.to_string())
     };
+    // Attributes are needed only to match selectors, and only a document
+    // with a `<style>` element has any.
+    let has_style = data
+        .windows(6)
+        .any(|w| w == b"<style" || w.starts_with(b":style"));
     let mut doc = Doc {
         elements: Vec::new(),
         roots: Vec::new(),
         by_id: HashMap::new(),
+        styles: Vec::new(),
     };
+    let mut entities = Entities::new();
     let mut open: Vec<usize> = Vec::new();
     let mut i = 0;
     while let Some(offset) = data
         .get(i..)
         .and_then(|r| r.iter().position(|&b| b == b'<'))
     {
-        // Text between tags can carry CSS with `url(#id)` references.
-        if let Some(&current) = open.last() {
-            collect_urls(&data[i..i + offset], &mut doc.elements[current].refs);
+        // Text between tags: style text is kept, other text may not use
+        // general entities, which could expand to markup.
+        let text = &data[i..i + offset];
+        match open.last().and_then(|&cur| doc.elements[cur].style) {
+            Some(style) => {
+                let decoded = decode(text, &entities, 0)?;
+                doc.styles[style].push_str(&String::from_utf8_lossy(&decoded));
+            }
+            None => check_text_entities(text)?,
         }
         i += offset;
         let rest = &data[i..];
         if rest.starts_with(b"<!--") {
             i = find(i + 4, b"-->")?;
         } else if rest.starts_with(b"<![CDATA[") {
-            i = find(i + 9, b"]]>")?;
+            let end = find(i + 9, b"]]>")?;
+            if let Some(style) = open.last().and_then(|&cur| doc.elements[cur].style) {
+                doc.styles[style].push_str(&String::from_utf8_lossy(&data[i + 9..end - 3]));
+            }
+            i = end;
         } else if rest.starts_with(b"<?") {
             i = find(i + 2, b"?>")?;
         } else if rest.starts_with(b"<!") {
-            i = skip_declaration(data, i + 2)?;
+            let end = skip_declaration(data, i + 2)?;
+            collect_entities(&data[i..end], &mut entities);
+            i = end;
         } else if rest.starts_with(b"</") {
             open.pop();
             i = find(i + 2, b">")?;
         } else {
-            let tag = parse_tag(data, i + 1)?;
+            let tag = parse_tag(data, i + 1, &entities, has_style)?;
             if open.len() + 1 > MAX_SVG_DEPTH {
                 return Err(format!("SVG nested deeper than {MAX_SVG_DEPTH} elements"));
             }
@@ -407,16 +573,30 @@ fn scan(data: &[u8]) -> Result<Doc<'_>, String> {
                 return Err(format!("SVG has more than {MAX_ELEMENTS} elements"));
             }
             let index = doc.elements.len();
-            match open.last() {
-                Some(&parent) => doc.elements[parent].children.push(index),
+            let parent = open.last().copied();
+            let prev_sibling = match parent {
+                Some(p) => doc.elements[p].children.last().copied(),
+                None => doc.roots.last().copied(),
+            };
+            match parent {
+                Some(p) => doc.elements[p].children.push(index),
                 None => doc.roots.push(index),
             }
             if let Some(id) = tag.id {
                 doc.by_id.entry(id).or_default().push(index);
             }
+            let style = (tag.name == b"style" && !tag.self_closing).then(|| {
+                doc.styles.push(String::new());
+                doc.styles.len() - 1
+            });
             doc.elements.push(Element {
+                parent,
+                prev_sibling,
                 children: Vec::new(),
+                name: tag.name,
+                attrs: tag.attrs,
                 refs: tag.refs,
+                style,
             });
             if !tag.self_closing {
                 open.push(index);
@@ -430,25 +610,36 @@ fn scan(data: &[u8]) -> Result<Doc<'_>, String> {
 struct Tag<'a> {
     end: usize,
     self_closing: bool,
-    id: Option<&'a [u8]>,
-    refs: Vec<&'a [u8]>,
+    name: &'a [u8],
+    id: Option<Vec<u8>>,
+    refs: Vec<Vec<u8>>,
+    attrs: Vec<(&'a [u8], Bytes<'a>)>,
 }
 
 /// Parses a start tag whose name begins at `from`: its attributes, of which
 /// `id`, `href` (any prefix) and anything holding `url(#id)` matter here.
-/// A `>` inside a quoted value does not end the tag.
-fn parse_tag(data: &[u8], from: usize) -> Result<Tag<'_>, String> {
+/// Values are decoded as the XML parser decodes them. A `>` inside a quoted
+/// value does not end the tag.
+fn parse_tag<'a>(
+    data: &'a [u8],
+    from: usize,
+    entities: &Entities<'a>,
+    keep_attrs: bool,
+) -> Result<Tag<'a>, String> {
     const MALFORMED: &str = "malformed SVG tag";
     let is_space = |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r');
     let mut j = from;
     while j < data.len() && !is_space(data[j]) && !matches!(data[j], b'>' | b'/') {
         j += 1;
     }
+    let qualified = &data[from..j];
     let mut tag = Tag {
         end: 0,
         self_closing: false,
+        name: qualified.rsplit(|&b| b == b':').next().unwrap_or(qualified),
         id: None,
         refs: Vec::new(),
+        attrs: Vec::new(),
     };
     loop {
         while j < data.len() && is_space(data[j]) {
@@ -493,23 +684,26 @@ fn parse_tag(data: &[u8], from: usize) -> Result<Tag<'_>, String> {
             .position(|&b| b == quote)
             .map(|p| value_start + p)
             .ok_or_else(|| MALFORMED.to_string())?;
-        let value = &data[value_start..value_end];
+        let value = decode(&data[value_start..value_end], entities, 0)?;
         j = value_end + 1;
 
         let local = name.rsplit(|&b| b == b':').next().unwrap_or(name);
         if local == b"id" {
-            tag.id = Some(value);
+            tag.id = Some(value.to_vec());
         } else if local == b"href" {
             if let Some(target) = value.trim_ascii().strip_prefix(b"#") {
-                tag.refs.push(target);
+                tag.refs.push(target.to_vec());
             }
         }
-        collect_urls(value, &mut tag.refs);
+        collect_urls(&value, &mut tag.refs);
+        if keep_attrs {
+            tag.attrs.push((name, value));
+        }
     }
 }
 
 /// Adds the id of every `url(#id)` in `text` to `refs`.
-fn collect_urls<'a>(text: &'a [u8], refs: &mut Vec<&'a [u8]>) {
+fn collect_urls(text: &[u8], refs: &mut Vec<Vec<u8>>) {
     let mut rest = text;
     while let Some(p) = rest.windows(4).position(|w| w == b"url(") {
         rest = &rest[p + 4..];
@@ -523,9 +717,112 @@ fn collect_urls<'a>(text: &'a [u8], refs: &mut Vec<&'a [u8]>) {
                 .iter()
                 .position(|&b| matches!(b, b')' | b'"' | b'\'' | b' ' | b'\t' | b'\n' | b'\r'))
                 .unwrap_or(id.len());
-            refs.push(&id[..len]);
+            refs.push(id[..len].to_vec());
         }
     }
+}
+
+/// Records the internal general entities of a DOCTYPE declaration. External
+/// entities and parameter entities are not recorded, so a reference to one
+/// is refused as undeclared. The first declaration of a name wins, as in XML.
+fn collect_entities<'a>(decl: &'a [u8], entities: &mut Entities<'a>) {
+    const OPEN: &[u8] = b"<!ENTITY";
+    let mut rest = decl;
+    while let Some(p) = rest.windows(OPEN.len()).position(|w| w == OPEN) {
+        let after = rest[p + OPEN.len()..].trim_ascii_start();
+        rest = after;
+        if after.starts_with(b"%") {
+            continue;
+        }
+        let name_len = after
+            .iter()
+            .position(|b| b.is_ascii_whitespace())
+            .unwrap_or(after.len());
+        let (name, tail) = after.split_at(name_len);
+        let tail = tail.trim_ascii_start();
+        if let Some(&quote) = tail.first().filter(|&&b| b == b'"' || b == b'\'') {
+            if let Some(end) = tail[1..].iter().position(|&b| b == quote) {
+                entities.entry(name).or_insert(&tail[1..1 + end]);
+                rest = &tail[end + 2..];
+            }
+        }
+    }
+}
+
+/// Refuses a general entity reference in element content, where it could
+/// expand to markup the scan does not see. Predefined entities and character
+/// references are text.
+fn check_text_entities(text: &[u8]) -> Result<(), String> {
+    let mut rest = text;
+    while let Some(p) = rest.iter().position(|&b| b == b'&') {
+        rest = &rest[p + 1..];
+        let end = rest.iter().position(|&b| b == b';').unwrap_or(rest.len());
+        let name = &rest[..end];
+        if !(name.starts_with(b"#") || PREDEFINED.iter().any(|(n, _)| *n == name)) {
+            return Err("SVG uses a general entity in element content".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// XML 1.0 section 4.6 predefined entities.
+const PREDEFINED: [(&[u8], u8); 5] = [
+    (b"lt", b'<'),
+    (b"gt", b'>'),
+    (b"amp", b'&'),
+    (b"apos", b'\''),
+    (b"quot", b'"'),
+];
+
+/// Decodes predefined entities, character references and internal entities
+/// the way an XML parser does in an attribute value or in text. An undeclared
+/// entity, a malformed reference, entities nested deeper than
+/// [`MAX_ENTITY_DEPTH`] and an expansion over [`MAX_DECODED_BYTES`] are
+/// errors.
+fn decode<'a>(raw: &'a [u8], entities: &Entities<'_>, depth: usize) -> Result<Bytes<'a>, String> {
+    if !raw.contains(&b'&') {
+        return Ok(Cow::Borrowed(raw));
+    }
+    let mut out = Vec::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(p) = rest.iter().position(|&b| b == b'&') {
+        out.extend_from_slice(&rest[..p]);
+        rest = &rest[p + 1..];
+        let end = rest
+            .iter()
+            .take(MAX_ENTITY_NAME + 1)
+            .position(|&b| b == b';')
+            .ok_or("malformed entity or character reference in SVG")?;
+        let name = &rest[..end];
+        rest = &rest[end + 1..];
+        if let Some(number) = name.strip_prefix(b"#") {
+            let (digits, radix) = match number.strip_prefix(b"x") {
+                Some(hex) => (hex, 16),
+                None => (number, 10),
+            };
+            let code = std::str::from_utf8(digits)
+                .ok()
+                .and_then(|d| u32::from_str_radix(d, radix).ok())
+                .and_then(char::from_u32)
+                .ok_or("invalid character reference in SVG")?;
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(code.encode_utf8(&mut buf).as_bytes());
+        } else if let Some((_, byte)) = PREDEFINED.iter().find(|(n, _)| *n == name) {
+            out.push(*byte);
+        } else if let Some(value) = entities.get(name) {
+            if depth >= MAX_ENTITY_DEPTH {
+                return Err("SVG entities nested too deeply".to_string());
+            }
+            out.extend_from_slice(&decode(value, entities, depth + 1)?);
+        } else {
+            return Err("SVG uses an undeclared entity".to_string());
+        }
+        if out.len() > MAX_DECODED_BYTES {
+            return Err("SVG entity expansion too large".to_string());
+        }
+    }
+    out.extend_from_slice(rest);
+    Ok(Cow::Owned(out))
 }
 
 /// End of a `<!...>` declaration (DOCTYPE) starting after `<!`, honouring

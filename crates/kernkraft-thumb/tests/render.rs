@@ -615,3 +615,136 @@ fn doctype_with_apostrophe_in_pi_is_followed() {
     fs::write(&src, doc).unwrap();
     assert_decode_on_small_stack(&cache, &src);
 }
+
+/// 1000 patterns, each holding a rect `r<i>` that a CSS rule fills with the
+/// previous pattern: the references live only in the style sheet.
+fn css_chain(cdata: bool) -> String {
+    const N: usize = 1000;
+    let mut css = String::new();
+    for i in 1..N {
+        css.push_str(&format!("#r{i}{{fill:url(#p{});}}\n", i - 1));
+    }
+    let css = if cdata {
+        format!("<![CDATA[{css}]]>")
+    } else {
+        css
+    };
+    let mut s = format!(r#"{SVG_HEAD}<style type="text/css">{css}</style><defs>"#);
+    for i in 0..N {
+        s.push_str(&format!(
+            r#"<pattern id="p{i}" width="10" height="10" patternUnits="userSpaceOnUse"><rect id="r{i}" width="10" height="10"/></pattern>"#
+        ));
+    }
+    s.push_str(&format!(
+        r##"</defs><rect width="200" height="100" fill="url(#p{})"/></svg>"##,
+        N - 1
+    ));
+    s
+}
+
+#[test]
+fn css_selector_chain_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("css.svg");
+    for cdata in [false, true] {
+        fs::write(&src, css_chain(cdata)).unwrap();
+        assert_decode_on_small_stack(&cache, &src);
+    }
+}
+
+#[test]
+fn css_class_refs_in_illustrator_style_render() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let doc = format!(
+        r##"{SVG_HEAD}<style type="text/css">
+	<![CDATA[
+	.st0{{fill:url(#g);}}
+	.st1{{fill:#00FF00;}}
+]]>
+</style><defs><linearGradient id="g"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient></defs><rect class="st0" width="200" height="100"/></svg>"##
+    );
+    let img = render_svg(&cache, dir.path(), "ai.svg", &doc);
+    let left = img.get_pixel(2, 32).0;
+    let right = img.get_pixel(125, 32).0;
+    assert!(left[0] > 200 && left[2] < 60, "{left:?}");
+    assert!(right[2] > 200 && right[0] < 60, "{right:?}");
+}
+
+#[test]
+fn char_ref_href_chain_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("charref.svg");
+    for hash in ["&#35;", "&#x23;"] {
+        let doc = use_chain(250, 0).replace("xlink:href=\"#", &format!("xlink:href=\"{hash}"));
+        fs::write(&src, doc).unwrap();
+        assert_decode_on_small_stack(&cache, &src);
+    }
+}
+
+#[test]
+fn entity_href_chain_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("entity.svg");
+    let mut subset = String::new();
+    for k in 0..=250 {
+        subset.push_str(&format!(r##"<!ENTITY r{k} "#g{k}">"##));
+    }
+    let mut doc = use_chain(250, 0);
+    for k in 0..=250 {
+        doc = doc.replace(
+            &format!(r##"xlink:href="#g{k}""##),
+            &format!(r#"xlink:href="&r{k};""#),
+        );
+    }
+    let doc = format!("<!DOCTYPE svg [{subset}]>{doc}");
+    fs::write(&src, doc).unwrap();
+    assert_decode_on_small_stack(&cache, &src);
+}
+
+#[test]
+fn illustrator_ns_entity_renders() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let doc = r##"<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd" [
+	<!ENTITY ns_svg "http://www.w3.org/2000/svg">
+	<!ENTITY ns_xlink "http://www.w3.org/1999/xlink">
+]>
+<svg version="1.1" xmlns="&ns_svg;" xmlns:xlink="&ns_xlink;" width="200" height="100" viewBox="0 0 200 100"><rect width="200" height="100" fill="#336699"/></svg>"##;
+    let img = render_svg(&cache, dir.path(), "ns.svg", doc);
+    assert_eq!(img.get_pixel(5, 5).0, [0x33, 0x66, 0x99, 255]);
+}
+
+#[test]
+fn bad_entities_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("bad.svg");
+    let body = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect id="&e;" width="5" height="5"/></svg>"##;
+    // Undeclared.
+    fs::write(&src, body).unwrap();
+    assert_decode_quickly(&cache, &src, "image/svg+xml");
+    // Entities nested deeper than the scan follows.
+    let doc = format!(
+        r#"<!DOCTYPE svg [<!ENTITY a "x"><!ENTITY b "&a;"><!ENTITY c "&b;"><!ENTITY d "&c;"><!ENTITY e "&d;">]>{body}"#
+    );
+    fs::write(&src, doc).unwrap();
+    assert_decode_quickly(&cache, &src, "image/svg+xml");
+}
+
+#[test]
+fn duplicate_id_self_reference_renders() {
+    // Icon sets reuse a name for a shape and the gradient that fills it; the
+    // reference means the gradient, so it is not a cycle.
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let doc = format!(
+        r##"{SVG_HEAD}<rect id="a" width="200" height="100" fill="url(#a)"/><defs><linearGradient id="a"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#ff0000"/></linearGradient></defs></svg>"##
+    );
+    let img = render_svg(&cache, dir.path(), "dup.svg", &doc);
+    assert_eq!(img.get_pixel(5, 5).0, [255, 0, 0, 255]);
+}

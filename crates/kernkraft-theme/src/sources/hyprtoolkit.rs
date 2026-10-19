@@ -3,7 +3,10 @@
 
 //! `hyprtoolkit.conf`, Hyprland's toolkit theme (parent spec section 6.5,
 //! source 1). The file uses hyprlang syntax: `key = value` lines, `#` starts
-//! a comment and `##` is a literal `#`.
+//! a comment and `##` is a literal `#`; `$name = value` defines a variable
+//! that later values may use as `$name`.
+
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -51,10 +54,29 @@ fn strip_comment(line: &str) -> String {
     out
 }
 
+/// Replaces each `$name` in `value` with its definition. `None` when a
+/// variable is not defined (hyprlang defines a variable before its use).
+fn substitute(value: &str, vars: &HashMap<String, String>) -> Option<String> {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(i) = rest.find('$') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let end = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(after.len());
+        out.push_str(vars.get(&after[..end])?);
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
 /// Parses the contents of a `hyprtoolkit.conf`. Unknown keys, lines without
 /// `=` and bad values are skipped and recorded in [`HyprToolkit::ignored`].
 pub fn parse_hyprtoolkit(contents: &str) -> HyprToolkit {
     let mut out = HyprToolkit::default();
+    let mut vars: HashMap<String, String> = HashMap::new();
     for raw in contents.lines() {
         let line = strip_comment(raw);
         let line = line.trim();
@@ -66,6 +88,15 @@ pub fn parse_hyprtoolkit(contents: &str) -> HyprToolkit {
             continue;
         };
         let (key, value) = (key.trim(), value.trim());
+        let Some(substituted) = substitute(value, &vars) else {
+            out.ignored.push(format!("{key} = {value}"));
+            continue;
+        };
+        if let Some(name) = key.strip_prefix('$') {
+            vars.insert(name.to_string(), substituted);
+            continue;
+        }
+        let value = substituted.as_str();
         let bad = |out: &mut HyprToolkit| out.ignored.push(format!("{key} = {value}"));
         let colour = |v: &str| Rgba::parse(v);
         match key {

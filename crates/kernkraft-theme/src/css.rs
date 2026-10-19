@@ -9,15 +9,22 @@ use crate::kern_tokens::Scheme;
 use crate::resolve::Tokens;
 
 /// Quotes a family name as a CSS string: control characters are dropped and
-/// `"` and `\` are escaped, so a hostile name cannot end the string.
+/// `"`, `\` and `<` are escaped, so a hostile name cannot end the string.
 fn quote(family: &str) -> String {
     let mut out = String::with_capacity(family.len() + 2);
     out.push('"');
     for c in family.chars().filter(|c| !c.is_control()) {
-        if c == '"' || c == '\\' {
-            out.push('\\');
+        match c {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            // `<` is escaped so the CSS stays inert if a consumer inlines it
+            // into an HTML style element (`</style>`); the trailing space is
+            // the escape's terminator.
+            '<' => out.push_str("\\3c "),
+            _ => out.push(c),
         }
-        out.push(c);
     }
     out.push('"');
     out

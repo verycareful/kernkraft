@@ -5,8 +5,11 @@
 //!
 //! WCAG 2.1, "Definition: relative luminance": each sRGB channel `c = v / 255`
 //! is linearised (`c / 12.92` when `c <= 0.04045`, else
-//! `((c + 0.055) / 1.055) ^ 2.4`; the definition's note gives the threshold as
-//! 0.04045 for the sRGB standard) and `L = 0.2126 R + 0.7152 G + 0.0722 B`.
+//! `((c + 0.055) / 1.055) ^ 2.4`). WCAG 2.1 prints the threshold as 0.03928;
+//! 0.04045 is the value in the sRGB standard (IEC 61966-2-1). They give
+//! identical results for every 8-bit channel, since no `v / 255` lies between
+//! them (10/255 is 0.0392, 11/255 is 0.0431). Then
+//! `L = 0.2126 R + 0.7152 G + 0.0722 B`.
 //! WCAG 2.1, "Definition: contrast ratio": `(L1 + 0.05) / (L2 + 0.05)` with
 //! `L1` the lighter. Alpha is ignored by both.
 

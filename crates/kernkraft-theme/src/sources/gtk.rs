@@ -43,7 +43,6 @@ const PANGO_STYLE_WORDS: &[&str] = &[
     "ultra-heavy",
     "italic",
     "oblique",
-    "roman",
     "condensed",
     "extra-condensed",
     "ultra-condensed",

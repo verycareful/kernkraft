@@ -112,32 +112,81 @@ fn defaults_are_kern_slate() {
         .all(|o| *o == Origin::Kern || *o == Origin::User));
 }
 
-#[test]
-fn pinned_mode_uses_kern_neutrals() {
-    let src = Sources {
+fn hypr_palette(bg: u32, text: u32) -> Sources {
+    Sources {
         hypr: Some(HyprToolkit {
-            background: Some(rgb(0x000000)),
-            text: Some(rgb(0xe4e8f0)),
+            background: Some(rgb(bg)),
+            base: Some(rgb(if bg == 0 { 0x111111 } else { 0xf0f0f0 })),
+            text: Some(rgb(text)),
             ..Default::default()
         }),
         ..Default::default()
-    };
-    let user = UserChoice {
-        mode: Mode::Light,
+    }
+}
+
+fn pinned(mode: Mode) -> UserChoice {
+    UserChoice {
+        mode,
         ..UserChoice::default()
-    };
-    let t = resolve(&src, &Follow::default(), &user, &all_fonts);
-    assert_eq!((t.scheme, t.bg), (Scheme::Light, kern::LIGHT.bg));
+    }
+}
+
+#[test]
+fn pinned_matching_scheme_keeps_hyprland_palette() {
+    let dark = hypr_palette(0x000000, 0xe4e8f0);
+    let t = resolve(&dark, &Follow::default(), &pinned(Mode::Dark), &all_fonts);
+    assert_eq!(
+        (t.scheme, t.bg, t.text),
+        (Scheme::Dark, rgb(0), rgb(0xe4e8f0))
+    );
+    assert_eq!(t.origins["bg"], Origin::Hyprland);
+    assert!(!t.scheme_mismatch);
+    let light = hypr_palette(0xffffff, 0x101010);
+    let t = resolve(&light, &Follow::default(), &pinned(Mode::Light), &all_fonts);
+    assert_eq!((t.scheme, t.bg), (Scheme::Light, rgb(0xffffff)));
+    assert_eq!(t.origins["bg"], Origin::Hyprland);
+    assert!(!t.scheme_mismatch);
+}
+
+#[test]
+fn pinned_mismatched_scheme_uses_kern_and_says_so() {
+    let dark = hypr_palette(0x000000, 0xe4e8f0);
+    let t = resolve(&dark, &Follow::default(), &pinned(Mode::Light), &all_fonts);
+    assert_eq!(
+        (t.scheme, t.bg, t.text),
+        (Scheme::Light, kern::LIGHT.bg, kern::LIGHT.text)
+    );
+    assert_eq!(t.origins["bg"], Origin::Kern);
     assert_eq!(t.origins["scheme"], Origin::User);
-    let user = UserChoice {
-        mode: Mode::Dark,
-        ..UserChoice::default()
-    };
-    let t = resolve(&Sources::default(), &Follow::default(), &user, &all_fonts);
+    assert!(t.scheme_mismatch);
+    assert!(t.wcag_fallbacks.is_empty());
+    let light = hypr_palette(0xffffff, 0x101010);
+    let t = resolve(&light, &Follow::default(), &pinned(Mode::Dark), &all_fonts);
     assert_eq!(
         (t.scheme, t.bg, t.surface),
         (Scheme::Dark, kern::DARK.bg, kern::DARK.surface)
     );
+    assert!(t.scheme_mismatch);
+}
+
+#[test]
+fn pinned_with_follow_colours_off_uses_kern_without_mismatch() {
+    let dark = hypr_palette(0x000000, 0xe4e8f0);
+    let f = Follow {
+        colours: false,
+        ..Follow::default()
+    };
+    let t = resolve(&dark, &f, &pinned(Mode::Light), &all_fonts);
+    assert_eq!(t.bg, kern::LIGHT.bg);
+    assert!(!t.scheme_mismatch);
+    let t = resolve(
+        &Sources::default(),
+        &Follow::default(),
+        &pinned(Mode::Dark),
+        &all_fonts,
+    );
+    assert_eq!((t.scheme, t.bg), (Scheme::Dark, kern::DARK.bg));
+    assert!(!t.scheme_mismatch);
 }
 
 #[test]
@@ -260,9 +309,45 @@ fn low_contrast_falls_back() {
     let k = kern::neutrals(t.scheme);
     assert_eq!((t.bg, t.text), (k.bg, k.text));
     assert_eq!(t.surface, k.surface);
-    assert_eq!(t.wcag_fallbacks, vec!["bg", "text"]);
+    assert_eq!(t.wcag_fallbacks, vec!["bg", "surface", "text"]);
+    assert_eq!(t.origins["surface"], Origin::Kern);
     assert_eq!(t.origins["bg"], Origin::Kern);
     assert!(contrast_ratio(t.text, t.bg) >= WCAG_AA_BODY);
+}
+
+#[test]
+fn surface_low_contrast_detected() {
+    // Text passes against bg but not against surface: the neutral set
+    // reverts together and every reverted source token is named.
+    let src = Sources {
+        hypr: Some(HyprToolkit {
+            background: Some(rgb(0x000000)),
+            base: Some(rgb(0x888888)),
+            text: Some(rgb(0xaaaaaa)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(contrast_ratio(rgb(0xaaaaaa), rgb(0)) >= WCAG_AA_BODY);
+    assert!(contrast_ratio(rgb(0xaaaaaa), rgb(0x888888)) < WCAG_AA_BODY);
+    let t = run(&src);
+    let k = kern::neutrals(t.scheme);
+    assert_eq!((t.bg, t.surface, t.text), (k.bg, k.surface, k.text));
+    assert_eq!(t.wcag_fallbacks, vec!["bg", "surface", "text"]);
+}
+
+#[test]
+fn sunken_low_contrast_detected() {
+    let src = Sources {
+        hypr: Some(HyprToolkit {
+            background: Some(rgb(0x000000)),
+            alternate_base: Some(rgb(0x999999)),
+            text: Some(rgb(0xaaaaaa)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(run(&src).wcag_fallbacks, vec!["bg", "sunken", "text"]);
 }
 
 #[test]
@@ -442,6 +527,7 @@ fn format_hues_not_in_tokens() {
         density: _,
         origins: _,
         wcag_fallbacks: _,
+        scheme_mismatch: _,
     } = run(&Sources::default());
     assert_eq!(FORMAT_HUES.len(), 6);
 }

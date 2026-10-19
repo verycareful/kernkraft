@@ -83,6 +83,21 @@ fn hyprlang_comments() {
 }
 
 #[test]
+fn hyprlang_variables() {
+    let h = parse_hyprtoolkit(
+        "$main = rgb(010203)\n$font = Fira Sans\naccent = $main\ntext = $missing\nfont_family = $font $main\nbackground = $main$main\n",
+    );
+    assert_eq!(h.accent, c(1, 2, 3));
+    assert_eq!(h.text, None);
+    assert_eq!(h.font_family.as_deref(), Some("Fira Sans rgb(010203)"));
+    assert_eq!(h.background, None);
+    assert_eq!(
+        h.ignored,
+        vec!["text = $missing", "background = rgb(010203)rgb(010203)"]
+    );
+}
+
+#[test]
 fn colour_forms() {
     assert_eq!(Rgba::parse("rgb(ff8000)"), c(255, 128, 0));
     assert_eq!(
@@ -156,6 +171,8 @@ fn gtk_font_name_strips_style_words() {
     assert_eq!(g.font_name.as_deref(), Some("Oxanium"));
     let g = parse_gtk(Some("[Settings]\ngtk-font-name=Noto Sans\n"), None);
     assert_eq!(g.font_name.as_deref(), Some("Noto Sans"));
+    let g = parse_gtk(Some("[Settings]\ngtk-font-name=Times New Roman 12\n"), None);
+    assert_eq!(g.font_name.as_deref(), Some("Times New Roman"));
     let g = parse_gtk(Some("[Settings]\ngtk-font-name=Bold 12\n"), None);
     assert_eq!(g.font_name.as_deref(), Some("Bold"));
 }

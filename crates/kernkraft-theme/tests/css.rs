@@ -52,6 +52,16 @@ fn no_format_hues_in_css() {
 }
 
 #[test]
+fn font_name_cannot_close_a_style_element() {
+    let css = to_css(&tokens("A</style><script>"));
+    assert!(!css.contains('<'), "{css}");
+    assert!(
+        css.contains("--kern-font-ui:\"A\\3c /style>\\3c script>\",system-ui"),
+        "{css}"
+    );
+}
+
+#[test]
 fn hostile_font_name_cannot_leave_the_string() {
     let css = to_css(&tokens("A\"; } body { x: y\\\n"));
     assert!(

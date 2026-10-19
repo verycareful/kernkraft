@@ -46,9 +46,11 @@ pub enum Mode {
     /// Follow the system: its palette and its light or dark preference.
     #[default]
     System,
-    /// Pin the light scheme with Kern's own neutrals.
+    /// Pin the light scheme. Kern's own neutrals are used, unless colours are
+    /// followed and Hyprland's palette is itself light; a dark Hyprland
+    /// palette is not used (see [`Tokens::scheme_mismatch`]).
     Light,
-    /// Pin the dark scheme with Kern's own neutrals.
+    /// Pin the dark scheme, with the same rule mirrored.
     Dark,
 }
 
@@ -97,9 +99,14 @@ pub struct Tokens {
     /// deserialises. Every field except `density` has an entry.
     pub origins: BTreeMap<String, Origin>,
     /// Names of tokens that fell back to Kern's neutrals because the source
-    /// palette failed WCAG AA for body text. Surface and sunken fall back
-    /// with them so the set stays coherent, without being listed.
+    /// palette failed WCAG AA for body text against bg, surface or sunken.
+    /// The neutral set (bg, surface, sunken, text) reverts together; each of
+    /// those that came from a source is named, in that order.
     pub wcag_fallbacks: Vec<String>,
+    /// Colours are followed and a scheme is pinned, but Hyprland's palette is
+    /// of the other scheme, so Kern's neutrals for the pinned scheme are used
+    /// instead. Settings can say why the system palette is not applied.
+    pub scheme_mismatch: bool,
 }
 
 /// Luminance at which white and black text contrast equally with a
@@ -147,7 +154,24 @@ pub fn resolve(
     user: &UserChoice,
     fonts_ok: &dyn Fn(&str) -> bool,
 ) -> Tokens {
-    let system_colours = follow.colours && user.mode == Mode::System;
+    let hypr_scheme = src.hypr.as_ref().and_then(|h| h.background).map(|bg| {
+        if is_dark_background(bg) {
+            Scheme::Dark
+        } else {
+            Scheme::Light
+        }
+    });
+    let pinned = match user.mode {
+        Mode::System => None,
+        Mode::Light => Some(Scheme::Light),
+        Mode::Dark => Some(Scheme::Dark),
+    };
+    // A pinned scheme keeps Hyprland's palette only when the palette is of
+    // that scheme; with no background there is nothing to compare, so the
+    // palette is not used.
+    let system_colours = follow.colours && (pinned.is_none() || pinned == hypr_scheme);
+    let scheme_mismatch =
+        follow.colours && pinned.is_some() && hypr_scheme.is_some() && pinned != hypr_scheme;
     let (scheme, scheme_origin) = pick_scheme(src, user, system_colours);
     let k = neutrals(scheme);
     let mut origins: BTreeMap<String, Origin> = BTreeMap::new();
@@ -178,16 +202,22 @@ pub fn resolve(
     let mut sunken = colour("sunken", hc(|h| h.alternate_base), k.sunken);
     let mut text = colour("text", hc(|h| h.text), k.text);
 
+    // Body text must reach WCAG AA against every background it sits on. On a
+    // failure the whole neutral set reverts together, so the palette stays
+    // coherent, and every token that was taken from the source and is now
+    // Kern's is named.
     let mut wcag_fallbacks = Vec::new();
-    if contrast_ratio(text, bg) < WCAG_AA_BODY {
-        bg = k.bg;
-        surface = k.surface;
-        sunken = k.sunken;
-        text = k.text;
+    if [bg, surface, sunken]
+        .iter()
+        .any(|b| contrast_ratio(text, *b) < WCAG_AA_BODY)
+    {
         for name in ["bg", "surface", "sunken", "text"] {
-            origins.insert(name.into(), Origin::Kern);
+            if origins[name] != Origin::Kern {
+                wcag_fallbacks.push(name.to_string());
+                origins.insert(name.into(), Origin::Kern);
+            }
         }
-        wcag_fallbacks = vec!["bg".to_string(), "text".to_string()];
+        (bg, surface, sunken, text) = (k.bg, k.surface, k.sunken, k.text);
     }
 
     let from_kern = origins["bg"] == Origin::Kern && origins["text"] == Origin::Kern;
@@ -338,6 +368,7 @@ pub fn resolve(
         density: user.density,
         origins,
         wcag_fallbacks,
+        scheme_mismatch,
     }
 }
 

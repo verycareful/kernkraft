@@ -52,14 +52,19 @@ pub enum VolumesError {
         mount_point: PathBuf,
         reason: EjectRefusal,
     },
-    /// An eject stopped part way. `unmounted` lists what is now unmounted;
-    /// `failed` is the mount point whose unmount failed, or the drive's
-    /// UDisks object path when the eject or power-off itself failed.
-    #[error("eject incomplete: unmounted {} volume(s), then {} failed: {reason}", unmounted.len(), failed.display())]
+    /// An eject stopped part way. `unmounted` lists what is now unmounted and
+    /// `locked` the encrypted blocks (UDisks object paths) now locked;
+    /// `failed` is the mount point whose unmount failed, or the UDisks
+    /// object path of the block whose lock or the drive whose eject or
+    /// power-off failed. `cause` is the typed error (a dismissed polkit
+    /// prompt, a busy volume, a timeout).
+    #[error("eject incomplete: unmounted {} volume(s), locked {}, then {} failed: {cause}", unmounted.len(), locked.len(), failed.display())]
     EjectIncomplete {
         unmounted: Vec<PathBuf>,
+        locked: Vec<PathBuf>,
         failed: PathBuf,
-        reason: String,
+        #[source]
+        cause: Box<VolumesError>,
     },
     /// No reply within the call's time limit. The operation may still
     /// complete; look at the mounts again before retrying.
@@ -87,7 +92,9 @@ pub enum EjectRefusal {
     NotRemovable,
     #[error("UDisks marks {device} on this drive as a system device")]
     SystemDevice { device: String },
-    #[error("{} is a system mount", .0.display())]
+    #[error("{device} on this drive is an LVM or RAID member, which cannot be taken apart safely")]
+    Holder { device: String },
+    #[error("{} is not a user mount", .0.display())]
     SystemMount(PathBuf),
 }
 

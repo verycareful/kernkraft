@@ -47,6 +47,7 @@ const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 const BLOCK: &str = "org.freedesktop.UDisks2.Block";
 const FILESYSTEM: &str = "org.freedesktop.UDisks2.Filesystem";
 const DRIVE: &str = "org.freedesktop.UDisks2.Drive";
+const ENCRYPTED: &str = "org.freedesktop.UDisks2.Encrypted";
 const ERROR_PREFIX: &str = "org.freedesktop.UDisks2.Error.";
 /// The object path UDisks puts in `Block.Drive` when there is no drive.
 const NO_OBJECT: &str = "/";
@@ -205,8 +206,50 @@ fn unmounted_devices(objects: &Objects) -> Result<Vec<Device>, VolumesError> {
     Ok(out)
 }
 
+/// `Block.CryptoBackingDevice`: the encrypted block a cleartext block was
+/// unlocked from (`/` or absent when it is not one).
+fn backing_of(ifaces: &HashMap<String, Props>) -> Result<Option<String>, VolumesError> {
+    match prop(ifaces, BLOCK, "CryptoBackingDevice") {
+        None => Ok(None),
+        Some(v) => {
+            let owned = v
+                .try_clone()
+                .map_err(|e| bad("GetManagedObjects", e.to_string()))?;
+            let p = OwnedObjectPath::try_from(owned)
+                .map_err(|e| bad("GetManagedObjects", format!("CryptoBackingDevice: {e}")))?;
+            Ok((p.as_str() != NO_OBJECT).then(|| p.to_string()))
+        }
+    }
+}
+
+/// Longest chain of stacked block devices followed (cleartext on encrypted
+/// on partition is two links); a loop in the data ends the walk.
+const MAX_STACK: usize = 16;
+
+/// The drive a block belongs to, following `CryptoBackingDevice` for a
+/// cleartext device (whose own `Block.Drive` is `/`).
+fn resolve_drive(objects: &Objects, block: &str) -> Result<Option<String>, VolumesError> {
+    let mut current = block.to_string();
+    for _ in 0..MAX_STACK {
+        let key = OwnedObjectPath::try_from(current.as_str())
+            .map_err(|e| bad("GetManagedObjects", e.to_string()))?;
+        let Some(ifaces) = objects.get(&key) else {
+            return Ok(None);
+        };
+        if let Some(d) = drive_of(ifaces)? {
+            return Ok(Some(d));
+        }
+        match backing_of(ifaces)? {
+            Some(b) => current = b,
+            None => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
 /// The filesystem object mounted at `mount_point` (compared as paths, so a
-/// trailing slash does not matter), with its drive object if any.
+/// trailing slash does not matter), with its drive object if any (found
+/// through the encrypted block for an unlocked volume).
 fn find_mounted(
     objects: &Objects,
     mount_point: &Path,
@@ -216,7 +259,9 @@ fn find_mounted(
             continue;
         }
         if mount_points(ifaces)?.iter().any(|m| m == mount_point) {
-            return Ok(Some((path.to_string(), drive_of(ifaces)?)));
+            let object = path.to_string();
+            let drive = resolve_drive(objects, &object)?;
+            return Ok(Some((object, drive)));
         }
     }
     Ok(None)
@@ -335,15 +380,16 @@ impl Udisks {
 
     /// Ejects the drive of the volume mounted at `mount_point`.
     ///
-    /// Nothing is touched unless the drive is `Removable`, no block device on
-    /// it has `HintSystem`, no mount on it is a system mount (`/`, `/home`,
-    /// `/boot*`, `/efi`, a subvolume or bind mount of the system disk, see
-    /// [`user_mounts`](crate::user_mounts)), and it is `Ejectable` or
-    /// `CanPowerOff`; otherwise [`VolumesError::EjectRefused`] or
-    /// [`VolumesError::NoEject`]. Then the volume and every other mounted
-    /// filesystem on the drive are unmounted (an eject fails under mounted
-    /// partitions), then the drive is ejected if `Ejectable`, else powered
-    /// off. A failure of the first unmount is its own error (a busy volume
+    /// The drive's members are its partitions and every block stacked on
+    /// them through `CryptoBackingDevice` (an unlocked LUKS volume).
+    /// Nothing is touched unless the drive is `Removable`, no member has
+    /// `HintSystem`, no member is an LVM or RAID member, every mount on the
+    /// drive is under `/run/media/<user>`, `/media` or `/mnt` and not on the
+    /// system disk, and the drive is `Ejectable` or `CanPowerOff`; otherwise
+    /// [`VolumesError::EjectRefused`] or [`VolumesError::NoEject`]. Then the
+    /// volume and every other mounted filesystem on the drive are unmounted
+    /// (an eject fails under mounted partitions), unlocked encrypted blocks
+    /// are locked, and the drive is ejected if `Ejectable`, else powered off. A failure of the first unmount is its own error (a busy volume
     /// is [`VolumesError::Busy`]); a failure after something was unmounted is
     /// [`VolumesError::EjectIncomplete`] listing exactly what was.
     pub fn eject(&self, mount_point: &Path) -> Result<(), VolumesError> {
@@ -356,13 +402,15 @@ impl Udisks {
         let user = current_user(uid, &mut Vec::new()).ok_or(VolumesError::NoUser { uid })?;
         let lines = parse_mountinfo_strict(read_mountinfo()?)?;
         let cls = Classifier::new(&lines, &user);
-        let is_system = |mp: &Path| {
+        // Only user mounts may be unmounted by an eject: under
+        // /run/media/<user>, /media or /mnt, and not on the system disk.
+        let may_unmount = |mp: &Path| {
             let dev = lines
                 .iter()
                 .rev()
                 .find(|l| l.mount_point == mp)
                 .map(|l| (l.major, l.minor));
-            cls.is_system(mp, dev)
+            cls.in_user_trees(mp) && !cls.is_system(mp, dev)
         };
         let drive_info = match &drive {
             Some(d) => Some(drive_info(&objects, d)?),
@@ -377,32 +425,60 @@ impl Udisks {
             mount_point,
             drive_info.as_ref(),
             &members,
-            &is_system,
+            &may_unmount,
         )?;
-        let mut unmounted: Vec<PathBuf> = Vec::new();
-        for (obj, mp) in &plan.unmount {
-            match self.unmount_object(obj, mp) {
-                Ok(()) => unmounted.push(mp.clone()),
-                Err(e) if unmounted.is_empty() => return Err(e),
-                Err(e) => {
-                    return Err(VolumesError::EjectIncomplete {
-                        unmounted,
-                        failed: mp.clone(),
-                        reason: e.to_string(),
-                    })
+        let mut done = Done::default();
+        for step in &plan.steps {
+            let r = match step {
+                Step::Unmount {
+                    object,
+                    mount_point,
+                } => self.unmount_object(object, mount_point),
+                Step::Lock { object } => self.act(object, ENCRYPTED, "Lock", None).map(drop),
+            };
+            if let Err(e) = r {
+                if done.is_empty() {
+                    return Err(e);
                 }
+                return Err(done.incomplete(step.target(), e));
             }
+            done.record(step);
         }
         // A drive refusing here is not about one volume, so no mount point is
         // passed and a DeviceBusy stays a plain UDisks error.
         let drive = drive.unwrap_or_default();
         self.act(&drive, DRIVE, plan.method, None)
             .map(drop)
-            .map_err(|e| VolumesError::EjectIncomplete {
-                unmounted,
-                failed: PathBuf::from(drive),
-                reason: e.to_string(),
-            })
+            .map_err(|e| done.incomplete(PathBuf::from(drive), e))
+    }
+}
+
+/// What an eject has undone so far.
+#[derive(Default)]
+struct Done {
+    unmounted: Vec<PathBuf>,
+    locked: Vec<PathBuf>,
+}
+
+impl Done {
+    fn is_empty(&self) -> bool {
+        self.unmounted.is_empty() && self.locked.is_empty()
+    }
+
+    fn record(&mut self, step: &Step) {
+        match step {
+            Step::Unmount { mount_point, .. } => self.unmounted.push(mount_point.clone()),
+            Step::Lock { object } => self.locked.push(PathBuf::from(object)),
+        }
+    }
+
+    fn incomplete(self, failed: PathBuf, cause: VolumesError) -> VolumesError {
+        VolumesError::EjectIncomplete {
+            unmounted: self.unmounted,
+            locked: self.locked,
+            failed,
+            cause: Box::new(cause),
+        }
     }
 }
 
@@ -425,20 +501,30 @@ fn drive_info(objects: &Objects, drive: &str) -> Result<DriveInfo, VolumesError>
     })
 }
 
-/// A block device on the drive being ejected.
-#[derive(Debug, Clone)]
+/// A block device on the drive being ejected, or stacked on one of its
+/// partitions.
+#[derive(Debug, Clone, Default)]
 struct Member {
     object: String,
     device: String,
     mount_points: Vec<PathBuf>,
     system_hint: bool,
+    /// The encrypted block this one is the cleartext of.
+    backing: Option<String>,
+    id_type: String,
+    id_usage: String,
 }
 
-/// Every block device whose `Block.Drive` is `drive`, filesystem or not.
+/// Every block whose drive, resolved through `CryptoBackingDevice`, is
+/// `drive`, filesystem or not.
 fn members_of(objects: &Objects, drive: &str) -> Result<Vec<Member>, VolumesError> {
     let mut out = Vec::new();
     for (path, ifaces) in objects {
-        if !ifaces.contains_key(BLOCK) || drive_of(ifaces)?.as_deref() != Some(drive) {
+        if !ifaces.contains_key(BLOCK) {
+            continue;
+        }
+        let object = path.to_string();
+        if resolve_drive(objects, &object)?.as_deref() != Some(drive) {
             continue;
         }
         let device = match prop(ifaces, BLOCK, "Device") {
@@ -446,22 +532,46 @@ fn members_of(objects: &Objects, drive: &str) -> Result<Vec<Member>, VolumesErro
             None => String::new(),
         };
         out.push(Member {
-            object: path.to_string(),
+            object,
             device,
             mount_points: mount_points(ifaces)?,
             system_hint: get_bool(ifaces, BLOCK, "HintSystem")?,
+            backing: backing_of(ifaces)?,
+            id_type: get_string(ifaces, BLOCK, "IdType")?,
+            id_usage: get_string(ifaces, BLOCK, "IdUsage")?,
         });
     }
     out.sort_by(|a, b| a.object.cmp(&b.object));
     Ok(out)
 }
 
+/// One action of an eject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Step {
+    Unmount {
+        object: String,
+        mount_point: PathBuf,
+    },
+    /// `Encrypted.Lock` on the encrypted (backing) block.
+    Lock { object: String },
+}
+
+impl Step {
+    /// What `EjectIncomplete::failed` names when this step fails.
+    fn target(&self) -> PathBuf {
+        match self {
+            Step::Unmount { mount_point, .. } => mount_point.clone(),
+            Step::Lock { object } => PathBuf::from(object),
+        }
+    }
+}
+
 /// What an eject will do, decided before anything is touched.
 #[derive(Debug, PartialEq, Eq)]
 struct EjectPlan {
-    /// (filesystem object, mount point) in unmount order: the requested
-    /// volume first, then the other mounted members.
-    unmount: Vec<(String, PathBuf)>,
+    /// Unmounts (the requested volume first, then the other mounted members)
+    /// followed by the locks of their encrypted blocks.
+    steps: Vec<Step>,
     /// `Eject` or `PowerOff`.
     method: &'static str,
 }
@@ -471,7 +581,7 @@ fn plan_eject(
     mount_point: &Path,
     drive: Option<&DriveInfo>,
     members: &[Member],
-    is_system_mount: &dyn Fn(&Path) -> bool,
+    may_unmount: &dyn Fn(&Path) -> bool,
 ) -> Result<EjectPlan, VolumesError> {
     let refuse = |reason| VolumesError::EjectRefused {
         mount_point: mount_point.to_path_buf(),
@@ -488,10 +598,20 @@ fn plan_eject(
             device: m.device.clone(),
         }));
     }
+    // UDisks does not expose what an LVM physical volume or a RAID member
+    // holds (logical volumes, array devices) well enough to unmount and
+    // deactivate them safely, so a drive carrying one is never ejected.
+    if let Some(m) = members.iter().find(|m| {
+        m.id_type == "LVM2_member" || m.id_type == "linux_raid_member" || m.id_usage == "raid"
+    }) {
+        return Err(refuse(EjectRefusal::Holder {
+            device: m.device.clone(),
+        }));
+    }
     if let Some(mp) = members
         .iter()
         .flat_map(|m| &m.mount_points)
-        .find(|mp| is_system_mount(mp))
+        .find(|mp| !may_unmount(mp))
     {
         return Err(refuse(EjectRefusal::SystemMount(mp.clone())));
     }
@@ -504,22 +624,28 @@ fn plan_eject(
             mount_point: mount_point.to_path_buf(),
         });
     };
-    let mut unmount: Vec<(String, PathBuf)> = Vec::new();
-    for m in members.iter().filter(|m| m.object == requested) {
-        unmount.extend(
-            m.mount_points
-                .first()
-                .map(|p| (m.object.clone(), p.clone())),
-        );
+    let mut steps: Vec<Step> = Vec::new();
+    let ordered = members
+        .iter()
+        .filter(|m| m.object == requested)
+        .chain(members.iter().filter(|m| m.object != requested));
+    for m in ordered {
+        if let Some(p) = m.mount_points.first() {
+            steps.push(Step::Unmount {
+                object: m.object.clone(),
+                mount_point: p.clone(),
+            });
+        }
     }
-    for m in members.iter().filter(|m| m.object != requested) {
-        unmount.extend(
-            m.mount_points
-                .first()
-                .map(|p| (m.object.clone(), p.clone())),
-        );
+    for m in members {
+        if let Some(b) = &m.backing {
+            let lock = Step::Lock { object: b.clone() };
+            if !steps.contains(&lock) {
+                steps.push(lock);
+            }
+        }
     }
-    Ok(EjectPlan { unmount, method })
+    Ok(EjectPlan { steps, method })
 }
 
 #[cfg(test)]
@@ -677,6 +803,19 @@ mod tests {
             device: device.to_string(),
             mount_points: mounts.iter().map(PathBuf::from).collect(),
             system_hint: system,
+            ..Member::default()
+        }
+    }
+
+    fn typed(mut m: Member, id_type: &str) -> Member {
+        m.id_type = id_type.to_string();
+        m
+    }
+
+    fn cleartext(object: &str, backing: &str, mounts: &[&str]) -> Member {
+        Member {
+            backing: Some(backing.to_string()),
+            ..member(object, "/dev/dm-0", mounts, false)
         }
     }
 
@@ -686,14 +825,34 @@ mod tests {
         can_power_off: true,
     };
 
+    /// `bad` lists mount points that fail the system test; otherwise only
+    /// the three user trees may be unmounted.
     fn plan(
         drive: Option<&DriveInfo>,
         members: &[Member],
-        system: &[&str],
+        bad: &[&str],
     ) -> Result<EjectPlan, VolumesError> {
-        plan_eject("/o/b", Path::new("/run/media/u/B"), drive, members, &|p| {
-            system.iter().any(|s| p == Path::new(s))
-        })
+        plan_for("/o/b", drive, members, bad)
+    }
+
+    fn plan_for(
+        requested: &str,
+        drive: Option<&DriveInfo>,
+        members: &[Member],
+        bad: &[&str],
+    ) -> Result<EjectPlan, VolumesError> {
+        plan_eject(
+            requested,
+            Path::new("/run/media/u/B"),
+            drive,
+            members,
+            &|p| {
+                let in_trees = ["/run/media/u", "/media", "/mnt"]
+                    .iter()
+                    .any(|t| p.starts_with(t));
+                in_trees && !bad.iter().any(|s| p == Path::new(s))
+            },
+        )
     }
 
     fn refusal(r: Result<EjectPlan, VolumesError>) -> EjectRefusal {
@@ -712,10 +871,16 @@ mod tests {
         ];
         let p = plan(Some(&STICK), &members, &[]).expect("allowed");
         assert_eq!(
-            p.unmount,
+            p.steps,
             vec![
-                ("/o/b".to_string(), PathBuf::from("/run/media/u/B")),
-                ("/o/a".to_string(), PathBuf::from("/run/media/u/A")),
+                Step::Unmount {
+                    object: "/o/b".into(),
+                    mount_point: PathBuf::from("/run/media/u/B")
+                },
+                Step::Unmount {
+                    object: "/o/a".into(),
+                    mount_point: PathBuf::from("/run/media/u/A")
+                },
             ]
         );
         assert_eq!(p.method, "PowerOff");
@@ -764,5 +929,102 @@ mod tests {
             plan(Some(&dead), std::slice::from_ref(&usb), &[]),
             Err(VolumesError::NoEject { .. })
         ));
+    }
+
+    #[test]
+    fn plan_refuses_a_sibling_outside_the_user_trees() {
+        let usb = member("/o/b", "/dev/sdb2", &["/run/media/u/B"], false);
+        for odd in ["/var", "/usr", "/opt", "/srv/data"] {
+            let sib = member("/o/v", "/dev/sdb3", &[odd], false);
+            assert_eq!(
+                refusal(plan(Some(&STICK), &[usb.clone(), sib], &[])),
+                EjectRefusal::SystemMount(PathBuf::from(odd))
+            );
+        }
+    }
+
+    #[test]
+    fn luks_stick_eject_plan_unmounts_locks_ejects() {
+        let members = [
+            typed(member("/o/p1", "/dev/sdb1", &[], false), "crypto_LUKS"),
+            cleartext("/o/dm", "/o/p1", &["/run/media/u/B"]),
+        ];
+        let p = plan_for("/o/dm", Some(&STICK), &members, &[]).expect("allowed");
+        assert_eq!(
+            p.steps,
+            vec![
+                Step::Unmount {
+                    object: "/o/dm".into(),
+                    mount_point: PathBuf::from("/run/media/u/B")
+                },
+                Step::Lock {
+                    object: "/o/p1".into()
+                },
+            ]
+        );
+        assert_eq!(p.method, "PowerOff");
+    }
+
+    #[test]
+    fn luks_root_on_usb_refuses_sibling_eject() {
+        let members = [
+            typed(member("/o/p1", "/dev/sdb1", &[], false), "crypto_LUKS"),
+            cleartext("/o/root", "/o/p1", &["/"]),
+            member("/o/b", "/dev/sdb2", &["/run/media/u/B"], false),
+        ];
+        assert_eq!(
+            refusal(plan(Some(&STICK), &members, &[])),
+            EjectRefusal::SystemMount(PathBuf::from("/"))
+        );
+    }
+
+    #[test]
+    fn lvm_member_refuses() {
+        let usb = member("/o/b", "/dev/sdb2", &["/run/media/u/B"], false);
+        for kind in ["LVM2_member", "linux_raid_member"] {
+            let pv = typed(member("/o/pv", "/dev/sdb3", &[], false), kind);
+            assert_eq!(
+                refusal(plan(Some(&STICK), &[usb.clone(), pv], &[])),
+                EjectRefusal::Holder {
+                    device: "/dev/sdb3".into()
+                }
+            );
+        }
+        let mut raid = member("/o/r", "/dev/sdb4", &[], false);
+        raid.id_usage = "raid".into();
+        assert!(matches!(
+            refusal(plan(Some(&STICK), &[usb, raid], &[])),
+            EjectRefusal::Holder { .. }
+        ));
+    }
+
+    #[test]
+    fn stacked_blocks_resolve_to_the_drive_of_their_backing_device() {
+        let key = |p: &str| OwnedObjectPath::try_from(p).expect("path");
+        let mut o = objects();
+        // A cleartext block on /o/sdb1: its own Drive is "/", the backing one is the stick.
+        let mut dm = fs_object("/dev/dm-0", false, &[b"/run/media/u/L"], "/");
+        dm.get_mut(BLOCK)
+            .expect("block")
+            .insert("CryptoBackingDevice".into(), val(key("/o/sdb1")));
+        o.insert(key("/o/dm0"), dm);
+        let (obj, drive) = find_mounted(&o, Path::new("/run/media/u/L"))
+            .expect("ok")
+            .expect("found");
+        assert_eq!(
+            (obj.as_str(), drive.as_deref()),
+            ("/o/dm0", Some("/o/drive"))
+        );
+        let members = members_of(&o, "/o/drive").expect("ok");
+        let names: Vec<_> = members.iter().map(|m| m.object.as_str()).collect();
+        assert_eq!(names, vec!["/o/dm0", "/o/sdb1", "/o/sdb2"]);
+        assert_eq!(members[0].backing.as_deref(), Some("/o/sdb1"));
+        // A backing loop ends instead of spinning.
+        let mut a = fs_object("/dev/a", false, &[], "/");
+        a.get_mut(BLOCK)
+            .expect("block")
+            .insert("CryptoBackingDevice".into(), val(key("/o/a")));
+        o.insert(key("/o/a"), a);
+        assert_eq!(resolve_drive(&o, "/o/a").expect("ok"), None);
     }
 }

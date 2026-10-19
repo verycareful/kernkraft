@@ -13,6 +13,7 @@
 //! outside the SVG's own directory is ever read and no URL is ever followed;
 //! `data:` URLs are decoded in place.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -38,14 +39,37 @@ const MAX_ALLOC: u64 = 512 * 1024 * 1024;
 /// is far below this; the cap bounds memory and parse time.
 const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
 
-/// Deepest element nesting accepted in an SVG, the root counted as 1.
-/// usvg and resvg recurse once per level, and a thumbnail pool thread has
-/// Rust's default 2 MiB stack. Measured in a debug build (the largest
-/// frames) on a 2 MiB thread with nested `<g opacity="0.9">`: depth 130
-/// renders and 140 overflows the stack and aborts the process. 32 leaves a
-/// margin of about 4 times, and is far above the 10 to 15 levels graphics
-/// editors write.
+/// Stack of the thread that parses and draws an SVG, 16 MiB. It is address
+/// space reserved, not memory used until touched. A debug build, whose frames
+/// are the largest, draws usvg's maximum nesting on it (see `MAX_SVG_DEPTH`),
+/// about thirty times the depth the scan allows.
+const RENDER_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+/// Deepest effective element nesting accepted in an SVG, the root counted as
+/// 1 and every `<use>` or other reference expanded in place. usvg and resvg
+/// recurse once per level. Measured with nested `<g opacity="0.9">`:
+/// - debug build, 2 MiB thread: depth 130 renders, 140 overflows the stack
+///   and aborts;
+/// - debug build, 16 MiB thread (`RENDER_STACK_BYTES`): usvg's own limit of
+///   about 1020 renders without overflow;
+/// - release build, 2 MiB thread: 1020 renders without overflow.
+///
+/// 32 is a quarter of the lowest limit measured (debug, 2 MiB) and sits above
+/// the 10 to 15 levels graphics editors write.
 const MAX_SVG_DEPTH: usize = 32;
+
+/// Most elements the SVG scan keeps. The table holds a few dozen bytes per
+/// element, so this bounds its memory at tens of megabytes; no drawing a
+/// person browses has a million elements.
+const MAX_ELEMENTS: usize = 1_000_000;
+
+/// Most elements instantiated through references (`<use>` copies and the
+/// like) in one SVG. usvg builds a node for every copy, so a chain of
+/// references that doubles at each level costs memory and time exponential
+/// in the file size. 100 000 copies is a sprite sheet of thousands of icons
+/// and builds in well under a second; beyond it a document is a blow-up,
+/// not a picture.
+const MAX_INSTANCED_ELEMENTS: usize = 100_000;
 
 /// Whether [`generate`] handles `mime`.
 pub fn can_thumbnail(mime: &str) -> bool {
@@ -201,8 +225,12 @@ fn raster_within_limits(data: &[u8]) -> bool {
 /// refused and the element is left out.
 fn href_resolver(dir: PathBuf) -> ImageHrefResolver<'static> {
     let inner_data = ImageHrefResolver::default_data_resolver();
+    // Only PNG, JPEG, GIF and WebP reach usvg, judged by the content and not
+    // by the declared type. usvg would parse a nested SVG with no depth or
+    // compression checks, and this scan covers only the outer document.
     let data = Arc::new(
-        move |mime: &str, bytes: Arc<Vec<u8>>, opts: &usvg::Options| {
+        move |_declared: &str, bytes: Arc<Vec<u8>>, opts: &usvg::Options| {
+            let mime = raster_mime(image::guess_format(&bytes).ok()?)?;
             if raster_within_limits(&bytes) {
                 inner_data(mime, bytes, opts)
             } else {
@@ -215,8 +243,7 @@ fn href_resolver(dir: PathBuf) -> ImageHrefResolver<'static> {
         resolve_data: Box::new(move |mime, bytes, opts| data(mime, bytes, opts)),
         resolve_string: Box::new(move |href, opts| {
             let bytes = read_inside(&dir, href)?;
-            let mime = raster_mime(image::guess_format(&bytes).ok()?)?;
-            for_files(mime, Arc::new(bytes), opts)
+            for_files("", Arc::new(bytes), opts)
         }),
     }
 }
@@ -247,91 +274,265 @@ fn read_inside(dir: &Path, href: &str) -> Option<Vec<u8>> {
     (bytes.len() as u64 <= MAX_INPUT_BYTES).then_some(bytes)
 }
 
-/// Refuses an SVG nested deeper than [`MAX_SVG_DEPTH`], before any XML parser
-/// recurses through it (roxmltree and usvg both overflow a 2 MiB stack well
-/// under their own nesting limits). The scan is one pass over the bytes with
-/// a counter, no recursion. It follows tags, comments, CDATA, processing
-/// instructions and a DOCTYPE with its internal subset; a document it
-/// cannot follow to the end is left for the parser to reject, which cannot
-/// have reached a depth the scan did not count. An entity whose value holds
-/// markup could add depth the scan cannot see, so it is refused.
+/// Refuses an SVG whose effective nesting is deeper than [`MAX_SVG_DEPTH`] or
+/// that instantiates more than [`MAX_INSTANCED_ELEMENTS`] elements through
+/// references, before any XML parser or renderer recurses through it.
+///
+/// usvg expands a `<use>` into a copy of its target, and a pattern, mask,
+/// clip path, filter or gradient is resolved the same way, so the depth the
+/// renderer sees is the document depth plus the depth of everything
+/// referenced along the way. The scan builds a flat element table (one pass
+/// over the bytes, no recursion) with each element's `id` and the targets of
+/// its `href`, `xlink:href` and `url(#id)` references, then walks the
+/// expanded tree depth first. That walk is itself bounded by the depth cap,
+/// so its recursion is at most [`MAX_SVG_DEPTH`] frames.
+///
+/// A reference cycle is refused. A reference to an id that does not exist,
+/// or to something outside the document, is skipped: usvg skips it too, so
+/// it adds no depth. A document the scan cannot follow to its end (an
+/// unterminated tag or comment) is refused; the parser would reject it
+/// anyway, and refusing keeps a confused scan from waving through a deep
+/// document. An entity whose value holds markup could add depth the scan
+/// cannot see, so it is refused.
 fn check_depth(path: &Path, data: &[u8]) -> Result<(), ThumbError> {
-    match scan_depth(data) {
-        Ok(()) => Ok(()),
-        Err(reason) => Err(ThumbError::decode(path, reason)),
+    scan(data)
+        .and_then(|doc| doc.check())
+        .map_err(|reason| ThumbError::decode(path, reason))
+}
+
+/// One element: its children, its `id`, and the ids it refers to.
+struct Element<'a> {
+    children: Vec<usize>,
+    refs: Vec<&'a [u8]>,
+}
+
+struct Doc<'a> {
+    elements: Vec<Element<'a>>,
+    roots: Vec<usize>,
+    by_id: HashMap<&'a [u8], Vec<usize>>,
+}
+
+impl Doc<'_> {
+    fn check(&self) -> Result<(), String> {
+        let mut instanced = 0usize;
+        let mut path = Vec::new();
+        for &root in &self.roots {
+            self.visit(root, 1, false, &mut path, &mut instanced)?;
+        }
+        Ok(())
+    }
+
+    /// Visits element `i` at effective depth `depth`; `path` holds the
+    /// reference targets being expanded, innermost last.
+    fn visit(
+        &self,
+        i: usize,
+        depth: usize,
+        instance: bool,
+        path: &mut Vec<usize>,
+        instanced: &mut usize,
+    ) -> Result<(), String> {
+        if depth > MAX_SVG_DEPTH {
+            return Err(format!("SVG nested deeper than {MAX_SVG_DEPTH} elements"));
+        }
+        if instance {
+            *instanced += 1;
+            if *instanced > MAX_INSTANCED_ELEMENTS {
+                return Err(format!(
+                    "SVG references expand to more than {MAX_INSTANCED_ELEMENTS} elements"
+                ));
+            }
+        }
+        let element = &self.elements[i];
+        for target in element.refs.iter().filter_map(|r| self.by_id.get(r)) {
+            for &t in target {
+                if path.contains(&t) || t == i {
+                    return Err("SVG references form a cycle".to_string());
+                }
+                path.push(t);
+                let result = self.visit(t, depth + 1, true, path, instanced);
+                path.pop();
+                result?;
+            }
+        }
+        for &child in &element.children {
+            self.visit(child, depth + 1, instance, path, instanced)?;
+        }
+        Ok(())
     }
 }
 
-fn scan_depth(data: &[u8]) -> Result<(), String> {
-    let too_deep = || format!("SVG nested deeper than {MAX_SVG_DEPTH} elements");
+fn scan(data: &[u8]) -> Result<Doc<'_>, String> {
+    const UNFINISHED: &str = "SVG ends inside a tag, comment or declaration";
     let find = |from: usize, needle: &[u8]| {
         data.get(from..)
             .and_then(|rest| rest.windows(needle.len()).position(|w| w == needle))
             .map(|p| from + p + needle.len())
+            .ok_or_else(|| UNFINISHED.to_string())
     };
-    let mut depth = 0usize;
+    let mut doc = Doc {
+        elements: Vec::new(),
+        roots: Vec::new(),
+        by_id: HashMap::new(),
+    };
+    let mut open: Vec<usize> = Vec::new();
     let mut i = 0;
     while let Some(offset) = data
         .get(i..)
         .and_then(|r| r.iter().position(|&b| b == b'<'))
     {
+        // Text between tags can carry CSS with `url(#id)` references.
+        if let Some(&current) = open.last() {
+            collect_urls(&data[i..i + offset], &mut doc.elements[current].refs);
+        }
         i += offset;
         let rest = &data[i..];
-        let end = if rest.starts_with(b"<!--") {
-            find(i + 4, b"-->")
+        if rest.starts_with(b"<!--") {
+            i = find(i + 4, b"-->")?;
         } else if rest.starts_with(b"<![CDATA[") {
-            find(i + 9, b"]]>")
+            i = find(i + 9, b"]]>")?;
         } else if rest.starts_with(b"<?") {
-            find(i + 2, b"?>")
+            i = find(i + 2, b"?>")?;
         } else if rest.starts_with(b"<!") {
-            skip_declaration(data, i + 2)?
+            i = skip_declaration(data, i + 2)?;
         } else if rest.starts_with(b"</") {
-            depth = depth.saturating_sub(1);
-            find(i + 2, b">")
+            open.pop();
+            i = find(i + 2, b">")?;
         } else {
-            let (end, self_closing) = match skip_tag(data, i + 1) {
-                Some(found) => found,
-                None => return Ok(()),
-            };
-            if depth + 1 > MAX_SVG_DEPTH {
-                return Err(too_deep());
+            let tag = parse_tag(data, i + 1)?;
+            if open.len() + 1 > MAX_SVG_DEPTH {
+                return Err(format!("SVG nested deeper than {MAX_SVG_DEPTH} elements"));
             }
-            if !self_closing {
-                depth += 1;
+            if doc.elements.len() >= MAX_ELEMENTS {
+                return Err(format!("SVG has more than {MAX_ELEMENTS} elements"));
             }
-            Some(end)
-        };
-        match end {
-            Some(next) => i = next,
-            None => return Ok(()),
+            let index = doc.elements.len();
+            match open.last() {
+                Some(&parent) => doc.elements[parent].children.push(index),
+                None => doc.roots.push(index),
+            }
+            if let Some(id) = tag.id {
+                doc.by_id.entry(id).or_default().push(index);
+            }
+            doc.elements.push(Element {
+                children: Vec::new(),
+                refs: tag.refs,
+            });
+            if !tag.self_closing {
+                open.push(index);
+            }
+            i = tag.end;
         }
     }
-    Ok(())
+    Ok(doc)
 }
 
-/// End of a start tag whose name begins at `from`, and whether it is
-/// self-closing. A `>` inside a quoted attribute value does not end it.
-fn skip_tag(data: &[u8], from: usize) -> Option<(usize, bool)> {
-    let mut quote = None;
+struct Tag<'a> {
+    end: usize,
+    self_closing: bool,
+    id: Option<&'a [u8]>,
+    refs: Vec<&'a [u8]>,
+}
+
+/// Parses a start tag whose name begins at `from`: its attributes, of which
+/// `id`, `href` (any prefix) and anything holding `url(#id)` matter here.
+/// A `>` inside a quoted value does not end the tag.
+fn parse_tag(data: &[u8], from: usize) -> Result<Tag<'_>, String> {
+    const MALFORMED: &str = "malformed SVG tag";
+    let is_space = |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r');
     let mut j = from;
-    while j < data.len() {
-        let b = data[j];
-        match quote {
-            Some(q) if b == q => quote = None,
-            Some(_) => {}
-            None if b == b'"' || b == b'\'' => quote = Some(b),
-            None if b == b'>' => return Some((j + 1, j > from && data[j - 1] == b'/')),
-            None => {}
-        }
+    while j < data.len() && !is_space(data[j]) && !matches!(data[j], b'>' | b'/') {
         j += 1;
     }
-    None
+    let mut tag = Tag {
+        end: 0,
+        self_closing: false,
+        id: None,
+        refs: Vec::new(),
+    };
+    loop {
+        while j < data.len() && is_space(data[j]) {
+            j += 1;
+        }
+        match data.get(j) {
+            None => return Err(MALFORMED.to_string()),
+            Some(b'>') => {
+                tag.end = j + 1;
+                return Ok(tag);
+            }
+            Some(b'/') if data.get(j + 1) == Some(&b'>') => {
+                tag.end = j + 2;
+                tag.self_closing = true;
+                return Ok(tag);
+            }
+            Some(b'/') => return Err(MALFORMED.to_string()),
+            Some(_) => {}
+        }
+        let name_start = j;
+        while j < data.len() && !is_space(data[j]) && !matches!(data[j], b'=' | b'>' | b'/') {
+            j += 1;
+        }
+        let name = &data[name_start..j];
+        while j < data.len() && is_space(data[j]) {
+            j += 1;
+        }
+        if data.get(j) != Some(&b'=') {
+            return Err(MALFORMED.to_string());
+        }
+        j += 1;
+        while j < data.len() && is_space(data[j]) {
+            j += 1;
+        }
+        let quote = match data.get(j) {
+            Some(&q) if q == b'"' || q == b'\'' => q,
+            _ => return Err(MALFORMED.to_string()),
+        };
+        let value_start = j + 1;
+        let value_end = data[value_start..]
+            .iter()
+            .position(|&b| b == quote)
+            .map(|p| value_start + p)
+            .ok_or_else(|| MALFORMED.to_string())?;
+        let value = &data[value_start..value_end];
+        j = value_end + 1;
+
+        let local = name.rsplit(|&b| b == b':').next().unwrap_or(name);
+        if local == b"id" {
+            tag.id = Some(value);
+        } else if local == b"href" {
+            if let Some(target) = value.trim_ascii().strip_prefix(b"#") {
+                tag.refs.push(target);
+            }
+        }
+        collect_urls(value, &mut tag.refs);
+    }
+}
+
+/// Adds the id of every `url(#id)` in `text` to `refs`.
+fn collect_urls<'a>(text: &'a [u8], refs: &mut Vec<&'a [u8]>) {
+    let mut rest = text;
+    while let Some(p) = rest.windows(4).position(|w| w == b"url(") {
+        rest = &rest[p + 4..];
+        let inner = rest.trim_ascii_start();
+        let inner = inner
+            .strip_prefix(b"\"")
+            .or(inner.strip_prefix(b"'"))
+            .unwrap_or(inner);
+        if let Some(id) = inner.strip_prefix(b"#") {
+            let len = id
+                .iter()
+                .position(|&b| matches!(b, b')' | b'"' | b'\'' | b' ' | b'\t' | b'\n' | b'\r'))
+                .unwrap_or(id.len());
+            refs.push(&id[..len]);
+        }
+    }
 }
 
 /// End of a `<!...>` declaration (DOCTYPE) starting after `<!`, honouring
-/// quoted strings, comments and the bracketed internal subset. `Err` when a
-/// quoted value holds `<`, which only an entity with markup does.
-fn skip_declaration(data: &[u8], from: usize) -> Result<Option<usize>, String> {
+/// quoted strings, comments, processing instructions and the bracketed
+/// internal subset. `Err` when a quoted value holds `<`, which only an
+/// entity with markup does.
+fn skip_declaration(data: &[u8], from: usize) -> Result<usize, String> {
     let mut quote = None;
     let mut brackets = 0usize;
     let mut j = from;
@@ -345,19 +546,21 @@ fn skip_declaration(data: &[u8], from: usize) -> Result<Option<usize>, String> {
                 b'"' | b'\'' => quote = Some(b),
                 b'[' => brackets += 1,
                 b']' => brackets = brackets.saturating_sub(1),
-                b'>' if brackets == 0 => return Ok(Some(j + 1)),
+                b'>' if brackets == 0 => return Ok(j + 1),
                 b'<' if data[j..].starts_with(b"<!--") => {
-                    match data[j + 4..].windows(3).position(|w| w == b"-->") {
-                        Some(p) => j += 4 + p + 2,
-                        None => return Ok(None),
-                    }
+                    let p = data[j + 4..].windows(3).position(|w| w == b"-->");
+                    j += 4 + p.ok_or("SVG ends inside a comment")? + 2;
+                }
+                b'<' if data[j..].starts_with(b"<?") => {
+                    let p = data[j + 2..].windows(2).position(|w| w == b"?>");
+                    j += 2 + p.ok_or("SVG ends inside a processing instruction")? + 1;
                 }
                 _ => {}
             },
         }
         j += 1;
     }
-    Ok(None)
+    Err("SVG ends inside a declaration".to_string())
 }
 
 fn render_svg(path: &Path, fit: u32) -> Result<Rendered, ThumbError> {
@@ -374,13 +577,27 @@ fn render_svg(path: &Path, fit: u32) -> Result<Rendered, ThumbError> {
         return Err(ThumbError::decode(path, "compressed SVG is not supported"));
     }
     check_depth(path, &data)?;
+    // Parsing and drawing recurse once per nesting level, so they run on a
+    // thread with a stack of known size and the caller's stack never matters.
+    let owned_path = path.to_path_buf();
+    let worker = std::thread::Builder::new()
+        .name("kernkraft-svg".to_string())
+        .stack_size(RENDER_STACK_BYTES)
+        .spawn(move || draw_svg(&owned_path, &data, fit))
+        .map_err(|e| ThumbError::io(path, e))?;
+    worker
+        .join()
+        .unwrap_or_else(|_| Err(ThumbError::decode(path, "the SVG renderer panicked")))
+}
+
+fn draw_svg(path: &Path, data: &[u8], fit: u32) -> Result<Rendered, ThumbError> {
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let options = usvg::Options {
         image_href_resolver: href_resolver(dir),
         fontdb: fonts(),
         ..usvg::Options::default()
     };
-    let tree = usvg::Tree::from_data(&data, &options).map_err(|e| ThumbError::decode(path, e))?;
+    let tree = usvg::Tree::from_data(data, &options).map_err(|e| ThumbError::decode(path, e))?;
 
     let size = tree.size();
     let (w, h) = (size.width(), size.height());

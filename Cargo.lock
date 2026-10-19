@@ -826,7 +826,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-fs"
-version = "0.1.1+0.9"
+version = "0.1.1+0.10"
 dependencies = [
  "chrono",
  "percent-encoding",
@@ -837,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-pdf"
-version = "0.1.1+0.9"
+version = "0.1.1+0.10"
 dependencies = [
  "kernkraft-fs",
  "lopdf",
@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-text"
-version = "0.1.1+0.9"
+version = "0.1.1+0.10"
 dependencies = [
  "kernkraft-fs",
  "rustix",
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-thumb"
-version = "0.1.1+0.9"
+version = "0.1.1+0.10"
 dependencies = [
  "flate2",
  "image",
@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-xdg-apps"
-version = "0.1.1+0.9"
+version = "0.1.1+0.10"
 dependencies = [
  "kernkraft-fs",
  "percent-encoding",

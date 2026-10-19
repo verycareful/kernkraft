@@ -483,3 +483,135 @@ fn svg_depth_scan_follows_markup_it_must_skip() {
     fs::write(&src, bad).unwrap();
     assert_decode_quickly(&cache, &src, "image/svg+xml");
 }
+
+fn assert_decode_on_small_stack(cache: &Path, src: &Path) {
+    let (cache, src) = (cache.to_path_buf(), src.to_path_buf());
+    let handle = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || generate(&cache, &src, "image/svg+xml", ThumbSize::Normal))
+        .unwrap();
+    let err = handle.join().unwrap().unwrap_err();
+    assert!(matches!(err, ThumbError::Decode { .. }), "{err:?}");
+}
+
+fn render_on_small_stack(cache: &Path, src: &Path) {
+    let (cache, src) = (cache.to_path_buf(), src.to_path_buf());
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || generate(&cache, &src, "image/svg+xml", ThumbSize::Normal))
+        .unwrap()
+        .join()
+        .unwrap()
+        .unwrap();
+}
+
+#[test]
+fn data_url_svg_not_loaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let inner = nested_groups(1000);
+    for mime in ["image/svg+xml", "text/plain", "image/png"] {
+        let href = format!("data:{mime};base64,{}", base64(inner.as_bytes()));
+        let outer = svg(&format!(
+            r#"<image x="0" y="0" width="100" height="100" xlink:href="{href}"/>"#
+        ));
+        let src = dir.path().join("outer.svg");
+        fs::write(&src, outer).unwrap();
+        render_on_small_stack(&cache, &src);
+        let made = lookup(&cache, &src, ThumbSize::Normal).unwrap();
+        let Lookup::Fresh(made) = made else {
+            panic!("{mime}: not stored")
+        };
+        let plain = render_svg(&cache, dir.path(), "plain.svg", &svg(""));
+        assert!(pixels(&made).as_raw() == plain.as_raw(), "{mime}");
+    }
+}
+
+/// `count` defs g1..g<count>, each wrapping `<use>` of the previous in
+/// `per` nested groups; g0 holds a rect. The root uses the last one.
+fn use_chain(count: usize, per: usize) -> String {
+    let mut s = SVG_HEAD.to_string();
+    s.push_str(r#"<defs><g id="g0"><rect width="50" height="50" fill="red"/></g>"#);
+    for k in 1..=count {
+        s.push_str(&format!(r#"<g id="g{k}">"#));
+        s.push_str(&"<g>".repeat(per));
+        s.push_str(&format!(r##"<use xlink:href="#g{}"/>"##, k - 1));
+        s.push_str(&"</g>".repeat(per));
+        s.push_str("</g>");
+    }
+    s.push_str(&format!(r##"</defs><use xlink:href="#g{count}"/></svg>"##));
+    s
+}
+
+#[test]
+fn use_chain_depth_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("chain.svg");
+    // Document depth 31, effective depth several hundred.
+    for (count, per) in [(30, 27), (200, 5)] {
+        fs::write(&src, use_chain(count, per)).unwrap();
+        assert_decode_on_small_stack(&cache, &src);
+    }
+}
+
+#[test]
+fn use_chain_within_cap_renders() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("chain.svg");
+    // g0 is 2 deep; each of g1..g3 adds 4 groups, its own element and the
+    // use: 6 levels. Root svg and use add 2: 2 + 6 + 6 + 6 + 2 = 22.
+    fs::write(&src, use_chain(3, 4)).unwrap();
+    render_on_small_stack(&cache, &src);
+    let px = pixels(&match lookup(&cache, &src, ThumbSize::Normal).unwrap() {
+        Lookup::Fresh(p) => p,
+        other => panic!("{other:?}"),
+    });
+    assert_eq!(px.get_pixel(5, 5).0, [255, 0, 0, 255]);
+}
+
+#[test]
+fn use_cycle_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("cycle.svg");
+    let doc = format!(
+        r##"{SVG_HEAD}<defs><g id="a"><use xlink:href="#b"/></g><g id="b"><use xlink:href="#a"/></g></defs><use xlink:href="#a"/></svg>"##
+    );
+    fs::write(&src, doc).unwrap();
+    assert_decode_quickly(&cache, &src, "image/svg+xml");
+}
+
+#[test]
+fn use_fanout_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("fan.svg");
+    // Ten levels of three uses each: depth about 20, 3^10 instances.
+    let mut doc = format!(r#"{SVG_HEAD}<defs><g id="g0"><rect width="5" height="5"/></g>"#);
+    for k in 1..=10 {
+        doc.push_str(&format!(r##"<g id="g{k}">"##));
+        for _ in 0..3 {
+            doc.push_str(&format!(r##"<use xlink:href="#g{}"/>"##, k - 1));
+        }
+        doc.push_str("</g>");
+    }
+    doc.push_str(r##"</defs><use xlink:href="#g10"/></svg>"##);
+    fs::write(&src, doc).unwrap();
+    assert_decode_quickly(&cache, &src, "image/svg+xml");
+}
+
+#[test]
+fn doctype_with_apostrophe_in_pi_is_followed() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("pi.svg");
+    let doc = nested_groups(1000).replacen(
+        "<svg",
+        "<!DOCTYPE svg [<?pi it's a pi?><!ENTITY a \"x\">]><svg",
+        1,
+    );
+    fs::write(&src, doc).unwrap();
+    assert_decode_on_small_stack(&cache, &src);
+}

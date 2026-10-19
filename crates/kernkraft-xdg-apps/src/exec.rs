@@ -78,6 +78,15 @@ pub fn expand_exec(
     };
     let args = tokenize(&entry.exec).map_err(|r| invalid(&r))?;
 
+    // The program is run as written; a field code there would make a file
+    // path or URL the program.
+    match args.first() {
+        Some(first) if first.pieces.iter().any(|p| matches!(p, Piece::Code(_))) => {
+            return Err(invalid("a field code in the program position"));
+        }
+        _ => {}
+    }
+
     let has = |codes: &[char]| {
         args.iter()
             .flat_map(|a| a.pieces.iter())

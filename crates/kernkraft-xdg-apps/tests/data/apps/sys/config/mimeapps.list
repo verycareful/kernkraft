@@ -4,3 +4,6 @@
 [Default Applications]
 image/png=viewer.desktop
 image/jpeg=viewer.desktop
+
+[Added Associations]
+image/webp=lowadd.desktop;

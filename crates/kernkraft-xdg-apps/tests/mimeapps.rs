@@ -85,8 +85,9 @@ fn desktop_specific_list_first() {
 }
 
 // Relies on user mimeapps.list: Added `image/png=editor.desktop`, Removed
-// `image/png=gimp.desktop`; gimp, hidden and nodisplay all register
-// image/png.
+// `image/png=unwanted.desktop`. unwanted.desktop is neither Hidden nor
+// NoDisplay and registers image/png, so only the Removed line excludes it;
+// gimp (user entry Hidden), hidden and nodisplay are excluded by their flags.
 #[test]
 fn removed_association_excluded() {
     let r = registry(None);
@@ -134,9 +135,47 @@ fn ids_come_from_the_applications_tree() {
     // The user's Hidden entry hides the system one with the same ID.
     assert!(r.get("gimp.desktop").unwrap().hidden);
     assert_eq!(r.get("mine.desktop").unwrap().name, "Mine");
-    assert_eq!(r.all().len(), 9 - 1);
+    // One entry per distinct ID among the fixture files, less the two that
+    // are not applications (a Link, and a file that is not an entry).
+    let mut fixture_ids = std::collections::BTreeSet::new();
+    for root in ["user/data/applications", "sys/data/applications"] {
+        let root = data().join("apps").join(root);
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for item in std::fs::read_dir(&dir).unwrap() {
+                let path = item.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "desktop") {
+                    fixture_ids.insert(kernkraft_xdg_apps::desktop_id(&root, &path));
+                }
+            }
+        }
+    }
+    for not_an_app in ["site.desktop", "broken.desktop"] {
+        assert!(fixture_ids.remove(not_an_app));
+    }
+    assert_eq!(r.all().len(), fixture_ids.len());
     // A Link is not an application and is not an error; the broken file is
     // kept as a reported error, not dropped silently.
     assert!(r.get("site.desktop").is_none());
+    assert_eq!(r.skipped().len(), 1);
+}
+
+#[test]
+fn dangling_symlink_is_reported_not_dropped() {
+    let work = tempfile::tempdir().unwrap();
+    let apps = work.path().join("data/applications");
+    std::fs::create_dir_all(&apps).unwrap();
+    std::os::unix::fs::symlink(work.path().join("gone"), apps.join("dangling.desktop")).unwrap();
+    let mut vars: HashMap<&str, OsString> = HashMap::new();
+    vars.insert("HOME", work.path().into());
+    vars.insert("XDG_CONFIG_HOME", work.path().join("config").into());
+    vars.insert("XDG_DATA_HOME", work.path().join("data").into());
+    vars.insert("XDG_CONFIG_DIRS", work.path().join("none").into());
+    vars.insert("XDG_DATA_DIRS", work.path().join("none").into());
+    let base = base_dirs_from(&|k| vars.get(k).cloned()).unwrap();
+    let r = AppRegistry::load(&base).unwrap();
+    assert!(r.all().is_empty());
     assert_eq!(r.skipped().len(), 1);
 }

@@ -138,3 +138,17 @@ fn invalid_exec_values() {
         );
     }
 }
+
+#[test]
+fn field_code_as_program_rejected() {
+    for bad in ["%f", "%u %U", "%F app", "\"%c\" x", "pre%f arg"] {
+        let r = expand_exec(&entry(bad), &files(&["/a"]));
+        assert!(
+            matches!(r, Err(AppsError::InvalidExec { .. })),
+            "{bad:?}: {r:?}"
+        );
+    }
+    // An escaped percent sign is text, not a code.
+    let out = expand_exec(&entry("100%%app"), &[]).unwrap();
+    assert_eq!(out[0][0], "100%app");
+}

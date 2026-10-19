@@ -49,7 +49,8 @@ pub struct DesktopEntry {
     pub source: PathBuf,
 }
 
-/// Parses the text of a desktop entry file.
+/// Parses the text of a desktop entry file. An entry with `Hidden=true` is
+/// returned as a hidden stub whatever else it lacks.
 ///
 /// `id` is the entry's desktop file ID (see [`desktop_id`]) and `source` the
 /// file it came from; neither is read from disk. Fails with
@@ -109,6 +110,24 @@ pub fn parse_desktop_entry(
     // A key listed twice keeps its first value.
     let get = |name: &str| keys.iter().find(|(k, _)| *k == name).map(|(_, v)| *v);
 
+    // `Hidden=true` marks the ID as deleted (Desktop Entry Specification 1.5,
+    // "Recognized desktop entry keys"), often in an entry that has no `Type`
+    // or `Exec`. Such an entry is kept, so it shadows lower-priority entries
+    // of the same ID; nothing in it is ever launched.
+    if get("Hidden") == Some("true") {
+        return Ok(DesktopEntry {
+            id: id.to_string(),
+            name: get("Name").map(unescape).unwrap_or_else(|| id.to_string()),
+            exec: get("Exec").map(unescape).unwrap_or_default(),
+            icon: None,
+            mime_types: Vec::new(),
+            terminal: false,
+            no_display: false,
+            hidden: true,
+            path: None,
+            source: source.to_path_buf(),
+        });
+    }
     let kind = get("Type").ok_or_else(|| invalid("no Type".to_string()))?;
     if kind != TYPE_APPLICATION {
         return Err(AppsError::NotAnApplication {

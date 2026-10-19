@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+[Desktop Entry]
+Type=Application
+Name=Unwanted
+Exec=unwanted %f
+MimeType=image/png;

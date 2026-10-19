@@ -78,7 +78,8 @@ pub fn launch_in_terminal(
 /// A thread waits for the child. Without it the exited child stays a zombie
 /// for as long as this process runs; a double fork would avoid that too but
 /// needs an intermediate process and `fork` in a multithreaded program. The
-/// thread only holds the `Child` and ends when the program does.
+/// thread only holds the `Child` and ends when the program does. If the
+/// thread cannot be created the program is stopped and the launch fails.
 pub(crate) fn spawn_detached(mut cmd: Command, id: &str) -> Result<(), AppsError> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -92,13 +93,38 @@ pub(crate) fn spawn_detached(mut cmd: Command, id: &str) -> Result<(), AppsError
                 .map_err(std::io::Error::from)
         });
     }
-    let mut child = cmd.spawn().map_err(|source| AppsError::Launch {
+    let child = cmd.spawn().map_err(|source| AppsError::Launch {
         id: id.to_string(),
         source,
     })?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
+    let theirs = std::sync::Arc::clone(&slot);
+    let waiter = std::thread::Builder::new()
+        .name("kernkraft-reap".to_string())
+        .spawn(move || {
+            let child = theirs.lock().ok().and_then(|mut c| c.take());
+            if let Some(mut child) = child {
+                let _ = child.wait();
+            }
+        });
+    if let Err(source) = waiter {
+        // Without a waiter the child would end as a zombie. The child is
+        // still in `slot`: stop it and reap it here, then report that the
+        // program was not left running.
+        if let Some(mut child) = slot.lock().ok().and_then(|mut c| c.take()) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        return Err(AppsError::Launch {
+            id: id.to_string(),
+            source: std::io::Error::new(
+                source.kind(),
+                format!(
+                    "no thread to reap the program could be created, so it was stopped: {source}"
+                ),
+            ),
+        });
+    }
     Ok(())
 }
 

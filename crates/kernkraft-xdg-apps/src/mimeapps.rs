@@ -171,9 +171,13 @@ impl AppRegistry {
         }
         paths.sort();
         for path in paths {
-            let Ok(meta) = fs::metadata(&path) else {
-                // A dangling symlink.
-                continue;
+            let meta = match fs::metadata(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    // A dangling symlink or an unreadable entry.
+                    self.skipped.push(AppsError::io(&path, e));
+                    continue;
+                }
             };
             if meta.is_dir() {
                 self.scan(root, &path, visited)?;

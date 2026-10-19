@@ -190,7 +190,13 @@ fn escape(s: &str) -> String {
     out
 }
 
-fn open(addr: &BusAddress, timeout: Option<Duration>) -> Result<Connection, BusError> {
+/// The connection builder for `stream`: every method call waits at most
+/// `timeout` for its reply.
+fn builder_for(stream: UnixStream, timeout: Duration) -> Builder<'static> {
+    Builder::async_io_unix_stream(stream).method_timeout(timeout)
+}
+
+fn open(addr: &BusAddress, timeout: Duration) -> Result<Connection, BusError> {
     let target = parse_address(&addr.address)?;
     let (label, stream) = match &target {
         UnixTarget::Path(p) => (p.display().to_string(), UnixStream::connect(p)),
@@ -204,15 +210,12 @@ fn open(addr: &BusAddress, timeout: Option<Duration>) -> Result<Connection, BusE
         defaulted: addr.defaulted,
         source,
     })?;
-    let builder = Builder::async_io_unix_stream(stream);
-    let builder = match timeout {
-        Some(t) => builder.method_timeout(t),
-        None => builder,
-    };
-    builder.build().map_err(|source| BusError::Handshake {
-        target: label,
-        source: Box::new(source),
-    })
+    builder_for(stream, timeout)
+        .build()
+        .map_err(|source| BusError::Handshake {
+            target: label,
+            source: Box::new(source),
+        })
 }
 
 fn process_env(k: &str) -> Option<String> {
@@ -221,19 +224,46 @@ fn process_env(k: &str) -> Option<String> {
 
 /// Connects to the session bus over its Unix socket.
 pub fn session() -> Result<Connection, BusError> {
-    open(&session_address(&process_env)?, Some(METHOD_TIMEOUT))
+    open(&session_address(&process_env)?, METHOD_TIMEOUT)
 }
 
 /// Connects to the system bus over its Unix socket.
 pub fn system() -> Result<Connection, BusError> {
-    system_with_timeout(Some(METHOD_TIMEOUT))
+    system_with_timeout(METHOD_TIMEOUT)
 }
 
 /// Connects to the system bus over its Unix socket with its own method
-/// timeout (`None` waits forever). zbus fixes the timeout per connection,
+/// timeout. There is no way to ask for an unbounded wait. zbus fixes the timeout per connection,
 /// not per call, so a caller whose calls legitimately outlast
 /// [`METHOD_TIMEOUT`] (a UDisks unmount waiting on a polkit prompt) opens a
 /// second connection here for them.
-pub fn system_with_timeout(timeout: Option<Duration>) -> Result<Connection, BusError> {
+pub fn system_with_timeout(timeout: Duration) -> Result<Connection, BusError> {
     open(&system_address(&process_env)?, timeout)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    /// A peer-to-peer pair stands in for the bus; the builder under test is
+    /// the one `open` uses.
+    #[test]
+    fn builder_applies_the_method_timeout() {
+        for t in [METHOD_TIMEOUT, Duration::from_secs(600)] {
+            let (c, d) = UnixStream::pair().unwrap();
+            let g = zbus::Guid::generate();
+            let s = std::thread::spawn(move || {
+                Builder::async_io_unix_stream(c)
+                    .p2p()
+                    .server(g)
+                    .unwrap()
+                    .build()
+                    .unwrap()
+            });
+            let client = builder_for(d, t).p2p().build().unwrap();
+            assert_eq!(client.method_timeout(), Some(t));
+            drop(s.join().unwrap());
+        }
+    }
 }

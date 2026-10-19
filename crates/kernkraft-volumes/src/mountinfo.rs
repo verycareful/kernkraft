@@ -187,16 +187,31 @@ fn parse_each(
 }
 
 /// Parses mountinfo text. A malformed line is skipped, never a panic; use
-/// [`parse_mountinfo_strict`] when a skipped line must not go unnoticed.
+/// [`parse_mountinfo_report`] or [`parse_mountinfo_strict`] when a skipped
+/// line must not go unnoticed.
 pub fn parse_mountinfo(contents: &str) -> Vec<MountInfoLine> {
-    parse_each(contents.as_bytes())
-        .filter_map(|(_, r)| r.ok())
-        .collect()
+    parse_mountinfo_report(contents).0
 }
 
 /// Parses mountinfo text (or the raw bytes of the file, which may hold
-/// non-UTF-8 names) and fails on the first malformed line, reporting its
-/// number.
+/// non-UTF-8 names), skipping malformed lines and returning each as a
+/// [`ListProblem::MalformedLine`].
+pub fn parse_mountinfo_report(
+    contents: impl AsRef<[u8]>,
+) -> (Vec<MountInfoLine>, Vec<ListProblem>) {
+    let mut lines = Vec::new();
+    let mut problems = Vec::new();
+    for (line, r) in parse_each(contents.as_ref()) {
+        match r {
+            Ok(l) => lines.push(l),
+            Err(reason) => problems.push(ListProblem::MalformedLine { line, reason }),
+        }
+    }
+    (lines, problems)
+}
+
+/// Like [`parse_mountinfo_report`] but fails on the first malformed line,
+/// reporting its number.
 pub fn parse_mountinfo_strict(
     contents: impl AsRef<[u8]>,
 ) -> Result<Vec<MountInfoLine>, VolumesError> {
@@ -218,14 +233,96 @@ fn has_option(options: &[String], name: &str) -> bool {
     options.iter().any(|o| o == name)
 }
 
+/// Network and remote filesystems. Probing one for write access goes through
+/// the mount to a server that may be unreachable, so outside the named
+/// trees they are neither probed nor listed. The names are the filesystem
+/// types the kernel registers for remote storage (NFS, the CIFS/SMB client,
+/// 9P, Ceph, AFS) and the FUSE subtypes mountinfo shows as `fuse.<name>` or
+/// bare names of the same services (SSHFS, GlusterFS, davfs2).
+const REMOTE_FS: &[&str] = &[
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb3",
+    "smbfs",
+    "9p",
+    "ceph",
+    "glusterfs",
+    "fuse.sshfs",
+    "davfs",
+    "afs",
+];
+
+type DevNum = (u32, u32);
+
+/// Where volumes are expected and which mounts belong to the system.
+pub(crate) struct Classifier {
+    media: Option<PathBuf>,
+    /// Device numbers of the `/` and `/home` mounts (the last line for each,
+    /// since a later mount covers an earlier one at the same point).
+    system_devices: Vec<DevNum>,
+}
+
+impl Classifier {
+    pub(crate) fn new(lines: &[MountInfoLine], user: &str) -> Classifier {
+        let last = |p: &str| {
+            lines
+                .iter()
+                .rev()
+                .find(|l| l.mount_point == Path::new(p))
+                .map(|l| (l.major, l.minor))
+        };
+        Classifier {
+            media: media_dir(user),
+            system_devices: [last("/"), last("/home")].into_iter().flatten().collect(),
+        }
+    }
+
+    /// Under `/run/media/<user>`, `/media` or `/mnt`: where mounts a person
+    /// made or UDisks made for them live.
+    pub(crate) fn in_user_trees(&self, p: &Path) -> bool {
+        self.media.as_deref().is_some_and(|m| p.starts_with(m))
+            || p.starts_with("/media")
+            || p.starts_with("/mnt")
+    }
+
+    /// A mount that belongs to the system and is never a volume to show or to
+    /// unmount: the places `/`, `/home`, `/boot*`, `/efi`, the kernel trees,
+    /// the rest of `/run`, and, outside the user trees, anything on the
+    /// device of `/` or `/home` (subvolumes and bind mounts of the system
+    /// disk). With no `/` or `/home` line nothing is excluded by device.
+    pub(crate) fn is_system(&self, p: &Path, dev: Option<DevNum>) -> bool {
+        if p == Path::new("/")
+            || p == Path::new("/home")
+            || p.as_os_str().as_bytes().starts_with(b"/boot")
+            || p.starts_with("/efi")
+            || p.starts_with("/proc")
+            || p.starts_with("/sys")
+            || p.starts_with("/dev")
+        {
+            return true;
+        }
+        if p.starts_with("/run") {
+            return !self.in_user_trees(p);
+        }
+        !self.in_user_trees(p) && dev.is_some_and(|d| self.system_devices.contains(&d))
+    }
+}
+
 /// The mounts of `lines` that a person would call volumes.
 ///
 /// Kept: everything under `/run/media/<user>`, `/media` and `/mnt`, and any
 /// other mount `is_writable` accepts. Dropped, whatever `is_writable` says:
 /// pseudo filesystems, `/`, `/boot*`, `/efi`, `/home` itself, anything under
-/// `/proc`, `/sys` or `/dev`, and anything under `/run` other than the
-/// user's media directory. A FUSE mount whose `user_id=` option names
-/// another uid than `uid` belongs to someone else and is dropped.
+/// `/proc`, `/sys` or `/dev`, anything under `/run` other than the user's
+/// media directory, and outside the three trees any mount on the device of
+/// `/` or `/home` (a subvolume or bind mount of the system disk).
+///
+/// Outside the three trees two more rules apply: remote filesystems
+/// (NFS, CIFS and the like) are dropped without calling `is_writable`, and a
+/// FUSE mount whose `user_id=` option names another uid than `uid` belongs
+/// to someone else and is dropped. Inside the trees the owner is not
+/// checked: ntfs-3g mounts a user's stick as `fuseblk` with `user_id=0`.
 ///
 /// `label` is the mount point's last component; [`list`] replaces it with
 /// the filesystem label when udev has one.
@@ -235,13 +332,19 @@ pub fn user_mounts(
     user: &str,
     is_writable: &dyn Fn(&Path) -> bool,
 ) -> Vec<Mount> {
-    let media = media_dir(user);
-    let under_media = |p: &Path| media.as_deref().is_some_and(|m| p.starts_with(m));
+    let cls = Classifier::new(lines, user);
     lines
         .iter()
         .filter(|l| {
             let p = l.mount_point.as_path();
-            if PSEUDO_FS.contains(&l.fs_type.as_str()) {
+            if PSEUDO_FS.contains(&l.fs_type.as_str()) || cls.is_system(p, Some((l.major, l.minor)))
+            {
+                return false;
+            }
+            if cls.in_user_trees(p) {
+                return true;
+            }
+            if REMOTE_FS.contains(&l.fs_type.as_str()) {
                 return false;
             }
             if l.fs_type.starts_with("fuse") {
@@ -253,27 +356,18 @@ pub fn user_mounts(
                     return false;
                 }
             }
-            if p == Path::new("/")
-                || p == Path::new("/home")
-                || p.as_os_str().as_bytes().starts_with(b"/boot")
-                || p.starts_with("/efi")
-                || p.starts_with("/proc")
-                || p.starts_with("/sys")
-                || p.starts_with("/dev")
-            {
-                return false;
-            }
-            if p.starts_with("/run") {
-                return under_media(p);
-            }
-            p.starts_with("/media") || p.starts_with("/mnt") || is_writable(p)
+            is_writable(p)
         })
         .map(|l| Mount {
             mount_point: l.mount_point.clone(),
             device: l.source.clone(),
             fs_type: l.fs_type.clone(),
             label: base_name(&l.mount_point),
-            removable: under_media(&l.mount_point) || l.mount_point.starts_with("/media"),
+            removable: cls
+                .media
+                .as_deref()
+                .is_some_and(|m| l.mount_point.starts_with(m))
+                || l.mount_point.starts_with("/media"),
             read_only: has_option(&l.mount_options, "ro") || has_option(&l.super_options, "ro"),
         })
         .collect()
@@ -352,48 +446,164 @@ fn passwd_name(uid: u32) -> Result<Option<String>, VolumesError> {
 
 /// The login name used in `/run/media/<user>`. UDisks takes it from the
 /// passwd entry of the uid, so that wins; `$USER` is the fallback for a
-/// system with no passwd entry (a container).
-fn current_user(uid: u32) -> Result<String, VolumesError> {
-    if let Some(n) = passwd_name(uid)? {
-        return Ok(n);
+/// system with no passwd entry (a container). A passwd file that cannot be
+/// read is recorded in `problems` and `$USER` is tried.
+pub(crate) fn current_user(uid: u32, problems: &mut Vec<ListProblem>) -> Option<String> {
+    match passwd_name(uid) {
+        Ok(Some(n)) => return Some(n),
+        Ok(None) => {}
+        Err(e) => problems.push(ListProblem::Passwd(e.to_string())),
     }
-    std::env::var("USER")
-        .ok()
-        .filter(|u| !u.is_empty())
-        .ok_or(VolumesError::NoUser { uid })
+    let user = std::env::var("USER").ok().filter(|u| !u.is_empty());
+    if user.is_none() {
+        problems.push(ListProblem::NoUserName { uid });
+    }
+    user
+}
+
+/// Reads `/proc/self/mountinfo` as raw bytes.
+pub(crate) fn read_mountinfo() -> Result<Vec<u8>, VolumesError> {
+    std::fs::read(MOUNTINFO).map_err(|e| VolumesError::io(Path::new(MOUNTINFO), e))
+}
+
+/// Something `list` could not do, with the volumes it could find still
+/// returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListProblem {
+    /// A mountinfo line that does not follow proc(5) was skipped, so the
+    /// volume it describes (if any) is missing.
+    MalformedLine { line: usize, reason: &'static str },
+    /// The label directory could not be read; labels fall back to mount
+    /// point names.
+    Labels(String),
+    /// `/etc/passwd` could not be read.
+    Passwd(String),
+    /// No user name from passwd or `$USER`: volumes under
+    /// `/run/media/<user>` cannot be told and are missing.
+    NoUserName { uid: u32 },
+}
+
+/// The volumes found and what went wrong finding them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listing {
+    pub mounts: Vec<Mount>,
+    pub problems: Vec<ListProblem>,
+}
+
+/// Builds the listing from mountinfo bytes. `labels` is only called when a
+/// mount sits on a `/dev/` device.
+fn assemble(
+    contents: &[u8],
+    uid: u32,
+    user: Option<&str>,
+    is_writable: &dyn Fn(&Path) -> bool,
+    labels: &dyn Fn() -> Result<HashMap<PathBuf, String>, VolumesError>,
+    mut problems: Vec<ListProblem>,
+) -> Listing {
+    let (lines, malformed) = parse_mountinfo_report(contents);
+    problems.extend(malformed);
+    let mut mounts = user_mounts(&lines, uid, user.unwrap_or(""), is_writable);
+    if mounts.iter().any(|m| m.device.starts_with("/dev/")) {
+        match labels() {
+            Ok(labels) => {
+                for m in mounts.iter_mut().filter(|m| m.device.starts_with("/dev/")) {
+                    let device = std::fs::canonicalize(&m.device)
+                        .unwrap_or_else(|_| PathBuf::from(&m.device));
+                    if let Some(label) = labels.get(&device) {
+                        m.label = label.clone();
+                    }
+                }
+            }
+            Err(e) => problems.push(ListProblem::Labels(e.to_string())),
+        }
+    }
+    Listing { mounts, problems }
 }
 
 /// The mounts of this process's namespace that a person would call volumes
 /// (see [`user_mounts`] for the rule), labelled from udev's by-label links
 /// when there is one for the device, else by the mount point's name.
 ///
-/// A malformed mountinfo line fails the whole call
-/// ([`VolumesError::MalformedMountinfo`]): the kernel writes the file, so a
-/// line this crate cannot read means the volume it describes would be
-/// silently missing otherwise.
+/// Only failing to read `/proc/self/mountinfo` is an `Err`. A malformed
+/// line, an unreadable label directory or passwd file, or an unknown user
+/// name leaves the other volumes listed and is returned in
+/// [`Listing::problems`], so one fault does not blank the panel.
 ///
-/// "Writable" is `access(2)` with `W_OK` on the mount point; on a network
-/// filesystem that goes through the mount and can block while the server is
-/// unreachable.
-pub fn list() -> Result<Vec<Mount>, VolumesError> {
-    let raw = std::fs::read(MOUNTINFO).map_err(|e| VolumesError::io(Path::new(MOUNTINFO), e))?;
-    let lines = parse_mountinfo_strict(&raw)?;
+/// This does blocking I/O (file reads, a `stat` and an `access(2)` probe per
+/// candidate mount) and belongs off the UI thread. "Writable" is `access(2)`
+/// with `W_OK`; remote filesystems outside the named trees are never probed.
+pub fn list() -> Result<Listing, VolumesError> {
+    let raw = read_mountinfo()?;
     let uid = rustix::process::getuid().as_raw();
-    let user = current_user(uid)?;
+    let mut problems = Vec::new();
+    let user = current_user(uid, &mut problems);
     let writable = |p: &Path| rustix::fs::access(p, rustix::fs::Access::WRITE_OK).is_ok();
-    let mut mounts = user_mounts(&lines, uid, &user, &writable);
-    if mounts.iter().any(|m| m.device.starts_with("/dev/")) {
-        let labels = labels()?;
-        for m in &mut mounts {
-            if !m.device.starts_with("/dev/") {
-                continue;
-            }
-            let device =
-                std::fs::canonicalize(&m.device).unwrap_or_else(|_| PathBuf::from(&m.device));
-            if let Some(label) = labels.get(&device) {
-                m.label = label.clone();
-            }
-        }
+    Ok(assemble(
+        &raw,
+        uid,
+        user.as_deref(),
+        &writable,
+        &labels,
+        problems,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    const TEXT: &[u8] = b"bad line\n\
+        20 1 0:19 / / rw - btrfs /dev/nvme0n1p2 rw\n\
+        25 20 8:17 / /run/media/me/STICK rw - exfat /dev/sdb1 rw\n";
+
+    fn run(
+        user: Option<&str>,
+        labels: &dyn Fn() -> Result<HashMap<PathBuf, String>, VolumesError>,
+    ) -> Listing {
+        assemble(TEXT, 1000, user, &|_| false, labels, Vec::new())
     }
-    Ok(mounts)
+
+    #[test]
+    fn one_malformed_line_does_not_blank_the_listing() {
+        let l = run(Some("me"), &|| Ok(HashMap::new()));
+        assert_eq!(l.mounts.len(), 1);
+        assert_eq!(
+            l.problems,
+            vec![ListProblem::MalformedLine {
+                line: 1,
+                reason: "no - separator after the fixed fields"
+            }]
+        );
+    }
+
+    #[test]
+    fn label_failure_falls_back_and_is_recorded() {
+        let fail = || {
+            Err(VolumesError::io(
+                Path::new(BY_LABEL),
+                std::io::Error::other("denied"),
+            ))
+        };
+        let l = run(Some("me"), &fail);
+        assert_eq!(l.mounts[0].label, "STICK");
+        assert!(l
+            .problems
+            .iter()
+            .any(|p| matches!(p, ListProblem::Labels(_))));
+        let ok = || {
+            Ok(HashMap::from([(
+                PathBuf::from("/dev/sdb1"),
+                "My Stick".to_string(),
+            )]))
+        };
+        assert_eq!(run(Some("me"), &ok).mounts[0].label, "My Stick");
+    }
+
+    #[test]
+    fn unknown_user_still_lists_what_it_can() {
+        let l = run(None, &|| Ok(HashMap::new()));
+        // The stick under /run/media/<user> cannot be told without a user.
+        assert!(l.mounts.is_empty());
+    }
 }

@@ -41,10 +41,26 @@ pub enum VolumesError {
     /// UDisks knows no mounted filesystem at this path.
     #[error("{} is not a mount point UDisks manages", mount_point.display())]
     NotMounted { mount_point: PathBuf },
-    /// The volume was unmounted, but its drive is neither ejectable nor
-    /// able to power off.
-    #[error("{} was unmounted, but its drive cannot be ejected or powered off", mount_point.display())]
+    /// The volume's drive is neither ejectable nor able to power off.
+    /// Nothing was unmounted.
+    #[error("the drive of {} cannot be ejected or powered off", mount_point.display())]
     NoEject { mount_point: PathBuf },
+    /// Eject was refused before anything was unmounted: the drive could be
+    /// a system disk.
+    #[error("{} cannot be ejected: {reason}", mount_point.display())]
+    EjectRefused {
+        mount_point: PathBuf,
+        reason: EjectRefusal,
+    },
+    /// An eject stopped part way. `unmounted` lists what is now unmounted;
+    /// `failed` is the mount point whose unmount failed, or the drive's
+    /// UDisks object path when the eject or power-off itself failed.
+    #[error("eject incomplete: unmounted {} volume(s), then {} failed: {reason}", unmounted.len(), failed.display())]
+    EjectIncomplete {
+        unmounted: Vec<PathBuf>,
+        failed: PathBuf,
+        reason: String,
+    },
     /// No reply within the call's time limit. The operation may still
     /// complete; look at the mounts again before retrying.
     #[error("no reply from UDisks to {what}; it may still complete")]
@@ -60,6 +76,19 @@ pub enum VolumesError {
     /// shape.
     #[error("UDisks {what}: {reason}")]
     Dbus { what: String, reason: String },
+}
+
+/// Why an eject was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EjectRefusal {
+    #[error("the volume is not on a drive")]
+    NoDrive,
+    #[error("the drive is not removable")]
+    NotRemovable,
+    #[error("UDisks marks {device} on this drive as a system device")]
+    SystemDevice { device: String },
+    #[error("{} is a system mount", .0.display())]
+    SystemMount(PathBuf),
 }
 
 impl VolumesError {

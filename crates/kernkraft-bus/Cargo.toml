@@ -15,5 +15,9 @@ publish.workspace = true
 thiserror.workspace = true
 zbus.workspace = true
 
+[dev-dependencies]
+# The p2p feature lets a test build a connection over a socket pair.
+zbus = { workspace = true, features = ["p2p"] }
+
 [lints]
 workspace = true

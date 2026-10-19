@@ -20,9 +20,9 @@ mod error;
 mod mountinfo;
 mod udisks;
 
-pub use error::VolumesError;
+pub use error::{EjectRefusal, VolumesError};
 pub use mountinfo::{
-    decode_udev_name, list, parse_mountinfo, parse_mountinfo_strict, user_mounts, Mount,
-    MountInfoLine,
+    decode_udev_name, list, parse_mountinfo, parse_mountinfo_report, parse_mountinfo_strict,
+    user_mounts, ListProblem, Listing, Mount, MountInfoLine,
 };
-pub use udisks::{Device, Udisks};
+pub use udisks::{Device, Udisks, ACTION_TIMEOUT};

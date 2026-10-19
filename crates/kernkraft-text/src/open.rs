@@ -3,8 +3,8 @@
 
 //! Open a file as text and save it back.
 
-use std::fs::File;
-use std::io::Read;
+use std::fs::{self, File};
+use std::io::{self, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use kernkraft_fs::{write_bytes_atomic, FileStamp, FsError};
@@ -33,6 +33,9 @@ pub struct TextFile {
 
 /// Reads the file at `path` (symlinks followed).
 ///
+/// Anything that is not a regular file (after following symlinks) is refused
+/// from its metadata, before it is opened, as an [`FsError::Io`] of kind
+/// `InvalidInput`: no existing [`FsError`] variant means "wrong file type".
 /// A file above [`OPEN_LIMIT`] is refused without being read. The result's
 /// `read_only` reports one reason; when several apply the order is: size
 /// above [`EDITABLE_LIMIT`] ([`ReadOnly::TooLarge`]), then no write
@@ -43,6 +46,27 @@ pub struct TextFile {
 /// The stamp is taken before the read, so a change between the two is caught
 /// by the next [`save`].
 pub fn open(path: &Path) -> Result<TextFile, TextError> {
+    let meta = fs::metadata(path).map_err(|source| {
+        if source.kind() == ErrorKind::NotFound {
+            FsError::NotFound {
+                path: path.to_path_buf(),
+            }
+        } else {
+            FsError::Io {
+                path: path.to_path_buf(),
+                source,
+            }
+        }
+    })?;
+    if !meta.is_file() {
+        // Opening a FIFO with no writer, or reading a device, can block
+        // forever; the check is on the metadata so nothing is opened.
+        return Err(FsError::Io {
+            path: path.to_path_buf(),
+            source: io::Error::new(ErrorKind::InvalidInput, "not a regular file"),
+        }
+        .into());
+    }
     let stamp = FileStamp::of(path)?;
     if stamp.len > OPEN_LIMIT {
         return Err(TextError::TooLargeToOpen {

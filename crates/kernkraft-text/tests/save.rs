@@ -107,7 +107,46 @@ fn open_over_open_limit_refused() {
 fn open_missing_file_is_not_found() {
     let dir = tempfile::tempdir().unwrap();
     let err = open(&dir.path().join("none.txt")).unwrap_err();
-    assert!(matches!(err, TextError::Fs(_)), "{err:?}");
+    assert!(
+        matches!(err, TextError::Fs(FsError::NotFound { .. })),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn open_fifo_refused_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pipe");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &path,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread_path = path.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(open(&thread_path));
+    });
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("open blocked on a FIFO");
+    match result.unwrap_err() {
+        TextError::Fs(FsError::Io { path: p, source }) => {
+            assert_eq!(p, path);
+            assert_eq!(source.kind(), std::io::ErrorKind::InvalidInput);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn open_directory_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = open(dir.path()).unwrap_err();
+    assert!(matches!(err, TextError::Fs(FsError::Io { .. })), "{err:?}");
 }
 
 #[test]

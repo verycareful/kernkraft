@@ -22,4 +22,3 @@
 50:application/javascript:*.js
 50:text/markdown:*.md
 50:application/x-bare:*.bare
-__NOEXTENSIONS__

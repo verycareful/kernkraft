@@ -17,8 +17,11 @@
 //! Content sniffing is limited to text detection; the `magic` file is not
 //! read.
 
+use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::hash::BuildHasherDefault;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -30,8 +33,10 @@ pub const SNIFF_LEN: usize = 8192;
 
 const TEXT_PLAIN: &str = "text/plain";
 const OCTET_STREAM: &str = "application/octet-stream";
-/// Marker lines in `globs2` that carry no pattern (section 2.4).
-const NO_EXTENSIONS: &str = "__NOEXTENSIONS__";
+/// In a `globs2` line `weight:type:__NOGLOBS__` (written by
+/// `update-mime-database`'s `glob-deleteall`) takes the place of the pattern
+/// and drops every glob for `type` from data directories of lower priority.
+const NO_GLOBS: &str = "__NOGLOBS__";
 
 /// A glob or literal from a `globs2` line.
 #[derive(Debug)]
@@ -44,6 +49,56 @@ struct Pattern {
     literal: bool,
     /// Position of the data directory in the load order; lower wins ties.
     dir_rank: usize,
+    /// Position among all loaded lines; the earlier line wins a full tie.
+    order: usize,
+}
+
+/// FNV-1a. The keys are file-name fragments from a trusted local database,
+/// so the default hasher's flood resistance buys nothing, and a lookup runs
+/// once per directory entry.
+#[derive(Default)]
+struct Fnv(u64);
+
+impl std::hash::Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        let mut h = if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        };
+        for &b in bytes {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        self.0 = h;
+    }
+}
+
+type FastMap = HashMap<String, Vec<usize>, BuildHasherDefault<Fnv>>;
+
+/// Where each pattern in `MimeDb::patterns` is looked up from. Built once by
+/// `MimeDb::load`, so a name costs a few hash probes instead of a scan of
+/// every pattern. Both maps are keyed by the lowercased text; a
+/// case-sensitive entry is confirmed against the exact name after the probe.
+#[derive(Debug, Default)]
+struct Index {
+    /// Literals, keyed by the whole name.
+    literal: FastMap,
+    /// `*.ext` patterns, keyed by the text after the `*` (`.ext`).
+    suffix: FastMap,
+    /// Every other glob starting with a plain char (`readme*`), keyed by that
+    /// char; a name matches only if it starts with it.
+    complex_first: HashMap<char, Vec<usize>, BuildHasherDefault<Fnv>>,
+    /// Every other glob ending in a plain char (`*~`), keyed by that char.
+    complex_last: HashMap<char, Vec<usize>, BuildHasherDefault<Fnv>>,
+    /// The rest (`*.so.[0-9]*`), each with the first run of plain chars it
+    /// requires (`.so.`), which a name must contain to match, and, for a
+    /// glob ending in a set (`*.[1-9]`), where that set opens: the name's
+    /// last char must be in it.
+    complex_run: Vec<(usize, String, Option<usize>)>,
 }
 
 /// The MIME database merged from every data directory given to
@@ -51,6 +106,7 @@ struct Pattern {
 #[derive(Debug, Default)]
 pub struct MimeDb {
     patterns: Vec<Pattern>,
+    index: Index,
     /// alias -> canonical type.
     aliases: HashMap<String, String>,
     /// type -> direct parents.
@@ -70,13 +126,15 @@ impl MimeDb {
     /// Precedence between directories: patterns from all directories are
     /// pooled and ranked by section 2.11 (weight, then length), and a tie
     /// goes to the earlier directory. For an alias defined twice the earlier
-    /// directory wins.
+    /// directory wins. A `weight:type:__NOGLOBS__` line removes every glob
+    /// for `type` from the directories after the one it appears in.
     pub fn load(data_dirs: &[PathBuf]) -> Result<MimeDb, AppsError> {
         let mut db = MimeDb::default();
+        let mut no_globs: Vec<(String, usize)> = Vec::new();
         for (rank, dir) in data_dirs.iter().enumerate() {
             let mime_dir = dir.join("mime");
             if let Some((path, text)) = read_optional(&mime_dir.join("globs2"))? {
-                db.add_globs(&path, &text, rank)?;
+                db.add_globs(&path, &text, rank, &mut no_globs)?;
             }
             if let Some((path, text)) = read_optional(&mime_dir.join("subclasses"))? {
                 db.add_subclasses(&path, &text)?;
@@ -85,13 +143,25 @@ impl MimeDb {
                 db.add_aliases(&path, &text)?;
             }
         }
+        db.patterns.retain(|p| {
+            !no_globs
+                .iter()
+                .any(|(mime, rank)| *mime == p.mime && *rank < p.dir_rank)
+        });
+        db.index = Index::build(&db.patterns);
         Ok(db)
     }
 
-    fn add_globs(&mut self, path: &Path, text: &str, dir_rank: usize) -> Result<(), AppsError> {
+    fn add_globs(
+        &mut self,
+        path: &Path,
+        text: &str,
+        dir_rank: usize,
+        no_globs: &mut Vec<(String, usize)>,
+    ) -> Result<(), AppsError> {
         for (index, line) in text.lines().enumerate() {
             let line = line.trim_end_matches('\r');
-            if line.is_empty() || line.starts_with('#') || line.contains(NO_EXTENSIONS) {
+            if line.is_empty() || line.starts_with('#') {
                 continue;
             }
             let bad = || AppsError::MalformedMimeDb {
@@ -105,6 +175,10 @@ impl MimeDb {
                 .ok_or_else(bad)?;
             let mime = fields.next().filter(|m| m.contains('/')).ok_or_else(bad)?;
             let pattern = fields.next().filter(|p| !p.is_empty()).ok_or_else(bad)?;
+            if pattern == NO_GLOBS {
+                no_globs.push((mime.to_string(), dir_rank));
+                continue;
+            }
             let case_sensitive = fields
                 .next()
                 .is_some_and(|flags| flags.split(',').any(|f| f == "cs"));
@@ -120,6 +194,7 @@ impl MimeDb {
                 chars,
                 case_sensitive,
                 dir_rank,
+                order: self.patterns.len(),
             });
         }
         Ok(())
@@ -144,52 +219,148 @@ impl MimeDb {
 
     /// The type the file name alone indicates, or `None` when no pattern
     /// matches. A name equal to a literal pattern beats any glob; among
-    /// globs the highest weight wins, then the longest pattern, then the
-    /// earlier data directory.
-    pub fn by_name(&self, file_name: &str) -> Option<&str> {
-        let name: Vec<char> = file_name.chars().collect();
-        let lower: Vec<char> = file_name.to_lowercase().chars().collect();
-        let pick = |literal: bool| {
-            self.patterns
-                .iter()
-                .filter(|p| p.literal == literal)
-                .filter(|p| {
-                    let subject = if p.case_sensitive { &name } else { &lower };
-                    if literal {
-                        *subject == p.chars
-                    } else {
-                        glob_match(&p.chars, subject)
-                    }
-                })
-                .max_by(|a, b| {
-                    a.weight
-                        .cmp(&b.weight)
-                        .then(a.chars.len().cmp(&b.chars.len()))
-                        .then(b.dir_rank.cmp(&a.dir_rank))
-                })
-                .map(|p| p.mime.as_str())
+    /// globs the highest weight wins, then the longest pattern, then a
+    /// case-sensitive pattern over a case-insensitive one (`x.C` is C++, not
+    /// C), then the earlier data directory, then the line listed first.
+    ///
+    /// Candidates come from the index built by [`MimeDb::load`]: exact-name
+    /// maps for literals, a map keyed by `.ext` for `*.ext` globs (tried for
+    /// every `.` suffix of the name, so `.tar.gz` is found as well as
+    /// `.gz`), and a scan of the few remaining globs.
+    pub fn by_name<'a>(&'a self, file_name: &str) -> Option<&'a str> {
+        let patterns: &'a [Pattern] = &self.patterns;
+        let lower: Cow<str> = if file_name.chars().any(char::is_uppercase) {
+            Cow::Owned(file_name.to_lowercase())
+        } else {
+            Cow::Borrowed(file_name)
         };
-        pick(true).or_else(|| pick(false))
+        let ix = &self.index;
+        // Strongest candidate so far: weight, then pattern length, then the
+        // earlier data directory.
+        let better = |new: &Pattern, old: &Pattern| {
+            (
+                new.weight,
+                new.chars.len(),
+                new.case_sensitive,
+                old.dir_rank,
+                old.order,
+            ) > (
+                old.weight,
+                old.chars.len(),
+                old.case_sensitive,
+                new.dir_rank,
+                new.order,
+            )
+        };
+        // A case-sensitive pattern found through the lowercased key must
+        // still equal the name exactly (literal) or end the name (suffix).
+        let confirmed = |p: &Pattern, literal: bool| {
+            if !p.case_sensitive {
+                return true;
+            }
+            let text: String = p.chars.iter().collect();
+            if literal {
+                text == file_name
+            } else {
+                file_name.ends_with(&text[1..])
+            }
+        };
+        let mut best: Option<&Pattern> = None;
+        for &i in ids(&ix.literal, &lower) {
+            let p = &self.patterns[i];
+            if confirmed(p, true) && best.is_none_or(|b| better(p, b)) {
+                best = Some(p);
+            }
+        }
+        if let Some(p) = best {
+            return Some(p.mime.as_str());
+        }
+        for (at, _) in lower.match_indices('.') {
+            for &i in ids(&ix.suffix, &lower[at..]) {
+                let p = &self.patterns[i];
+                if confirmed(p, false) && best.is_none_or(|b| better(p, b)) {
+                    best = Some(p);
+                }
+            }
+        }
+        // Globs are gated by a char or run every match must contain, so most
+        // names never reach `glob_match`. The gate is probed with the exact
+        // and the lowercased name; `glob_match` then decides on the subject
+        // the pattern's own case rule picks.
+        let exact_chars: OnceCell<Vec<char>> = OnceCell::new();
+        let lower_chars: OnceCell<Vec<char>> = OnceCell::new();
+        let try_glob = |i: usize, best: &mut Option<&'a Pattern>| {
+            let p: &'a Pattern = &patterns[i];
+            if best.is_none_or(|b| better(p, b)) {
+                let text = if p.case_sensitive {
+                    exact_chars.get_or_init(|| file_name.chars().collect())
+                } else {
+                    lower_chars.get_or_init(|| lower.chars().collect())
+                };
+                if glob_match(&p.chars, text) {
+                    *best = Some(p);
+                }
+            }
+        };
+        let (first, last) = (lower.chars().next(), lower.chars().next_back());
+        let (first_exact, last_exact) = (file_name.chars().next(), file_name.chars().next_back());
+        for (key, exact, map) in [
+            (first, first_exact, &ix.complex_first),
+            (last, last_exact, &ix.complex_last),
+        ] {
+            for key in key.into_iter().chain(exact.filter(|e| Some(*e) != key)) {
+                for &i in map.get(&key).map_or(&[][..], Vec::as_slice) {
+                    try_glob(i, &mut best);
+                }
+            }
+        }
+        for (i, needle, tail_set) in &ix.complex_run {
+            let subject: &str = if patterns[*i].case_sensitive {
+                file_name
+            } else {
+                &lower
+            };
+            let tail_ok = tail_set.is_none_or(|open| {
+                subject.chars().next_back().is_some_and(|c| {
+                    matches!(match_set(&patterns[*i].chars, open, c), Some((true, _)))
+                })
+            });
+            if tail_ok && subject.contains(needle.as_str()) {
+                try_glob(*i, &mut best);
+            }
+        }
+        best.map(|p| p.mime.as_str())
     }
 
     /// The type of the file at `path`.
     ///
-    /// A symlink is guessed by its target (a dangling or looping link, whose
-    /// target cannot be resolved, by its own name). A directory is
-    /// `inode/directory`; a FIFO, socket or device node is the matching
-    /// `inode/*` type and is never opened. A regular file is typed by its
-    /// name first; when no pattern matches, its first [`SNIFF_LEN`] bytes
-    /// decide: `text/plain` when they are valid UTF-8 without a NUL byte (a
-    /// multi-byte sequence cut off by the end of the window is allowed, and
-    /// an empty file counts as text), else `application/octet-stream`.
+    /// A symlink is guessed by its target; a link whose target cannot be
+    /// resolved (dangling, or a loop) is `inode/symlink`, since it is not a
+    /// file anyone can open. A directory is `inode/directory`; a FIFO,
+    /// socket or device node is the matching `inode/*` type and is never
+    /// opened. A regular file is typed by its name first; when no pattern
+    /// matches, its first [`SNIFF_LEN`] bytes decide: `text/plain` when they
+    /// are valid UTF-8 without a NUL byte (a multi-byte sequence cut off by
+    /// the end of the window is allowed, and an empty file counts as text),
+    /// else `application/octet-stream`.
     ///
     /// The return type carries no error. A file that cannot be inspected
-    /// (permission denied, removed meanwhile) is `application/octet-stream`;
-    /// the caller learns the real reason when it opens the file.
+    /// (permission denied, removed meanwhile) is `application/octet-stream`,
+    /// except that a path which does not exist is typed by its name alone
+    /// when a pattern matches it. The caller learns the real reason when it
+    /// opens the file.
     pub fn guess(&self, path: &Path) -> String {
-        let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let Ok(meta) = fs::metadata(&resolved) else {
-            return self.name_or(&resolved, OCTET_STREAM);
+        let Ok(link_meta) = fs::symlink_metadata(path) else {
+            return self.name_or(path, OCTET_STREAM);
+        };
+        let (resolved, meta) = if link_meta.file_type().is_symlink() {
+            let target = fs::canonicalize(path).ok();
+            match target.and_then(|t| fs::metadata(&t).ok().map(|m| (t, m))) {
+                Some(pair) => pair,
+                None => return "inode/symlink".to_string(),
+            }
+        } else {
+            (path.to_path_buf(), link_meta)
         };
         let kind = meta.file_type();
         if kind.is_dir() {
@@ -261,6 +432,64 @@ impl MimeDb {
     fn canonical<'a>(&'a self, mime: &'a str) -> &'a str {
         self.aliases.get(mime).map_or(mime, String::as_str)
     }
+}
+
+impl Index {
+    fn build(patterns: &[Pattern]) -> Index {
+        let mut ix = Index::default();
+        for (i, p) in patterns.iter().enumerate() {
+            let text: String = p.chars.iter().collect();
+            if p.literal {
+                ix.literal.entry(text.to_lowercase()).or_default().push(i);
+            } else if let Some(ext) = text
+                .strip_prefix('*')
+                .filter(|rest| rest.starts_with('.') && !rest.contains(['*', '?', '[']))
+            {
+                ix.suffix.entry(ext.to_lowercase()).or_default().push(i);
+            } else {
+                let plain = |c: &&char| !matches!(c, '*' | '?' | '[' | ']');
+                if let Some(&c) = p.chars.first().filter(plain) {
+                    ix.complex_first.entry(c).or_default().push(i);
+                } else if let Some(&c) = p.chars.last().filter(plain) {
+                    ix.complex_last.entry(c).or_default().push(i);
+                } else {
+                    let tail_set = (p.chars.last() == Some(&']'))
+                        .then(|| p.chars.iter().rposition(|&c| c == '['))
+                        .flatten();
+                    ix.complex_run.push((i, required_run(&p.chars), tail_set));
+                }
+            }
+        }
+        ix
+    }
+}
+
+/// The first maximal run of plain chars in a glob (outside `[...]` sets),
+/// which every name matching the glob contains; empty when there is none.
+fn required_run(pattern: &[char]) -> String {
+    let mut run = String::new();
+    let mut in_set = false;
+    for &c in pattern {
+        match c {
+            '[' => in_set = true,
+            ']' if in_set => in_set = false,
+            '*' | '?' => {}
+            _ if in_set => continue,
+            _ => {
+                run.push(c);
+                continue;
+            }
+        }
+        if !run.is_empty() {
+            break;
+        }
+    }
+    run
+}
+
+/// The pattern ids stored under `key`, or none.
+fn ids<'a>(map: &'a FastMap, key: &str) -> &'a [usize] {
+    map.get(key).map_or(&[], Vec::as_slice)
 }
 
 /// Read a file that may be absent.

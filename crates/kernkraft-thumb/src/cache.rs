@@ -49,14 +49,31 @@ pub(crate) const KEY_SIZE: &str = "Thumb::Size";
 pub(crate) const KEY_SOFTWARE: &str = "Software";
 pub(crate) const SOFTWARE: &str = "kernkraft";
 
-/// RFC 3986 section 2.3 unreserved characters and the path separator stay as
-/// they are; every other byte of the path becomes `%XX`.
+/// The bytes GLib's `g_filename_to_uri` leaves unescaped in a path
+/// (`g_escape_uri_string` with `UNSAFE_PATH`): the unreserved characters of
+/// RFC 3986 section 2.3, the path separator, and the sub-delimiters
+/// `! $ & ' ( ) * + , ; = : @`. Every other byte is `%XX`. Matching GLib
+/// keeps the URI, and so the cache file name, the same as the one GTK and
+/// GNOME applications compute for the same file.
 const URI_KEEP: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'.')
     .remove(b'_')
     .remove(b'~')
-    .remove(b'/');
+    .remove(b'/')
+    .remove(b'!')
+    .remove(b'$')
+    .remove(b'&')
+    .remove(b'\'')
+    .remove(b'(')
+    .remove(b')')
+    .remove(b'*')
+    .remove(b'+')
+    .remove(b',')
+    .remove(b';')
+    .remove(b'=')
+    .remove(b':')
+    .remove(b'@');
 
 /// A thumbnail size class (standard, "Thumbnail Directory").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -101,7 +118,7 @@ pub enum Lookup {
 }
 
 /// The `file://` URI of `path` (made absolute if it is not), with every byte
-/// outside the unreserved set and `/` percent-encoded, so a name that is not
+/// GLib escapes percent-encoded, so a name that is not
 /// UTF-8 maps to a URI like any other.
 pub fn file_uri(path: &Path) -> String {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());

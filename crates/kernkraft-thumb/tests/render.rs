@@ -298,3 +298,188 @@ fn base64(data: &[u8]) -> String {
     }
     out
 }
+
+fn gzip(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    enc.write_all(data).unwrap();
+    enc.finish().unwrap()
+}
+
+fn assert_decode_quickly(cache: &Path, src: &Path, mime: &str) {
+    let started = std::time::Instant::now();
+    let err = generate(cache, src, mime, ThumbSize::Normal).unwrap_err();
+    assert!(matches!(err, ThumbError::Decode { .. }), "{err:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn gzip_svg_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let small = dir.path().join("small.svgz");
+    fs::write(&small, gzip(svg("").as_bytes())).unwrap();
+    assert_decode_quickly(&cache, &small, "image/svg+xml");
+
+    // 64 MiB of text inflates from a few tens of kilobytes.
+    let mut bomb = svg("").into_bytes();
+    bomb.truncate(bomb.len() - "</svg>".len());
+    bomb.extend(std::iter::repeat_n(b' ', 64 * 1024 * 1024));
+    bomb.extend_from_slice(b"</svg>");
+    let big = dir.path().join("bomb.svgz");
+    fs::write(&big, gzip(&bomb)).unwrap();
+    assert_decode_quickly(&cache, &big, "image/svg+xml");
+
+    // The same through a nested data URL is not inflated either.
+    let nested = svg(&format!(
+        r#"<image width="10" height="10" xlink:href="data:image/svg+xml;base64,{}"/>"#,
+        base64(&gzip(&bomb))
+    ));
+    let src = dir.path().join("nested.svg");
+    fs::write(&src, nested).unwrap();
+    let made = generate(&cache, &src, "image/svg+xml", ThumbSize::Normal).unwrap();
+    let plain = render_svg(&cache, dir.path(), "plain.svg", &svg(""));
+    assert!(pixels(&made).as_raw() == plain.as_raw());
+}
+
+/// Nesting depth the SVG path accepts (see `MAX_SVG_DEPTH`).
+const SVG_DEPTH_CAP: usize = 32;
+
+fn nested_groups(depth: usize) -> String {
+    let mut s = SVG_HEAD.to_string();
+    for _ in 0..depth {
+        s.push_str(r#"<g opacity="0.9">"#);
+    }
+    s.push_str(r#"<rect width="50" height="50" fill="red"/>"#);
+    for _ in 0..depth {
+        s.push_str("</g>");
+    }
+    s.push_str("</svg>");
+    s
+}
+
+#[test]
+fn deep_nesting_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    // Under usvg's own limit of 1024, deep enough to overflow a thread stack.
+    for depth in [SVG_DEPTH_CAP - 1, 1000] {
+        let src = dir.path().join("deep.svg");
+        fs::write(&src, nested_groups(depth)).unwrap();
+        let handle = {
+            let cache = cache.clone();
+            std::thread::Builder::new()
+                .stack_size(2 * 1024 * 1024)
+                .spawn(move || generate(&cache, &src, "image/svg+xml", ThumbSize::Normal))
+                .unwrap()
+        };
+        let err = handle.join().unwrap().unwrap_err();
+        assert!(matches!(err, ThumbError::Decode { .. }), "{depth}: {err:?}");
+    }
+}
+
+#[test]
+fn nesting_at_cap_renders_on_2mib_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("deep.svg");
+    // The svg element is depth 1 and the rect inside the groups the last level.
+    fs::write(&src, nested_groups(SVG_DEPTH_CAP - 2)).unwrap();
+    let handle = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || generate(&cache, &src, "image/svg+xml", ThumbSize::Normal))
+        .unwrap();
+    handle.join().unwrap().unwrap();
+}
+
+#[test]
+fn huge_gif_canvas_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("big.gif");
+    // Header, 65535 x 65535 logical screen, no colour table, trailer.
+    let mut bytes = b"GIF89a".to_vec();
+    bytes.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x3B]);
+    fs::write(&src, bytes).unwrap();
+    assert_decode_quickly(&cache, &src, "image/gif");
+}
+
+#[test]
+fn huge_jpeg_header_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let src = dir.path().join("big.jpg");
+    // SOI, SOF0 for 65535 x 65535 with one component, EOI.
+    let bytes = [
+        0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x01, 0x11, 0x00,
+        0xFF, 0xD9,
+    ];
+    fs::write(&src, bytes).unwrap();
+    assert_decode_quickly(&cache, &src, "image/jpeg");
+}
+
+#[test]
+fn huge_and_zero_svg_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let sized = |w: &str, h: &str| {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}"><rect width="5" height="5"/></svg>"#
+        )
+    };
+    let src = dir.path().join("size.svg");
+    fs::write(&src, sized("1e30", "1e30")).unwrap();
+    match generate(&cache, &src, "image/svg+xml", ThumbSize::Normal) {
+        Ok(made) => {
+            let (w, h) = dims(&made);
+            assert!(w <= 128 && h <= 128 && w >= 1 && h >= 1);
+        }
+        Err(e) => assert!(matches!(e, ThumbError::Decode { .. }), "{e:?}"),
+    }
+    fs::write(&src, sized("0", "10")).unwrap();
+    let err = generate(&cache, &src, "image/svg+xml", ThumbSize::Normal).unwrap_err();
+    assert!(matches!(err, ThumbError::Decode { .. }), "{err:?}");
+}
+
+#[test]
+fn svg_fifo_in_directory_does_not_hang() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    let fifo = dir.path().join("pipe.png");
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    let src = dir.path().join("fifo.svg");
+    fs::write(
+        &src,
+        svg(r#"<image width="10" height="10" xlink:href="pipe.png"/>"#),
+    )
+    .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(generate(&cache, &src, "image/svg+xml", ThumbSize::Normal).is_ok());
+    });
+    let done = rx.recv_timeout(std::time::Duration::from_secs(5));
+    assert_eq!(done, Ok(true), "a FIFO named in an href must not block");
+}
+
+#[test]
+fn svg_depth_scan_follows_markup_it_must_skip() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = cache_in(dir.path());
+    // Comments, CDATA, a DOCTYPE with an internal subset and a `>` inside an
+    // attribute value are not nesting.
+    let doc = format!(
+        r#"<?xml version="1.0"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd" [<!ENTITY a "x">]><!-- <g><g><g> --><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><desc><![CDATA[<g><g><g>]]></desc>{}<rect width="5" height="5" data-x="a>b"/></svg>"#,
+        "<g/>".repeat(100)
+    );
+    let img = render_svg(&cache, dir.path(), "ok.svg", &doc);
+    assert_eq!(img.dimensions(), (10, 10));
+
+    let bad = doc.replace(r#"<!ENTITY a "x">"#, r#"<!ENTITY a "<g><g>">"#);
+    let src = dir.path().join("entity.svg");
+    fs::write(&src, bad).unwrap();
+    assert_decode_quickly(&cache, &src, "image/svg+xml");
+}

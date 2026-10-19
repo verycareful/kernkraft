@@ -589,7 +589,6 @@ checksum = "2660c5e9157bf76d2db1294e4a9feba604ef610819a3b591088d0d8392a3290f"
 dependencies = [
  "fontconfig-parser",
  "log",
- "memmap2",
  "slotmap",
  "tinyvec",
 ]
@@ -827,7 +826,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-fs"
-version = "0.1.1+0.8"
+version = "0.1.1+0.9"
 dependencies = [
  "chrono",
  "percent-encoding",
@@ -838,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-pdf"
-version = "0.1.1+0.8"
+version = "0.1.1+0.9"
 dependencies = [
  "kernkraft-fs",
  "lopdf",
@@ -849,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-text"
-version = "0.1.1+0.8"
+version = "0.1.1+0.9"
 dependencies = [
  "kernkraft-fs",
  "rustix",
@@ -859,8 +858,9 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-thumb"
-version = "0.1.1+0.8"
+version = "0.1.1+0.9"
 dependencies = [
+ "flate2",
  "image",
  "kernkraft-fs",
  "md-5 0.10.6",
@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-xdg-apps"
-version = "0.1.1+0.8"
+version = "0.1.1+0.9"
 dependencies = [
  "kernkraft-fs",
  "percent-encoding",
@@ -989,15 +989,6 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
-
-[[package]]
-name = "memmap2"
-version = "0.9.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "minimal-lexical"
@@ -1629,7 +1620,6 @@ checksum = "977d0a4abdef933f424a99fe09f95576e089b90aebc6f016a3bc813762493e91"
 dependencies = [
  "base64",
  "data-url",
- "flate2",
  "fontdb",
  "harfrust",
  "imagesize",

@@ -13,7 +13,7 @@
 //! outside the SVG's own directory is ever read and no URL is ever followed;
 //! `data:` URLs are decoded in place.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -37,6 +37,15 @@ const MAX_ALLOC: u64 = 512 * 1024 * 1024;
 /// Largest SVG or embedded file read, in bytes. A hand-made or exported SVG
 /// is far below this; the cap bounds memory and parse time.
 const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Deepest element nesting accepted in an SVG, the root counted as 1.
+/// usvg and resvg recurse once per level, and a thumbnail pool thread has
+/// Rust's default 2 MiB stack. Measured in a debug build (the largest
+/// frames) on a 2 MiB thread with nested `<g opacity="0.9">`: depth 130
+/// renders and 140 overflows the stack and aborts the process. 32 leaves a
+/// margin of about 4 times, and is far above the 10 to 15 levels graphics
+/// editors write.
+const MAX_SVG_DEPTH: usize = 32;
 
 /// Whether [`generate`] handles `mime`.
 pub fn can_thumbnail(mime: &str) -> bool {
@@ -185,10 +194,10 @@ fn raster_within_limits(data: &[u8]) -> bool {
     }
 }
 
-/// `<image>` href resolvers: `data:` URLs through usvg's own decoder, after a
-/// size check; a relative path only when it resolves, symlinks followed,
+/// `<image>` href resolvers: `data:` raster URLs through usvg's own decoder,
+/// after a size check; a relative path only when it resolves, symlinks followed,
 /// to a PNG, JPEG, GIF or WebP file inside `dir`; everything else (URLs of
-/// any scheme, absolute paths elsewhere, `..` escapes, nested SVG files) is
+/// any scheme, absolute paths elsewhere, `..` escapes, nested SVG, by path or `data:`) is
 /// refused and the element is left out.
 fn href_resolver(dir: PathBuf) -> ImageHrefResolver<'static> {
     let inner_data = ImageHrefResolver::default_data_resolver();
@@ -225,6 +234,10 @@ fn read_inside(dir: &Path, href: &str) -> Option<Vec<u8>> {
     if !real.starts_with(&real_dir) {
         return None;
     }
+    // A FIFO or device named in an href would block the read.
+    if !fs::metadata(&real).ok()?.is_file() {
+        return None;
+    }
     let mut bytes = Vec::new();
     File::open(&real)
         .ok()?
@@ -232,6 +245,119 @@ fn read_inside(dir: &Path, href: &str) -> Option<Vec<u8>> {
         .read_to_end(&mut bytes)
         .ok()?;
     (bytes.len() as u64 <= MAX_INPUT_BYTES).then_some(bytes)
+}
+
+/// Refuses an SVG nested deeper than [`MAX_SVG_DEPTH`], before any XML parser
+/// recurses through it (roxmltree and usvg both overflow a 2 MiB stack well
+/// under their own nesting limits). The scan is one pass over the bytes with
+/// a counter, no recursion. It follows tags, comments, CDATA, processing
+/// instructions and a DOCTYPE with its internal subset; a document it
+/// cannot follow to the end is left for the parser to reject, which cannot
+/// have reached a depth the scan did not count. An entity whose value holds
+/// markup could add depth the scan cannot see, so it is refused.
+fn check_depth(path: &Path, data: &[u8]) -> Result<(), ThumbError> {
+    match scan_depth(data) {
+        Ok(()) => Ok(()),
+        Err(reason) => Err(ThumbError::decode(path, reason)),
+    }
+}
+
+fn scan_depth(data: &[u8]) -> Result<(), String> {
+    let too_deep = || format!("SVG nested deeper than {MAX_SVG_DEPTH} elements");
+    let find = |from: usize, needle: &[u8]| {
+        data.get(from..)
+            .and_then(|rest| rest.windows(needle.len()).position(|w| w == needle))
+            .map(|p| from + p + needle.len())
+    };
+    let mut depth = 0usize;
+    let mut i = 0;
+    while let Some(offset) = data
+        .get(i..)
+        .and_then(|r| r.iter().position(|&b| b == b'<'))
+    {
+        i += offset;
+        let rest = &data[i..];
+        let end = if rest.starts_with(b"<!--") {
+            find(i + 4, b"-->")
+        } else if rest.starts_with(b"<![CDATA[") {
+            find(i + 9, b"]]>")
+        } else if rest.starts_with(b"<?") {
+            find(i + 2, b"?>")
+        } else if rest.starts_with(b"<!") {
+            skip_declaration(data, i + 2)?
+        } else if rest.starts_with(b"</") {
+            depth = depth.saturating_sub(1);
+            find(i + 2, b">")
+        } else {
+            let (end, self_closing) = match skip_tag(data, i + 1) {
+                Some(found) => found,
+                None => return Ok(()),
+            };
+            if depth + 1 > MAX_SVG_DEPTH {
+                return Err(too_deep());
+            }
+            if !self_closing {
+                depth += 1;
+            }
+            Some(end)
+        };
+        match end {
+            Some(next) => i = next,
+            None => return Ok(()),
+        }
+    }
+    Ok(())
+}
+
+/// End of a start tag whose name begins at `from`, and whether it is
+/// self-closing. A `>` inside a quoted attribute value does not end it.
+fn skip_tag(data: &[u8], from: usize) -> Option<(usize, bool)> {
+    let mut quote = None;
+    let mut j = from;
+    while j < data.len() {
+        let b = data[j];
+        match quote {
+            Some(q) if b == q => quote = None,
+            Some(_) => {}
+            None if b == b'"' || b == b'\'' => quote = Some(b),
+            None if b == b'>' => return Some((j + 1, j > from && data[j - 1] == b'/')),
+            None => {}
+        }
+        j += 1;
+    }
+    None
+}
+
+/// End of a `<!...>` declaration (DOCTYPE) starting after `<!`, honouring
+/// quoted strings, comments and the bracketed internal subset. `Err` when a
+/// quoted value holds `<`, which only an entity with markup does.
+fn skip_declaration(data: &[u8], from: usize) -> Result<Option<usize>, String> {
+    let mut quote = None;
+    let mut brackets = 0usize;
+    let mut j = from;
+    while j < data.len() {
+        let b = data[j];
+        match quote {
+            Some(q) if b == q => quote = None,
+            Some(_) if b == b'<' => return Err("SVG entity containing markup".to_string()),
+            Some(_) => {}
+            None => match b {
+                b'"' | b'\'' => quote = Some(b),
+                b'[' => brackets += 1,
+                b']' => brackets = brackets.saturating_sub(1),
+                b'>' if brackets == 0 => return Ok(Some(j + 1)),
+                b'<' if data[j..].starts_with(b"<!--") => {
+                    match data[j + 4..].windows(3).position(|w| w == b"-->") {
+                        Some(p) => j += 4 + p + 2,
+                        None => return Ok(None),
+                    }
+                }
+                _ => {}
+            },
+        }
+        j += 1;
+    }
+    Ok(None)
 }
 
 fn render_svg(path: &Path, fit: u32) -> Result<Rendered, ThumbError> {
@@ -242,6 +368,12 @@ fn render_svg(path: &Path, fit: u32) -> Result<Rendered, ThumbError> {
     if data.len() as u64 > MAX_INPUT_BYTES {
         return Err(ThumbError::decode(path, "SVG larger than the size limit"));
     }
+    // usvg inflates anything starting with the gzip magic without a cap on
+    // the output, so compressed SVG is refused here whatever the features.
+    if data.starts_with(&[0x1f, 0x8b]) {
+        return Err(ThumbError::decode(path, "compressed SVG is not supported"));
+    }
+    check_depth(path, &data)?;
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let options = usvg::Options {
         image_href_resolver: href_resolver(dir),

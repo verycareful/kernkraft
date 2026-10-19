@@ -89,9 +89,15 @@ fn size_classes_follow_the_standard() {
 
 #[test]
 fn uri_encodes_space_and_non_utf8() {
+    // GLib's g_filename_to_uri escapes space, `%`, `#`, `?`, brackets and
+    // quotes, and every byte outside ASCII.
     assert_eq!(
-        file_uri(Path::new("/a b/c#d%e.png")),
-        "file:///a%20b/c%23d%25e.png"
+        file_uri(Path::new("/a b/c#d%e?f[g]h.png")),
+        "file:///a%20b/c%23d%25e%3Ff%5Bg%5Dh.png"
+    );
+    assert_eq!(
+        file_uri(Path::new("/\\\"<>^`{|}")),
+        "file:///%5C%22%3C%3E%5E%60%7B%7C%7D"
     );
     // Unreserved characters stay as written.
     assert_eq!(file_uri(Path::new("/A-z_0.~/x")), "file:///A-z_0.~/x");
@@ -99,6 +105,20 @@ fn uri_encodes_space_and_non_utf8() {
     assert_eq!(file_uri(Path::new("/\u{e9}")), "file:///%C3%A9");
     let raw = Path::new(OsStr::from_bytes(b"/x/\xff\xfe.png"));
     assert_eq!(file_uri(raw), "file:///x/%FF%FE.png");
+    // Control bytes.
+    let ctl = Path::new(OsStr::from_bytes(b"/x\x01\x7f\n"));
+    assert_eq!(file_uri(ctl), "file:///x%01%7F%0A");
+}
+
+#[test]
+fn uri_keeps_glib_sub_delims() {
+    // g_filename_to_uri leaves `!$&'()*+,;=:@` as written, so a file named
+    // with them shares its cache entry with GTK and GNOME applications.
+    assert_eq!(
+        file_uri(Path::new("/a+b (1)&c=d;e,f@g:h!i*j'k")),
+        "file:///a+b%20(1)&c=d;e,f@g:h!i*j'k"
+    );
+    assert_eq!(file_uri(Path::new("/$x")), "file:///$x");
 }
 
 #[test]
@@ -279,5 +299,44 @@ fn perms_0700_0600() {
     assert_eq!(mode(&fail_dir), 0o700);
     for entry in fs::read_dir(&fail_dir).unwrap() {
         assert_eq!(mode(&entry.unwrap().path()), 0o600);
+    }
+}
+
+#[test]
+fn foreign_fail_dir_ignored() {
+    // Only this application's failure directory counts; another
+    // application giving up on a file does not stop us trying.
+    let (_dir, cache, src) = fixture();
+    let uri = file_uri(&src);
+    let mtime = fs::metadata(&src).unwrap().mtime().to_string();
+    let name = thumb_path(&cache, &uri, ThumbSize::Normal);
+    let entry = cache
+        .join("thumbnails/fail/other-app-1")
+        .join(name.file_name().unwrap());
+    foreign_png(&entry, &[("Thumb::URI", &uri), ("Thumb::MTime", &mtime)]);
+    assert_eq!(
+        lookup(&cache, &src, ThumbSize::Normal).unwrap(),
+        Lookup::Missing
+    );
+}
+
+#[test]
+fn truncated_cache_png_is_missing() {
+    let (_dir, cache, src) = fixture();
+    let uri = file_uri(&src);
+    let mtime = fs::metadata(&src).unwrap().mtime().to_string();
+    let target = thumb_path(&cache, &uri, ThumbSize::Normal);
+    foreign_png(&target, &[("Thumb::URI", &uri), ("Thumb::MTime", &mtime)]);
+    let full = fs::read(&target).unwrap();
+    // Cuts inside the signature, the IHDR chunk (ends at byte 33) and the
+    // text chunks, all before the image data where the attributes end.
+    let idat = full.windows(4).position(|w| w == b"IDAT").unwrap();
+    for len in [0, 4, 8, 20, 33, 40, 60, idat - 8] {
+        fs::write(&target, &full[..len]).unwrap();
+        assert_eq!(
+            lookup(&cache, &src, ThumbSize::Normal).unwrap(),
+            Lookup::Missing,
+            "cut at {len}"
+        );
     }
 }

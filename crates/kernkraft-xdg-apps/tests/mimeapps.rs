@@ -133,10 +133,10 @@ fn ids_come_from_the_applications_tree() {
     let r = registry(None);
     assert_eq!(r.get("kde-foo.desktop").unwrap().name, "Foo");
     // The user's Hidden entry hides the system one with the same ID.
-    assert!(r.get("gimp.desktop").unwrap().hidden);
+    assert!(r.get("gimp.desktop").is_none());
     assert_eq!(r.get("mine.desktop").unwrap().name, "Mine");
-    // One entry per distinct ID among the fixture files, less the two that
-    // are not applications (a Link, and a file that is not an entry).
+    // One entry per distinct ID among the fixture files, less those that
+    // are not applications (a Link, a file that is not an entry) or hidden.
     let mut fixture_ids = std::collections::BTreeSet::new();
     for root in ["user/data/applications", "sys/data/applications"] {
         let root = data().join("apps").join(root);
@@ -152,7 +152,14 @@ fn ids_come_from_the_applications_tree() {
             }
         }
     }
-    for not_an_app in ["site.desktop", "broken.desktop"] {
+    // Hidden entries are never listed (user gimp, hidden, shadowed).
+    for not_an_app in [
+        "site.desktop",
+        "broken.desktop",
+        "gimp.desktop",
+        "hidden.desktop",
+        "shadowed.desktop",
+    ] {
         assert!(fixture_ids.remove(not_an_app));
     }
     assert_eq!(r.all().len(), fixture_ids.len());
@@ -160,6 +167,54 @@ fn ids_come_from_the_applications_tree() {
     // kept as a reported error, not dropped silently.
     assert!(r.get("site.desktop").is_none());
     assert_eq!(r.skipped().len(), 1);
+}
+
+// Relies on user/config/mimeapps.list Removed `image/webp=lowadd.desktop`
+// (higher priority) and sys/config/mimeapps.list Added
+// `image/webp=lowadd.desktop` (lower); lowadd.desktop has no MimeType.
+// MIME Applications Associations 1.0.1 section 3.
+#[test]
+fn removal_in_higher_file_hides_lower_add() {
+    let r = registry(None);
+    assert!(r.get("lowadd.desktop").is_some());
+    assert!(r.apps_for("image/webp", &db()).is_empty());
+}
+
+// Relies on user/config/mimeapps.list listing `image/bmp=both.desktop` under
+// Added and under Removed, and both.desktop registering image/bmp: the
+// removal is in the same file, so it does not cancel that file's addition.
+#[test]
+fn same_file_add_survives_removal() {
+    let r = registry(None);
+    assert_eq!(ids(&r.apps_for("image/bmp", &db())), ["both.desktop"]);
+}
+
+// Relies on user/data/applications/shadowed.desktop holding only
+// `[Desktop Entry]` and `Hidden=true`, and the system shadowed.desktop being
+// a full application registering image/tiff.
+#[test]
+fn hidden_stub_shadows_system_entry() {
+    let r = registry(None);
+    assert!(r.get("shadowed.desktop").is_none());
+    assert!(r.apps_for("image/tiff", &db()).is_empty());
+    assert!(r.all().iter().all(|e| e.id != "shadowed.desktop"));
+    // The stub is not an error: only broken.desktop is reported.
+    assert_eq!(r.skipped().len(), 1);
+}
+
+// Relies on sys hidden.desktop (Hidden=true with Type, Exec and MimeType
+// image/png) and the user's Hidden gimp.desktop over the system gimp.
+#[test]
+fn hidden_entry_not_returned_by_get_or_all() {
+    let r = registry(None);
+    for id in ["hidden.desktop", "gimp.desktop"] {
+        assert!(r.get(id).is_none(), "{id}");
+        assert!(r.all().iter().all(|e| e.id != id), "{id}");
+        assert!(
+            r.apps_for("image/png", &db()).iter().all(|e| e.id != id),
+            "{id}"
+        );
+    }
 }
 
 #[test]

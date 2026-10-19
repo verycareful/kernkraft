@@ -148,6 +148,9 @@ fn field_code_as_program_rejected() {
             "{bad:?}: {r:?}"
         );
     }
+    // Deprecated codes are removed first, so they are no obstacle.
+    let out = expand_exec(&entry("%m app"), &[]).unwrap();
+    assert_eq!(strs(&out), [["app"]]);
     // An escaped percent sign is text, not a code.
     let out = expand_exec(&entry("100%%app"), &[]).unwrap();
     assert_eq!(out[0][0], "100%app");

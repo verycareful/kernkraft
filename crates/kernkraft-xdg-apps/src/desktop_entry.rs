@@ -112,8 +112,9 @@ pub fn parse_desktop_entry(
 
     // `Hidden=true` marks the ID as deleted (Desktop Entry Specification 1.5,
     // "Recognized desktop entry keys"), often in an entry that has no `Type`
-    // or `Exec`. Such an entry is kept, so it shadows lower-priority entries
-    // of the same ID; nothing in it is ever launched.
+    // or `Exec`. It is returned as a stub with `hidden` set so the caller can
+    // record the ID as shadowed; [`crate::AppRegistry`] never hands such an
+    // entry out, so nothing in it reaches `launch`.
     if get("Hidden") == Some("true") {
         return Ok(DesktopEntry {
             id: id.to_string(),

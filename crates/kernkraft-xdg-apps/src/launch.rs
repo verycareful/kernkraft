@@ -79,7 +79,7 @@ pub fn launch_in_terminal(
 /// for as long as this process runs; a double fork would avoid that too but
 /// needs an intermediate process and `fork` in a multithreaded program. The
 /// thread only holds the `Child` and ends when the program does. If the
-/// thread cannot be created the program is stopped and the launch fails.
+/// thread cannot be created the launched process is killed and reaped and the launch fails.
 pub(crate) fn spawn_detached(mut cmd: Command, id: &str) -> Result<(), AppsError> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -109,8 +109,8 @@ pub(crate) fn spawn_detached(mut cmd: Command, id: &str) -> Result<(), AppsError
         });
     if let Err(source) = waiter {
         // Without a waiter the child would end as a zombie. The child is
-        // still in `slot`: stop it and reap it here, then report that the
-        // program was not left running.
+        // still in `slot`: kill and reap it here (for `Terminal=true` that is
+        // the terminal emulator process), then report it.
         if let Some(mut child) = slot.lock().ok().and_then(|mut c| c.take()) {
             let _ = child.kill();
             let _ = child.wait();
@@ -120,7 +120,7 @@ pub(crate) fn spawn_detached(mut cmd: Command, id: &str) -> Result<(), AppsError
             source: std::io::Error::new(
                 source.kind(),
                 format!(
-                    "no thread to reap the program could be created, so it was stopped: {source}"
+                    "no thread to reap the program could be created, so the launched process was killed and reaped: {source}"
                 ),
             ),
         });

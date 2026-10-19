@@ -76,10 +76,17 @@ pub fn expand_exec(
         id: entry.id.clone(),
         reason: reason.to_string(),
     };
-    let args = tokenize(&entry.exec).map_err(|r| invalid(&r))?;
+    let mut args = tokenize(&entry.exec).map_err(|r| invalid(&r))?;
+    // Deprecated codes expand to nothing, so they go first; an argument they
+    // leave empty (and that was not quoted) disappears with them.
+    for arg in &mut args {
+        arg.pieces
+            .retain(|p| !matches!(p, Piece::Code(c) if DEPRECATED.contains(c)));
+    }
+    args.retain(|a| a.quoted || !a.pieces.is_empty());
 
-    // The program is run as written; a field code there would make a file
-    // path or URL the program.
+    // The program is run as written; a live field code there would make a
+    // file path or URL the program.
     match args.first() {
         Some(first) if first.pieces.iter().any(|p| matches!(p, Piece::Code(_))) => {
             return Err(invalid("a field code in the program position"));

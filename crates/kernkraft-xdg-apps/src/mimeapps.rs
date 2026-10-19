@@ -104,7 +104,11 @@ pub(crate) fn parse_mimeapps(path: &Path, contents: &str) -> Result<MimeApps, Ap
 /// Every installed application, and the association files that rank them.
 #[derive(Debug)]
 pub struct AppRegistry {
+    /// Usable applications only: no `Hidden` entry is ever in here.
     entries: BTreeMap<String, DesktopEntry>,
+    /// IDs of `Hidden=true` entries. They are not returned, but they hide
+    /// every entry of the same ID in a lower-priority directory.
+    shadowed: HashSet<String>,
     /// Association files in priority order, highest first.
     lists: Vec<MimeApps>,
     skipped: Vec<AppsError>,
@@ -123,6 +127,7 @@ impl AppRegistry {
     pub fn load(base: &BaseDirs) -> Result<AppRegistry, AppsError> {
         let mut registry = AppRegistry {
             entries: BTreeMap::new(),
+            shadowed: HashSet::new(),
             lists: Vec::new(),
             skipped: Vec::new(),
         };
@@ -183,11 +188,14 @@ impl AppRegistry {
                 self.scan(root, &path, visited)?;
             } else if path.extension().is_some_and(|e| e == "desktop") {
                 let id = desktop_id(root, &path);
-                if self.entries.contains_key(&id) {
+                if self.entries.contains_key(&id) || self.shadowed.contains(&id) {
                     continue;
                 }
                 match fs::read_to_string(&path) {
                     Ok(text) => match parse_desktop_entry(&id, &path, &text) {
+                        Ok(entry) if entry.hidden => {
+                            self.shadowed.insert(id);
+                        }
                         Ok(entry) => {
                             self.entries.insert(id, entry);
                         }
@@ -201,7 +209,7 @@ impl AppRegistry {
         Ok(())
     }
 
-    /// The entry with desktop file ID `id`, hidden ones included.
+    /// The entry with desktop file ID `id`. A `Hidden` entry is never returned.
     pub fn get(&self, id: &str) -> Option<&DesktopEntry> {
         self.entries.get(id)
     }

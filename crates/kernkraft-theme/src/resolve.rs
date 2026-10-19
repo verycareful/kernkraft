@@ -106,6 +106,7 @@ pub struct Tokens {
     /// Colours are followed and a scheme is pinned, but Hyprland's palette is
     /// of the other scheme, so Kern's neutrals for the pinned scheme are used
     /// instead. Settings can say why the system palette is not applied.
+    #[serde(default)]
     pub scheme_mismatch: bool,
 }
 

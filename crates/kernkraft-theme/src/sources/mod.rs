@@ -42,15 +42,33 @@ pub struct Sources {
     pub fontconfig: Option<Fontconfig>,
 }
 
+/// Largest theme file read, in bytes. A `hyprtoolkit.conf`, `settings.ini`
+/// or `gtk.css` is a few KB; 1 MiB is far above any real one, and a larger
+/// file is refused instead of read whole into memory.
+pub const MAX_THEME_FILE: u64 = 1 << 20;
+
 fn read_optional(path: &Path) -> Result<Option<String>, ThemeError> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(ThemeError::Io {
+    use std::io::Read;
+    let io = |source| ThemeError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io(e)),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_THEME_FILE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    if bytes.len() as u64 > MAX_THEME_FILE {
+        return Err(ThemeError::TooLarge {
             path: path.to_path_buf(),
-            source,
-        }),
+            limit: MAX_THEME_FILE,
+        });
     }
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
 /// Reads and parses `hyprtoolkit.conf`. A missing file is `Ok(None)`.

@@ -533,6 +533,14 @@ fn format_hues_not_in_tokens() {
 }
 
 #[test]
+fn tokens_without_scheme_mismatch_still_deserialise() {
+    let t = run(&Sources::default());
+    let mut v: serde_json::Value = serde_json::to_value(&t).unwrap();
+    v.as_object_mut().unwrap().remove("scheme_mismatch");
+    assert_eq!(serde_json::from_value::<Tokens>(v).unwrap(), t);
+}
+
+#[test]
 fn tokens_round_trip_through_json() {
     let t = run(&fonts_src());
     let json = serde_json::to_string(&t).unwrap();

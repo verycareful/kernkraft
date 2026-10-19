@@ -13,4 +13,6 @@ pub enum ThemeError {
         #[source]
         source: std::io::Error,
     },
+    #[error("{path} is larger than the {limit} byte limit for a theme file")]
+    TooLarge { path: PathBuf, limit: u64 },
 }

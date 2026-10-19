@@ -54,8 +54,20 @@ fn strip_comment(line: &str) -> String {
     out
 }
 
+/// Longest value, after substitution, the parser accepts. A value is a
+/// colour, a number or a font family: tens of bytes. 4 KiB is far above any
+/// real one and keeps a chain of `$a = $b$b` lines from doubling without end.
+const MAX_VALUE_LEN: usize = 4096;
+
+/// Most bytes of variable definitions held at once. A real file defines a
+/// handful of short variables; 1 MiB matches the file size cap, so no input
+/// the reader accepts can be refused for this alone, while memory stays
+/// bounded for text handed straight to [`parse_hyprtoolkit`].
+const MAX_VARS_TOTAL: usize = 1 << 20;
+
 /// Replaces each `$name` in `value` with its definition. `None` when a
-/// variable is not defined (hyprlang defines a variable before its use).
+/// variable is not defined (hyprlang defines a variable before its use) or
+/// the result would exceed [`MAX_VALUE_LEN`].
 fn substitute(value: &str, vars: &HashMap<String, String>) -> Option<String> {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
@@ -66,10 +78,13 @@ fn substitute(value: &str, vars: &HashMap<String, String>) -> Option<String> {
             .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
             .unwrap_or(after.len());
         out.push_str(vars.get(&after[..end])?);
+        if out.len() > MAX_VALUE_LEN {
+            return None;
+        }
         rest = &after[end..];
     }
     out.push_str(rest);
-    Some(out)
+    (out.len() <= MAX_VALUE_LEN).then_some(out)
 }
 
 /// Parses the contents of a `hyprtoolkit.conf`. Unknown keys, lines without
@@ -77,6 +92,7 @@ fn substitute(value: &str, vars: &HashMap<String, String>) -> Option<String> {
 pub fn parse_hyprtoolkit(contents: &str) -> HyprToolkit {
     let mut out = HyprToolkit::default();
     let mut vars: HashMap<String, String> = HashMap::new();
+    let mut vars_total = 0usize;
     for raw in contents.lines() {
         let line = strip_comment(raw);
         let line = line.trim();
@@ -93,6 +109,12 @@ pub fn parse_hyprtoolkit(contents: &str) -> HyprToolkit {
             continue;
         };
         if let Some(name) = key.strip_prefix('$') {
+            let old = vars.get(name).map_or(0, String::len);
+            if vars_total - old + substituted.len() > MAX_VARS_TOTAL {
+                out.ignored.push(format!("{key} = {value}"));
+                continue;
+            }
+            vars_total = vars_total - old + substituted.len();
             vars.insert(name.to_string(), substituted);
             continue;
         }

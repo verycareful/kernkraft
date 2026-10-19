@@ -98,6 +98,44 @@ fn hyprlang_variables() {
 }
 
 #[test]
+fn variable_doubling_is_bounded() {
+    let mut conf = String::from("$v0 = 0123456789abcdef\n");
+    for i in 1..64 {
+        conf.push_str(&format!("$v{i} = $v{}$v{}\n", i - 1, i - 1));
+    }
+    conf.push_str("accent = $v63\nfont_family = $v1\n");
+    let start = std::time::Instant::now();
+    let h = parse_hyprtoolkit(&conf);
+    assert!(start.elapsed().as_secs() < 5);
+    // 16 bytes doubles past the 4 KiB cap at $v9 (16 * 2^9 = 8192); the
+    // lines from there on are ignored and their variables stay undefined.
+    assert_eq!(
+        h.font_family.as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
+    assert_eq!(h.accent, None);
+    assert!(h.ignored.contains(&"$v9 = $v8$v8".to_string()));
+    assert!(h.ignored.contains(&"$v63 = $v62$v62".to_string()));
+    assert!(h.ignored.contains(&"accent = $v63".to_string()));
+    assert!(!h.ignored.iter().any(|l| l.starts_with("$v8 ")));
+}
+
+#[test]
+fn oversize_theme_file_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("hyprtoolkit.conf");
+    std::fs::write(&p, vec![b'#'; 1 << 20]).unwrap();
+    assert!(read_hyprtoolkit(&p).unwrap().is_some());
+    std::fs::write(&p, vec![b'#'; (1 << 20) + 1]).unwrap();
+    assert!(matches!(
+        read_hyprtoolkit(&p),
+        Err(kernkraft_theme::ThemeError::TooLarge { .. })
+    ));
+    std::fs::write(dir.path().join("gtk.css"), vec![b' '; (1 << 20) + 1]).unwrap();
+    assert!(read_gtk(dir.path()).is_err());
+}
+
+#[test]
 fn colour_forms() {
     assert_eq!(Rgba::parse("rgb(ff8000)"), c(255, 128, 0));
     assert_eq!(

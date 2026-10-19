@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use kernkraft_fs::{base_dirs_from, BaseDirs};
-use kernkraft_theme::{gather, read_portal, watch_with, Gathered, Rgba, ThemeError};
+use kernkraft_theme::{gather, read_portal, watch_with, Gathered, Rgba, ThemeError, DEBOUNCE};
 
 fn dirs(root: &Path) -> BaseDirs {
     let home = root.to_path_buf();
@@ -63,27 +63,40 @@ fn watch_fires_on_replace() {
 
 #[test]
 fn burst_coalesces() {
-    let root = tempfile::tempdir().unwrap();
-    let base = dirs(root.path());
-    let hypr = base.config.join("hypr");
-    let gtk = base.config.join("gtk-4.0");
-    std::fs::create_dir_all(&hypr).unwrap();
-    std::fs::create_dir_all(&gtk).unwrap();
-    let (cb, rx) = collector();
-    let _w = watch_with(&base, None, cb).unwrap();
-    // Three writes across two directories inside 50 ms.
-    replace(&hypr.join("hyprtoolkit.conf"), &accent_conf("010101"));
-    std::fs::write(gtk.join("settings.ini"), "[Settings]\n").unwrap();
-    replace(&hypr.join("hyprtoolkit.conf"), &accent_conf("020202"));
-    let g = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    assert_eq!(
-        g.sources.hypr.unwrap().accent,
-        Some(Rgba::rgb(2, 2, 2)),
-        "callback ran before the burst ended"
-    );
-    assert!(g.sources.gtk.is_some());
-    // Nothing else follows: wait well past the debounce.
-    assert!(rx.recv_timeout(Duration::from_millis(600)).is_err());
+    // Three writes across two directories must land inside one debounce
+    // window for the claim to apply. A loaded machine can stretch them past
+    // it; that attempt proves nothing, so retry and skip if every attempt
+    // was slow.
+    for attempt in 0..5 {
+        let root = tempfile::tempdir().unwrap();
+        let base = dirs(root.path());
+        let hypr = base.config.join("hypr");
+        let gtk = base.config.join("gtk-4.0");
+        std::fs::create_dir_all(&hypr).unwrap();
+        std::fs::create_dir_all(&gtk).unwrap();
+        let (cb, rx) = collector();
+        let _w = watch_with(&base, None, cb).unwrap();
+        let start = Instant::now();
+        replace(&hypr.join("hyprtoolkit.conf"), &accent_conf("010101"));
+        std::fs::write(gtk.join("settings.ini"), "[Settings]\n").unwrap();
+        replace(&hypr.join("hyprtoolkit.conf"), &accent_conf("020202"));
+        let span = start.elapsed();
+        let first = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let extra = rx.recv_timeout(Duration::from_millis(600)).is_ok();
+        if span > DEBOUNCE / 2 {
+            eprintln!("attempt {attempt}: writes took {span:?}, retrying");
+            continue;
+        }
+        assert!(!extra, "a second callback followed one burst");
+        assert_eq!(
+            first.sources.hypr.unwrap().accent,
+            Some(Rgba::rgb(2, 2, 2)),
+            "callback ran before the burst ended"
+        );
+        assert!(first.sources.gtk.is_some());
+        return;
+    }
+    eprintln!("every attempt was too slow to land inside the debounce window: skipping");
 }
 
 #[test]
@@ -215,4 +228,39 @@ fn live_bus_read_and_drop_ends_portal_thread() {
         "{:?}",
         start.elapsed()
     );
+}
+
+#[test]
+fn callback_panic_is_reported_and_watcher_survives() {
+    let root = tempfile::tempdir().unwrap();
+    let base = dirs(root.path());
+    let hypr = base.config.join("hypr");
+    std::fs::create_dir_all(&hypr).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let w = watch_with(
+        &base,
+        None,
+        Box::new(move |g| {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                panic!("boom");
+            }
+            let _ = tx.send(g);
+        }),
+    )
+    .unwrap();
+    replace(&hypr.join("hyprtoolkit.conf"), &accent_conf("010101"));
+    // The first callback panics; wait for it to have run, then change again.
+    std::thread::sleep(Duration::from_millis(600));
+    replace(&hypr.join("hyprtoolkit.conf"), &accent_conf("020202"));
+    let g = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(g.sources.hypr.unwrap().accent, Some(Rgba::rgb(2, 2, 2)));
+    assert!(
+        g.errors
+            .iter()
+            .any(|e| matches!(e, ThemeError::CallbackPanic(m) if m == "boom")),
+        "{:?}",
+        g.errors
+    );
+    drop(w);
 }

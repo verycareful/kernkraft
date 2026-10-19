@@ -15,35 +15,14 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{SocketAddr, UnixStream};
 use std::path::PathBuf;
 
+mod error;
+
+pub use error::BusError;
+
+use std::time::Duration;
+
 use zbus::blocking::connection::Builder;
 use zbus::blocking::Connection;
-
-#[derive(Debug, thiserror::Error)]
-pub enum BusError {
-    #[error("no bus address: {0} is unset and no default socket path can be built")]
-    NoAddress(&'static str),
-    #[error(
-        "bus address {0:?} has no unix:path= or unix:abstract= entry (only Unix sockets are used)"
-    )]
-    NotUnix(String),
-    #[error("bus address {address:?}: {reason}")]
-    Malformed {
-        address: String,
-        reason: &'static str,
-    },
-    #[error("connecting to {target}: {source}")]
-    Connect {
-        target: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("D-Bus handshake on {target}: {source}")]
-    Handshake {
-        target: String,
-        #[source]
-        source: Box<zbus::Error>,
-    },
-}
 
 /// Where a Unix bus socket lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,8 +32,14 @@ pub enum UnixTarget {
     Abstract(Vec<u8>),
 }
 
+/// Longest a method call may wait for its reply. zbus waits forever by
+/// default, so a hung peer (a stuck xdg-desktop-portal) would stall every
+/// caller; a healthy bus answers in milliseconds, and 3 s leaves room for a
+/// portal that is starting up.
+pub const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Decodes D-Bus address value escaping: `%` followed by two hex digits is
-/// that byte (Server Addresses: "backslash... optionally-escaped bytes").
+/// that byte (Server Addresses, "optionally-escaped bytes").
 fn unescape(value: &str, address: &str) -> Result<Vec<u8>, BusError> {
     let bad = |reason| BusError::Malformed {
         address: address.to_string(),
@@ -67,7 +52,9 @@ fn unescape(value: &str, address: &str) -> Result<Vec<u8>, BusError> {
         if b[i] == b'%' {
             let hex = b
                 .get(i + 1..i + 3)
-                .ok_or_else(|| bad("truncated % escape"))?;
+                .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+                .ok_or_else(|| bad("bad % escape"))?;
+            // Both bytes are ASCII hex digits, so this is valid UTF-8.
             let s = std::str::from_utf8(hex).map_err(|_| bad("bad % escape"))?;
             out.push(u8::from_str_radix(s, 16).map_err(|_| bad("bad % escape"))?);
             i += 3;
@@ -79,57 +66,95 @@ fn unescape(value: &str, address: &str) -> Result<Vec<u8>, BusError> {
     Ok(out)
 }
 
-/// Picks the first `unix:` entry of a semicolon-separated address list.
-/// Entries of other transports are skipped; if none is a Unix entry the
-/// error names the whole list.
+/// Picks the first usable `unix:` entry of a semicolon-separated address
+/// list. Entries of other transports are skipped on purpose, so a list that
+/// offers `tcp:` first and `unix:` second connects over the Unix socket; if
+/// no entry is a Unix one the error names the whole list. A `unix:` entry
+/// must give exactly one of `path` and `abstract` (non-empty), every
+/// parameter needs `=`, and `dir`, `tmpdir` and `runtime` (which name a
+/// socket to listen on, not one to connect to) cannot accompany them.
 pub fn parse_address(list: &str) -> Result<UnixTarget, BusError> {
+    let bad = |reason| BusError::Malformed {
+        address: list.to_string(),
+        reason,
+    };
     for entry in list.split(';').map(str::trim).filter(|e| !e.is_empty()) {
         let Some(params) = entry.strip_prefix("unix:") else {
             continue;
         };
         let mut found = None;
+        let mut listen_only = false;
         for kv in params.split(',') {
-            let Some((k, v)) = kv.split_once('=') else {
-                continue;
-            };
+            let (k, v) = kv
+                .split_once('=')
+                .ok_or_else(|| bad("parameter without ="))?;
             let target = match k {
-                "path" => UnixTarget::Path(PathBuf::from(std::ffi::OsStr::from_bytes(&unescape(
-                    v, list,
-                )?))),
-                "abstract" => UnixTarget::Abstract(unescape(v, list)?),
+                "path" | "abstract" => {
+                    if v.is_empty() {
+                        return Err(bad("empty socket name"));
+                    }
+                    let name = unescape(v, list)?;
+                    if k == "path" {
+                        UnixTarget::Path(PathBuf::from(std::ffi::OsStr::from_bytes(&name)))
+                    } else {
+                        UnixTarget::Abstract(name)
+                    }
+                }
+                "dir" | "tmpdir" | "runtime" => {
+                    listen_only = true;
+                    continue;
+                }
                 _ => continue,
             };
             if found.is_some() {
-                return Err(BusError::Malformed {
-                    address: list.to_string(),
-                    reason: "unix entry has more than one of path and abstract",
-                });
+                return Err(bad("more than one of path and abstract"));
             }
             found = Some(target);
         }
-        // A unix entry with neither key (for example `unix:runtime=yes`)
-        // names no socket; skip it like any entry that cannot be used.
-        if let Some(t) = found {
-            return Ok(t);
+        match found {
+            Some(_) if listen_only => {
+                return Err(bad("path or abstract together with dir, tmpdir or runtime"))
+            }
+            Some(t) => return Ok(t),
+            // A listen-only or parameterless entry names nothing to connect
+            // to; like any other unusable entry it is skipped.
+            None => {}
         }
     }
     Err(BusError::NotUnix(list.to_string()))
+}
+
+/// A resolved bus address and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BusAddress {
+    pub address: String,
+    /// True when the environment named no address and this is the default
+    /// socket location.
+    pub defaulted: bool,
 }
 
 fn address_for(
     var: &'static str,
     default: impl FnOnce() -> Option<String>,
     env: &dyn Fn(&str) -> Option<String>,
-) -> Result<String, BusError> {
-    env(var)
-        .filter(|v| !v.is_empty())
-        .or_else(default)
-        .ok_or(BusError::NoAddress(var))
+) -> Result<BusAddress, BusError> {
+    match env(var).filter(|v| !v.is_empty()) {
+        Some(address) => Ok(BusAddress {
+            address,
+            defaulted: false,
+        }),
+        None => default()
+            .map(|address| BusAddress {
+                address,
+                defaulted: true,
+            })
+            .ok_or(BusError::NoAddress(var)),
+    }
 }
 
 /// The session bus address: `DBUS_SESSION_BUS_ADDRESS`, else
 /// `unix:path=$XDG_RUNTIME_DIR/bus` (the systemd/dbus-broker default).
-pub fn session_address(env: &dyn Fn(&str) -> Option<String>) -> Result<String, BusError> {
+pub fn session_address(env: &dyn Fn(&str) -> Option<String>) -> Result<BusAddress, BusError> {
     address_for(
         "DBUS_SESSION_BUS_ADDRESS",
         || {
@@ -143,7 +168,7 @@ pub fn session_address(env: &dyn Fn(&str) -> Option<String>) -> Result<String, B
 
 /// The system bus address: `DBUS_SYSTEM_BUS_ADDRESS`, else
 /// `unix:path=/run/dbus/system_bus_socket` (Well-known Message Bus Instances).
-pub fn system_address(env: &dyn Fn(&str) -> Option<String>) -> Result<String, BusError> {
+pub fn system_address(env: &dyn Fn(&str) -> Option<String>) -> Result<BusAddress, BusError> {
     address_for(
         "DBUS_SYSTEM_BUS_ADDRESS",
         || Some("unix:path=/run/dbus/system_bus_socket".to_string()),
@@ -165,8 +190,8 @@ fn escape(s: &str) -> String {
     out
 }
 
-fn open(address: &str) -> Result<Connection, BusError> {
-    let target = parse_address(address)?;
+fn open(addr: &BusAddress) -> Result<Connection, BusError> {
+    let target = parse_address(&addr.address)?;
     let (label, stream) = match &target {
         UnixTarget::Path(p) => (p.display().to_string(), UnixStream::connect(p)),
         UnixTarget::Abstract(name) => (
@@ -176,10 +201,11 @@ fn open(address: &str) -> Result<Connection, BusError> {
     };
     let stream = stream.map_err(|source| BusError::Connect {
         target: label.clone(),
+        defaulted: addr.defaulted,
         source,
     })?;
-    #[allow(deprecated)] // the std stream form; the alternative needs async-io types
-    Builder::unix_stream(stream)
+    Builder::async_io_unix_stream(stream)
+        .method_timeout(METHOD_TIMEOUT)
         .build()
         .map_err(|source| BusError::Handshake {
             target: label,

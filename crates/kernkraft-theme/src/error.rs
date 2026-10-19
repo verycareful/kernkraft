@@ -24,6 +24,10 @@ pub enum ThemeError {
     Watch {
         path: PathBuf,
         #[source]
-        source: notify::Error,
+        source: std::io::Error,
     },
+    /// The `on_change` callback panicked. The watcher keeps running; this is
+    /// reported in the next callback's errors.
+    #[error("the theme change callback panicked: {0}")]
+    CallbackPanic(String),
 }

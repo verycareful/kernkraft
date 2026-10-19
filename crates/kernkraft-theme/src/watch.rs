@@ -2,16 +2,26 @@
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
 //! Live theme watching (parent spec section 6.5): file changes under the
-//! config directories through inotify (`notify`), and the portal's
+//! config directories through inotify (inotify(7)), and the portal's
 //! `SettingChanged` signal (xdg-desktop-portal Settings interface) on the
 //! session bus.
 //!
-//! Threads: one worker owns the `notify` watcher, debounces, gathers and
-//! calls back; one thread reads portal signals and forwards them to the
-//! worker. Dropping a [`Watcher`] stops and joins both. The portal thread
-//! sits in a blocking read of the bus connection; dropping closes that
-//! connection, which ends the read.
+//! Threads:
+//! - the reader sleeps in `poll(2)` on the inotify descriptor and a stop
+//!   eventfd, reads events (the inotify descriptor is non-blocking) and
+//!   forwards them;
+//! - the worker owns the watches, debounces, gathers and calls back;
+//! - the portal thread reads `SettingChanged` signals and forwards them.
+//!
+//! Dropping a [`Watcher`] writes the eventfd (the reader wakes and exits),
+//! stops the worker, closes the bus connection (which ends the portal
+//! thread's blocking read) and waits for each thread, at most
+//! [`DROP_WAIT`] each.
 
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::os::fd::OwnedFd;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -19,18 +29,17 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use kernkraft_fs::BaseDirs;
-use notify::event::{AccessKind, AccessMode, EventKind};
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher as _};
+use rustix::event::{eventfd, poll, EventfdFlags, PollFd, PollFlags};
+use rustix::io::Errno;
 use zbus::blocking::{Connection, MessageIterator};
 use zbus::message::Type as MessageType;
 use zbus::MatchRule;
 
 use crate::error::ThemeError;
 use crate::gather::{gather_from, Gathered, GTK_DIR, HYPR_DIR, HYPR_FILE};
-use crate::portal::{
-    is_no_portal, APPEARANCE_NAMESPACE, PORTAL_BUS_NAME, PORTAL_PATH, SETTINGS_IFACE,
-};
+use crate::portal::{APPEARANCE_NAMESPACE, PORTAL_BUS_NAME, PORTAL_PATH, SETTINGS_IFACE};
 
 /// Quiet time after the last change before one re-theme runs. The dotfiles
 /// `theme` script rewrites several files in sequence; waiting for the burst
@@ -42,6 +51,27 @@ pub const DEBOUNCE: Duration = Duration::from_millis(150);
 /// forever.
 const MAX_DEFER: Duration = Duration::from_secs(2);
 
+/// Longest [`Watcher`]'s drop waits for one thread. A worker is busy only
+/// while gathering (bounded by the bus method timeout per portal call) or in
+/// the caller's callback; a callback that never returns would otherwise hang
+/// the drop. Past this the thread is left to finish on its own: it has been
+/// told to stop and exits as soon as it returns.
+pub const DROP_WAIT: Duration = Duration::from_secs(10);
+
+/// Events that can change what the theme reads. `MODIFY` is included for
+/// writers that keep the file open. The `*_SELF` and ignored events report
+/// the watched directory itself going away.
+fn watch_mask() -> WatchMask {
+    WatchMask::CREATE
+        | WatchMask::DELETE
+        | WatchMask::MOVED_FROM
+        | WatchMask::MOVED_TO
+        | WatchMask::CLOSE_WRITE
+        | WatchMask::MODIFY
+        | WatchMask::DELETE_SELF
+        | WatchMask::MOVE_SELF
+}
+
 /// The files the watcher reacts to, per watched directory.
 struct Target {
     dir: PathBuf,
@@ -51,80 +81,126 @@ struct Target {
     watched: Option<PathBuf>,
 }
 
+/// One inotify event, reduced to what the worker needs.
+struct RawEvent {
+    wd: WatchDescriptor,
+    mask: EventMask,
+    name: Option<OsString>,
+}
+
 enum Msg {
-    Fs(notify::Result<Event>),
+    Fs(Vec<RawEvent>),
+    FsError(std::io::Error),
     Portal,
     PortalError(ThemeError),
     Stop,
 }
 
+/// A thread plus a signal that it has finished.
+struct Joinable {
+    handle: JoinHandle<()>,
+    done: mpsc::Receiver<()>,
+}
+
+/// Sends on drop, so the signal arrives even when the thread unwinds.
+struct Done(Sender<()>);
+impl Drop for Done {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
+fn spawn_joinable(f: impl FnOnce() + Send + 'static) -> Joinable {
+    let (tx, done) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let _done = Done(tx);
+        f();
+    });
+    Joinable { handle, done }
+}
+
+impl Joinable {
+    /// Waits up to [`DROP_WAIT`] for the thread; past that it is detached.
+    /// Skipped for the calling thread itself (a drop inside the callback).
+    fn finish(self) {
+        if self.handle.thread().id() == thread::current().id() {
+            return;
+        }
+        match self.done.recv_timeout(DROP_WAIT) {
+            Err(RecvTimeoutError::Timeout) => {}
+            _ => {
+                let _ = self.handle.join();
+            }
+        }
+    }
+}
+
 /// A running watch. Dropping it stops the file watch and the portal
-/// subscription and waits for both threads to finish (from any thread other
-/// than the callback's own; dropping inside the callback stops the threads
-/// without waiting for itself).
+/// subscription and waits for the threads (see [`DROP_WAIT`]).
+///
+/// A panic in the `on_change` callback is caught: the watcher keeps running
+/// and the panic message is reported as [`ThemeError::CallbackPanic`] in the
+/// errors of the next callback.
 pub struct Watcher {
     tx: Sender<Msg>,
     stop: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
-    portal: Option<JoinHandle<()>>,
+    stop_fd: Arc<OwnedFd>,
+    reader: Option<Joinable>,
+    worker: Option<Joinable>,
+    portal: Option<Joinable>,
     conn: Option<Connection>,
 }
 
 impl Drop for Watcher {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        // Waking the reader: an eventfd takes an 8-byte counter increment.
+        let _ = rustix::io::write(&*self.stop_fd, &1u64.to_ne_bytes());
         // A send fails only when the worker already ended.
         let _ = self.tx.send(Msg::Stop);
-        let me = thread::current().id();
-        if let Some(h) = self.worker.take() {
-            if h.thread().id() != me {
-                let _ = h.join();
-            }
+        if let Some(j) = self.reader.take() {
+            j.finish();
+        }
+        if let Some(j) = self.worker.take() {
+            j.finish();
         }
         if let Some(conn) = self.conn.take() {
             // Closing the connection ends the portal thread's blocking
-            // read. The worker is gone, so nothing else uses it.
+            // read.
             let _ = conn.close();
         }
-        if let Some(h) = self.portal.take() {
-            if h.thread().id() != me {
-                let _ = h.join();
-            }
+        if let Some(j) = self.portal.take() {
+            j.finish();
         }
     }
 }
 
 /// Watches the theme sources under `base.config` and the portal on the
 /// session bus, calling `on_change` with a fresh [`Gathered`] after each
-/// burst of changes. See [`watch_with`].
+/// burst of changes. See [`watch_with`] for the details; it applies here
+/// unchanged.
 ///
 /// The bus is reached over its Unix socket only (see `kernkraft-bus`).
-/// Without a session bus the file watch still runs and the portal is left
-/// out, the same as a bus with no portal on it. Any other failure to reach
-/// the bus is an error.
+/// Only a bus that is absent (no address could be built, or the default
+/// socket does not exist) leaves the portal out and watches files alone.
+/// Every other failure, including an address the environment names that
+/// cannot be reached or is not a Unix address, is an error.
 pub fn watch(
     base: &BaseDirs,
     on_change: Box<dyn Fn(Gathered) + Send>,
 ) -> Result<Watcher, ThemeError> {
-    // Only a missing bus is tolerated; every other failure, including a
-    // non-Unix address, is reported.
     let conn = match kernkraft_bus::session() {
         Ok(c) => Some(c),
-        Err(kernkraft_bus::BusError::NoAddress(_)) => None,
-        Err(kernkraft_bus::BusError::Connect { source, .. })
-            if matches!(
-                source.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) =>
-        {
-            None
-        }
+        Err(e) if e.is_absent() => None,
         Err(e) => return Err(ThemeError::Portal(format!("session bus: {e}"))),
     };
     watch_with(base, conn, on_change)
 }
 
 /// [`watch`] on a given connection (`None` skips the portal).
+///
+/// Nothing is delivered for the state at the start: call [`gather`] once
+/// first, then use the callbacks for changes.
 ///
 /// Watches `hypr` and `gtk-4.0` under `base.config` as directories, because
 /// editors and the theme script replace files by rename and a watch on the
@@ -134,24 +210,36 @@ pub fn watch(
 /// the appearance namespace, are debounced by [`DEBOUNCE`]; then the sources
 /// are gathered and `on_change` runs on the worker thread. Errors from the
 /// watch itself arrive in [`Gathered::errors`] of the next callback.
+///
+/// If `on_change` panics, the panic is caught, the watcher keeps running,
+/// and the next callback's errors carry a [`ThemeError::CallbackPanic`] with
+/// the message. If no further change arrives, that report is never delivered.
+///
+/// [`gather`]: crate::gather
 pub fn watch_with(
     base: &BaseDirs,
     conn: Option<Connection>,
     on_change: Box<dyn Fn(Gathered) + Send>,
 ) -> Result<Watcher, ThemeError> {
     let config = base.config.clone();
+    let io_err = |path: &Path, source| ThemeError::Watch {
+        path: path.to_path_buf(),
+        source,
+    };
+    let inotify = Inotify::init().map_err(|e| io_err(&config, e))?;
+    let watches = inotify.watches();
+    let stop_fd = Arc::new(
+        eventfd(0, EventfdFlags::CLOEXEC).map_err(|e| io_err(&config, std::io::Error::from(e)))?,
+    );
+
     let (tx, rx) = mpsc::channel::<Msg>();
     let stop = Arc::new(AtomicBool::new(false));
 
-    let fs_tx = tx.clone();
-    let mut notifier = notify::recommended_watcher(move |res| {
-        let _ = fs_tx.send(Msg::Fs(res));
-    })
-    .map_err(|source| ThemeError::Watch {
-        path: config.clone(),
-        source,
-    })?;
-
+    let mut state = Watching {
+        watches,
+        by_wd: HashMap::new(),
+        by_path: HashMap::new(),
+    };
     let mut targets = vec![
         Target {
             dir: config.join(HYPR_DIR),
@@ -164,7 +252,7 @@ pub fn watch_with(
             watched: None,
         },
     ];
-    arm(&mut notifier, &mut targets, false)?;
+    state.arm(&mut targets, false)?;
 
     let mut portal = None;
     if let Some(c) = &conn {
@@ -177,47 +265,93 @@ pub fn watch_with(
             .and_then(|b| b.arg(0, APPEARANCE_NAMESPACE))
             .map(|b| b.build())
             .map_err(|e| ThemeError::Portal(format!("match rule: {e}")))?;
-        match MessageIterator::for_match_rule(rule, c, None) {
-            Ok(iter) => {
-                let (ptx, pstop) = (tx.clone(), stop.clone());
-                portal = Some(thread::spawn(move || {
-                    for msg in iter {
-                        match msg {
-                            Ok(_) => {
-                                if ptx.send(Msg::Portal).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                if !pstop.load(Ordering::SeqCst) {
-                                    let _ = ptx.send(Msg::PortalError(ThemeError::Portal(
-                                        format!("SettingChanged: {e}"),
-                                    )));
-                                }
-                                break;
-                            }
+        // The match is registered with the bus daemon, not the portal, so
+        // it succeeds with no portal running and delivers once one starts.
+        let iter = MessageIterator::for_match_rule(rule, c, None)
+            .map_err(|e| ThemeError::Portal(format!("subscribe: {e}")))?;
+        let (ptx, pstop) = (tx.clone(), stop.clone());
+        portal = Some(spawn_joinable(move || {
+            for msg in iter {
+                match msg {
+                    Ok(_) => {
+                        if ptx.send(Msg::Portal).is_err() {
+                            break;
                         }
                     }
-                }));
+                    Err(e) => {
+                        if !pstop.load(Ordering::SeqCst) {
+                            let _ = ptx.send(Msg::PortalError(ThemeError::Portal(format!(
+                                "SettingChanged: {e}"
+                            ))));
+                        }
+                        break;
+                    }
+                }
             }
-            // No portal on the bus: nothing to subscribe to.
-            Err(e) if is_no_portal(&e) => {}
-            Err(e) => return Err(ThemeError::Portal(format!("subscribe: {e}"))),
-        }
+        }));
     }
 
+    let reader = {
+        let (rtx, rstop_fd, rstop) = (tx.clone(), stop_fd.clone(), stop.clone());
+        spawn_joinable(move || read_loop(inotify, &rstop_fd, &rstop, &rtx))
+    };
+
     let worker_conn = conn.clone();
-    let worker = thread::spawn(move || {
-        run(&config, notifier, targets, worker_conn, rx, on_change);
+    let worker = spawn_joinable(move || {
+        run(&config, state, targets, worker_conn, rx, on_change);
     });
 
     Ok(Watcher {
         tx,
         stop,
+        stop_fd,
+        reader: Some(reader),
         worker: Some(worker),
         portal,
         conn,
     })
+}
+
+/// Sleeps until the inotify descriptor or the stop eventfd is readable,
+/// forwards events, and exits when stopped or on a read error.
+fn read_loop(mut inotify: Inotify, stop_fd: &OwnedFd, stop: &AtomicBool, tx: &Sender<Msg>) {
+    let mut buf = [0u8; 4096];
+    loop {
+        let mut fds = [
+            PollFd::new(&inotify, PollFlags::IN),
+            PollFd::new(stop_fd, PollFlags::IN),
+        ];
+        match poll(&mut fds, None) {
+            Ok(_) => {}
+            Err(Errno::INTR) => continue,
+            Err(e) => {
+                let _ = tx.send(Msg::FsError(e.into()));
+                return;
+            }
+        }
+        if stop.load(Ordering::SeqCst) || !fds[1].revents().is_empty() {
+            return;
+        }
+        match inotify.read_events(&mut buf) {
+            Ok(events) => {
+                let batch: Vec<RawEvent> = events
+                    .map(|e| RawEvent {
+                        wd: e.wd,
+                        mask: e.mask,
+                        name: e.name.map(OsString::from),
+                    })
+                    .collect();
+                if !batch.is_empty() && tx.send(Msg::Fs(batch)).is_err() {
+                    return;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => {
+                let _ = tx.send(Msg::FsError(e));
+                return;
+            }
+        }
+    }
 }
 
 /// The directory to watch for `dir`: itself, or the nearest existing
@@ -233,87 +367,93 @@ fn nearest_existing(dir: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
-/// Points every target's watch at its directory or nearest existing ancestor,
-/// adding new watches and dropping ones no target uses. With `force`, every
-/// watch is replaced, for when a watched directory was removed and recreated
-/// (the kernel ended the old watch with the old inode).
-fn arm(
-    notifier: &mut RecommendedWatcher,
-    targets: &mut [Target],
-    force: bool,
-) -> Result<(), ThemeError> {
-    for i in 0..targets.len() {
-        let want = nearest_existing(&targets[i].dir);
-        let old = targets[i].watched.clone();
-        if old.as_ref() == Some(&want) && !force {
-            continue;
+/// The live inotify watches and the maps between descriptors and paths.
+struct Watching {
+    watches: Watches,
+    by_wd: HashMap<WatchDescriptor, PathBuf>,
+    by_path: HashMap<PathBuf, WatchDescriptor>,
+}
+
+impl Watching {
+    /// Points every target's watch at its directory or nearest existing
+    /// ancestor, adding new watches and dropping ones no target uses. With
+    /// `force`, every watch is replaced, for when a watched directory was
+    /// removed and recreated (the kernel ended the old watch with the old
+    /// inode).
+    fn arm(&mut self, targets: &mut [Target], force: bool) -> Result<(), ThemeError> {
+        if force {
+            let all: Vec<PathBuf> = self.by_path.keys().cloned().collect();
+            for p in all {
+                self.remove(&p)?;
+            }
+            for t in targets.iter_mut() {
+                t.watched = None;
+            }
         }
-        if old.as_ref() == Some(&want) {
-            // Replace a watch whose directory may have been recreated.
-            match notifier.unwatch(&want) {
-                Ok(()) => {}
-                Err(e) if matches!(e.kind, notify::ErrorKind::WatchNotFound) => {}
-                Err(source) => {
-                    return Err(ThemeError::Watch { path: want, source });
+        for i in 0..targets.len() {
+            // A directory can appear between choosing the ancestor and the
+            // watch being in place, so look again after adding and move
+            // down until the choice is stable.
+            loop {
+                let want = nearest_existing(&targets[i].dir);
+                let old = targets[i].watched.clone();
+                if old.as_ref() == Some(&want) && self.by_path.contains_key(&want) {
+                    break;
+                }
+                if !self.by_path.contains_key(&want) {
+                    let wd = self.watches.add(&want, watch_mask()).map_err(|source| {
+                        ThemeError::Watch {
+                            path: want.clone(),
+                            source,
+                        }
+                    })?;
+                    self.by_wd.insert(wd.clone(), want.clone());
+                    self.by_path.insert(want.clone(), wd);
+                }
+                targets[i].watched = Some(want.clone());
+                if let Some(old) = old.filter(|o| *o != want) {
+                    if !targets.iter().any(|t| t.watched.as_ref() == Some(&old)) {
+                        self.remove(&old)?;
+                    }
                 }
             }
         }
-        notifier
-            .watch(&want, RecursiveMode::NonRecursive)
-            .map_err(|source| ThemeError::Watch {
-                path: want.clone(),
+        Ok(())
+    }
+
+    fn remove(&mut self, path: &Path) -> Result<(), ThemeError> {
+        let Some(wd) = self.by_path.remove(path) else {
+            return Ok(());
+        };
+        self.by_wd.remove(&wd);
+        match self.watches.remove(wd) {
+            Ok(()) => Ok(()),
+            // The kernel already ended the watch (the directory was
+            // removed).
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
+            Err(source) => Err(ThemeError::Watch {
+                path: path.to_path_buf(),
                 source,
-            })?;
-        targets[i].watched = Some(want.clone());
-        if let Some(old) = old.filter(|o| *o != want) {
-            let still_used = targets.iter().any(|t| t.watched.as_ref() == Some(&old));
-            if !still_used {
-                match notifier.unwatch(&old) {
-                    Ok(()) => {}
-                    // The old directory is gone; the kernel ended its watch.
-                    Err(e) if matches!(e.kind, notify::ErrorKind::WatchNotFound) => {}
-                    Err(source) => return Err(ThemeError::Watch { path: old, source }),
-                }
-            }
+            }),
         }
     }
-    Ok(())
 }
 
-/// Whether `ev` touches a file the theme reads, or the path to a watched
-/// directory that does not exist yet.
-fn relevant(ev: &Event, targets: &[Target]) -> bool {
-    // Opens and reads of a file change nothing; a completed write does.
-    if let EventKind::Access(kind) = ev.kind {
-        if !matches!(kind, AccessKind::Close(AccessMode::Write)) {
-            return false;
-        }
-    }
-    ev.paths.iter().any(|p| {
-        targets.iter().any(|t| {
-            // `p` is the directory or one of its ancestors (the directory
-            // appeared, was removed, or its parent changed).
-            t.dir.starts_with(p)
-                || (p.parent() == Some(t.dir.as_path())
-                    && p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| t.files.contains(&n)))
-        })
+/// Whether the event at `path` touches a file the theme reads, or the path
+/// to a watched directory that does not exist yet.
+fn relevant(path: &Path, targets: &[Target]) -> bool {
+    // The directory-level events carry no name, and then `path` is the
+    // watched directory itself.
+    targets.iter().any(|t| {
+        // `path` is the directory or one of its ancestors (the directory
+        // appeared, was removed, or its parent changed).
+        t.dir.starts_with(path)
+            || (path.parent() == Some(t.dir.as_path())
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| t.files.contains(&n)))
     })
-}
-
-/// Whether `ev` removed or created a watched directory or one of its
-/// ancestors, which can leave a watch pointing at a dead inode.
-fn dir_event(ev: &Event, targets: &[Target]) -> bool {
-    matches!(
-        ev.kind,
-        EventKind::Remove(_)
-            | EventKind::Create(_)
-            | EventKind::Modify(notify::event::ModifyKind::Name(_))
-    ) && ev
-        .paths
-        .iter()
-        .any(|p| targets.iter().any(|t| t.dir.starts_with(p)))
 }
 
 /// What one burst of messages amounted to.
@@ -321,7 +461,8 @@ fn dir_event(ev: &Event, targets: &[Target]) -> bool {
 struct Burst {
     /// Something the theme reads changed.
     pending: bool,
-    /// A watched directory or ancestor was created, removed or renamed.
+    /// A watched directory or ancestor was created, removed or renamed, or
+    /// events were lost.
     rearm: bool,
 }
 
@@ -330,20 +471,49 @@ struct Burst {
 fn absorb(
     msg: Msg,
     config: &Path,
+    state: &Watching,
     targets: &[Target],
     errors: &mut Vec<ThemeError>,
     burst: &mut Burst,
 ) -> Option<bool> {
     let changed = match msg {
         Msg::Stop => return None,
-        Msg::Fs(Ok(ev)) => {
-            let rel = relevant(&ev, targets);
-            if rel && dir_event(&ev, targets) {
-                burst.rearm = true;
+        Msg::Fs(events) => {
+            let mut any = false;
+            for ev in events {
+                if ev.mask.contains(EventMask::Q_OVERFLOW) {
+                    // Events were lost: re-read everything and re-arm.
+                    burst.rearm = true;
+                    any = true;
+                    continue;
+                }
+                let Some(dir) = state.by_wd.get(&ev.wd) else {
+                    continue;
+                };
+                let path = match &ev.name {
+                    Some(n) => dir.join(n),
+                    None => dir.clone(),
+                };
+                if !relevant(&path, targets) {
+                    continue;
+                }
+                any = true;
+                if ev.mask.intersects(
+                    EventMask::CREATE
+                        | EventMask::DELETE
+                        | EventMask::MOVED_FROM
+                        | EventMask::MOVED_TO
+                        | EventMask::DELETE_SELF
+                        | EventMask::MOVE_SELF
+                        | EventMask::IGNORED,
+                ) && targets.iter().any(|t| t.dir.starts_with(&path))
+                {
+                    burst.rearm = true;
+                }
             }
-            rel
+            any
         }
-        Msg::Fs(Err(source)) => {
+        Msg::FsError(source) => {
             errors.push(ThemeError::Watch {
                 path: config.to_path_buf(),
                 source,
@@ -360,9 +530,19 @@ fn absorb(
     Some(changed)
 }
 
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
 fn run(
     config: &Path,
-    mut notifier: RecommendedWatcher,
+    mut state: Watching,
     mut targets: Vec<Target>,
     conn: Option<Connection>,
     rx: mpsc::Receiver<Msg>,
@@ -373,7 +553,7 @@ fn run(
         let mut burst = Burst::default();
         // Wait for the first change of a burst.
         let Ok(first) = rx.recv() else { return };
-        if absorb(first, config, &targets, &mut errors, &mut burst).is_none() {
+        if absorb(first, config, &state, &targets, &mut errors, &mut burst).is_none() {
             return;
         }
         if !burst.pending {
@@ -390,7 +570,7 @@ fn run(
                 break;
             }
             match rx.recv_timeout(wait) {
-                Ok(m) => match absorb(m, config, &targets, &mut errors, &mut burst) {
+                Ok(m) => match absorb(m, config, &state, &targets, &mut errors, &mut burst) {
                     None => return,
                     Some(true) => quiet_since = Instant::now(),
                     Some(false) => {}
@@ -399,11 +579,13 @@ fn run(
                 Err(RecvTimeoutError::Disconnected) => return,
             }
         }
-        if let Err(e) = arm(&mut notifier, &mut targets, burst.rearm) {
+        if let Err(e) = state.arm(&mut targets, burst.rearm) {
             errors.push(e);
         }
         let mut gathered = gather_from(config, conn.as_ref());
         gathered.errors.append(&mut errors);
-        on_change(gathered);
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| on_change(gathered))) {
+            errors.push(ThemeError::CallbackPanic(panic_message(&*payload)));
+        }
     }
 }

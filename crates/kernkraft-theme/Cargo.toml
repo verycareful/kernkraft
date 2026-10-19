@@ -17,11 +17,14 @@ serde.workspace = true
 kernkraft-fs.workspace = true
 zbus.workspace = true
 kernkraft-bus.workspace = true
-notify.workspace = true
+inotify.workspace = true
+rustix.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 serde_json.workspace = true
+# The p2p feature lets tests run a fake portal over a socket pair.
+zbus = { workspace = true, features = ["p2p"] }
 
 [lints]
 workspace = true

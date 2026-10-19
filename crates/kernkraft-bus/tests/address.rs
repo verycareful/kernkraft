@@ -65,7 +65,7 @@ fn default_addresses() {
         _ => None,
     };
     assert_eq!(
-        session_address(&env).unwrap(),
+        session_address(&env).unwrap().address,
         "unix:path=/run/user/1000/bus"
     );
     assert!(matches!(
@@ -76,11 +76,29 @@ fn default_addresses() {
     let empty = |k: &str| (k == "DBUS_SESSION_BUS_ADDRESS").then(String::new);
     assert!(session_address(&empty).is_err());
     let set = |k: &str| (k == "DBUS_SESSION_BUS_ADDRESS").then(|| "tcp:host=a".to_string());
-    assert_eq!(session_address(&set).unwrap(), "tcp:host=a");
+    let got = session_address(&set).unwrap();
+    assert_eq!(got.address, "tcp:host=a");
+    assert!(!got.defaulted);
+    assert!(session_address(&env).unwrap().defaulted);
     assert_eq!(
-        system_address(&none).unwrap(),
+        system_address(&none).unwrap().address,
         "unix:path=/run/dbus/system_bus_socket"
     );
+}
+
+#[test]
+fn absence_is_only_a_missing_default() {
+    use std::io::{Error, ErrorKind};
+    let connect = |defaulted, kind| BusError::Connect {
+        target: "x".into(),
+        defaulted,
+        source: Error::from(kind),
+    };
+    assert!(BusError::NoAddress("V").is_absent());
+    assert!(connect(true, ErrorKind::NotFound).is_absent());
+    assert!(!connect(false, ErrorKind::NotFound).is_absent());
+    assert!(!connect(true, ErrorKind::ConnectionRefused).is_absent());
+    assert!(!BusError::NotUnix("tcp:".into()).is_absent());
 }
 
 /// Needs a session bus; returns early without one.

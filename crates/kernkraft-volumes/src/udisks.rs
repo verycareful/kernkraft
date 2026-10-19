@@ -47,6 +47,7 @@ const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 const BLOCK: &str = "org.freedesktop.UDisks2.Block";
 const FILESYSTEM: &str = "org.freedesktop.UDisks2.Filesystem";
 const DRIVE: &str = "org.freedesktop.UDisks2.Drive";
+const SWAPSPACE: &str = "org.freedesktop.UDisks2.Swapspace";
 const ENCRYPTED: &str = "org.freedesktop.UDisks2.Encrypted";
 const ERROR_PREFIX: &str = "org.freedesktop.UDisks2.Error.";
 /// The object path UDisks puts in `Block.Drive` when there is no drive.
@@ -513,10 +514,16 @@ struct Member {
     backing: Option<String>,
     id_type: String,
     id_usage: String,
+    /// `Swapspace.Active` of a swap member; `None` when it was not readable.
+    swap_active: Option<bool>,
 }
 
 /// Every block whose drive, resolved through `CryptoBackingDevice`, is
 /// `drive`, filesystem or not.
+///
+/// Only that stacking has a UDisks link. dm-integrity, bcache, loop devices
+/// backed by files on the drive and multi-device btrfs have none, so they are
+/// guarded only by `HintSystem` and the mount point checks.
 fn members_of(objects: &Objects, drive: &str) -> Result<Vec<Member>, VolumesError> {
     let mut out = Vec::new();
     for (path, ifaces) in objects {
@@ -539,6 +546,7 @@ fn members_of(objects: &Objects, drive: &str) -> Result<Vec<Member>, VolumesErro
             backing: backing_of(ifaces)?,
             id_type: get_string(ifaces, BLOCK, "IdType")?,
             id_usage: get_string(ifaces, BLOCK, "IdUsage")?,
+            swap_active: prop(ifaces, SWAPSPACE, "Active").and_then(|v| bool::try_from(v).ok()),
         });
     }
     out.sort_by(|a, b| a.object.cmp(&b.object));
@@ -596,6 +604,18 @@ fn plan_eject(
     if let Some(m) = members.iter().find(|m| m.system_hint) {
         return Err(refuse(EjectRefusal::SystemDevice {
             device: m.device.clone(),
+        }));
+    }
+    // Active swap has no mount point, so the mount checks cannot see it, and
+    // powering off or locking under it would fail or cut off live memory.
+    // Swap whose state cannot be read is refused as well.
+    if let Some(m) = members
+        .iter()
+        .find(|m| m.id_type == "swap" && m.swap_active != Some(false))
+    {
+        return Err(refuse(EjectRefusal::ActiveSwap {
+            device: m.device.clone(),
+            state_known: m.swap_active.is_some(),
         }));
     }
     // UDisks does not expose what an LVM physical volume or a RAID member
@@ -1026,5 +1046,41 @@ mod tests {
             .insert("CryptoBackingDevice".into(), val(key("/o/a")));
         o.insert(key("/o/a"), a);
         assert_eq!(resolve_drive(&o, "/o/a").expect("ok"), None);
+    }
+
+    #[test]
+    fn active_swap_member_refuses() {
+        let usb = member("/o/b", "/dev/sdb2", &["/run/media/u/B"], false);
+        let swap = |active: Option<bool>| Member {
+            swap_active: active,
+            ..typed(member("/o/s", "/dev/sdb3", &[], false), "swap")
+        };
+        assert_eq!(
+            refusal(plan(Some(&STICK), &[usb.clone(), swap(Some(true))], &[])),
+            EjectRefusal::ActiveSwap {
+                device: "/dev/sdb3".into(),
+                state_known: true
+            }
+        );
+        // Unreadable state is refused too.
+        assert_eq!(
+            refusal(plan(Some(&STICK), &[usb.clone(), swap(None)], &[])),
+            EjectRefusal::ActiveSwap {
+                device: "/dev/sdb3".into(),
+                state_known: false
+            }
+        );
+        // A stacked swap (cleartext of a LUKS partition) counts.
+        let stacked = Member {
+            swap_active: Some(true),
+            id_type: "swap".into(),
+            ..cleartext("/o/sw", "/o/p1", &[])
+        };
+        assert!(matches!(
+            refusal(plan(Some(&STICK), &[usb.clone(), stacked], &[])),
+            EjectRefusal::ActiveSwap { .. }
+        ));
+        // An inactive swap partition does not refuse.
+        assert!(plan(Some(&STICK), &[usb, swap(Some(false))], &[]).is_ok());
     }
 }

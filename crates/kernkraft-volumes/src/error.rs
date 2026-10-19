@@ -94,6 +94,8 @@ pub enum EjectRefusal {
     SystemDevice { device: String },
     #[error("{device} on this drive is an LVM or RAID member, which cannot be taken apart safely")]
     Holder { device: String },
+    #[error("{device} on this drive is {}", if *state_known { "active swap" } else { "swap whose state could not be read from Swapspace.Active" })]
+    ActiveSwap { device: String, state_known: bool },
     #[error("{} is not a user mount", .0.display())]
     SystemMount(PathBuf),
 }

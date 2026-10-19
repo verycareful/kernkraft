@@ -10,6 +10,8 @@ changes_version.md
 /local/
 # Release scripts (set_version.py, stamp_release.py) are maintainer-local.
 /tools/
+# Local cargo overrides (test temp dir, path patches).
+/.cargo/config.toml
 
 # Editor and OS
 .vscode/

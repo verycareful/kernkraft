@@ -6,7 +6,7 @@
 <!-- MuPDF has no shields.io logo yet; swap this for a logo badge if one appears. -->
 [![mupdf](https://img.shields.io/badge/mupdf-0.6-informational?style=flat-square)](https://crates.io/crates/mupdf)
 <!-- Release -->
-[![Version](https://img.shields.io/badge/Version-0.1.1.0.0-informational?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/Version-0.1.1.0.1-informational?style=flat-square)](VERSION)
 <!-- Licence and status -->
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)
@@ -26,6 +26,7 @@ kernkraft is in alpha: its public API will change.
 |---|---|---|
 | `kernkraft-fs` | core | atomic save, FreeDesktop trash, XDG directories, bulk file operations, scanning |
 | `kernkraft-pdf` | core | PDF load and atomic save, page ranges, page-tree flattening, extract, split, merge, rotate, reorder, remove; MuPDF rendering (`render` feature) |
+| `kernkraft-text` | core | text decode, UTF-8 BOM and line-ending preservation, read-only reasons, atomic save |
 
 Core crates never depend on a UI or platform crate (`tauri`, `jni`); CI
 checks every core crate's dependency tree. No crate may depend on an HTTP,

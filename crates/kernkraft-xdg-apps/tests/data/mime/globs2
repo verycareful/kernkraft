@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+# Hand-written fixture for tests/mime.rs, in the globs2 format of the
+# Shared MIME-info Database 0.21, section 2.4: weight:type:pattern[:flags]
+50:text/plain:*.txt
+# Two patterns for one extension, weights 10 and 80.
+10:application/x-low:*.wt
+80:application/x-high:*.wt
+# Equal weight, the longer pattern must win for a.tar.gz.
+50:application/x-gzip-like:*.gz
+50:application/x-tar-gzip-like:*.tar.gz
+# Case-sensitive and case-insensitive patterns.
+50:application/x-upper-only:*.UP:cs
+50:application/x-any-case:*.Any
+# A literal beats a heavier glob that also matches.
+50:text/x-makefile:Makefile
+90:application/x-make-glob:Make*
+# Glob features.
+50:application/x-set:set[0-9].bin
+50:application/x-question:q?.dat
+50:application/json:*.json
+50:application/javascript:*.js
+50:text/markdown:*.md
+50:application/x-bare:*.bare
+__NOEXTENSIONS__

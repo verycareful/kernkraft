@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+# Hand-written fixture, aliases format (section 2.4): alias canonical
+application/x-javascript application/javascript
+text/x-markdown text/markdown

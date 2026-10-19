@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+[package]
+name = "kernkraft-xdg-apps"
+description = "MIME type lookup, desktop entries and default applications from the freedesktop.org specifications"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

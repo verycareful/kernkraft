@@ -21,8 +21,8 @@
 //!   the check and the action, so moves and restores rename with
 //!   `renameat2(RENAME_NOREPLACE)`, where the kernel checks and renames in
 //!   one step. Where a filesystem lacks that flag, a file or symlink is
-//!   moved by `link(2)` then `unlink(2)`, which cannot replace either, and a
-//!   folder is refused. A trash entry is matched by its identity (device,
+//!   moved by `link(2)` then `unlink(2)`, and a folder by renaming it over
+//!   an empty placeholder folder made for it; neither can replace anything. A trash entry is matched by its identity (device,
 //!   inode and stamp), not only by name, path and deletion date.
 //! - **A stop partway is reported exactly.** An action that fails, or a
 //!   cancel, stops the run: [`FsError::Partial`] lists the items reversed

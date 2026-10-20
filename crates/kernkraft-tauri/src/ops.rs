@@ -636,7 +636,6 @@ impl<R: Runtime> Kernkraft<R> {
         let asker = Asker {
             kk: self,
             op,
-            replaced: Mutex::new(Vec::new()),
             cancel_skipped: Mutex::new(Vec::new()),
         };
         let resolve = |src: &Path, existing: &Path| asker.ask(src, existing);
@@ -692,19 +691,12 @@ impl<R: Runtime> Kernkraft<R> {
             Mode::Copy => OpKind::Copy,
             Mode::Move => OpKind::Move,
         };
-        let mut replaced = std::mem::take(&mut *lock(&asker.replaced));
-        // A replace that was answered but never carried out (the item was
-        // then cancelled or failed) changed nothing; only a replaced path
-        // at or inside a placed item makes the operation irreversible.
-        replaced.retain(|r| {
-            report
-                .done
-                .iter()
-                .any(|(_, d)| d.as_ref().is_some_and(|d| r.starts_with(d)))
-        });
         // Stamped before the journal is locked: stamping a large tree takes
         // a while, and a rename waits on the journal.
-        let entry = undoable_from_report(kind, &report, &replaced);
+        // kernkraft-fs lists a replace when it happens, so one answered but
+        // never carried out is not there, and one carried out before the
+        // item failed or was cancelled is.
+        let entry = undoable_from_report(kind, &report, &report.replaced);
         lock(&self.0.journal).record_after(entry, prior);
         WireReport::new(&report, &not_reached)
     }
@@ -847,6 +839,21 @@ impl Seen {
         }
     }
 
+    /// Both files could be read.
+    pub(crate) fn complete(&self) -> bool {
+        self.held_id.is_some() && self.info_id.is_some()
+    }
+
+    /// The two identities as one opaque string, for the webview to hand
+    /// back. A file that could not be read shows as `-`.
+    pub(crate) fn id(&self) -> String {
+        let part = |id: Option<Ident>| match id {
+            Some((dev, ino, sec, nsec)) => format!("{dev}:{ino}:{sec}:{nsec}"),
+            None => "-".to_owned(),
+        };
+        format!("{}/{}", part(self.held_id), part(self.info_id))
+    }
+
     /// Fails unless both files are still the entries listed. An entry that
     /// could not be read when listed cannot be shown to be the same, and
     /// is refused.
@@ -912,6 +919,7 @@ fn absorb(into: &mut OpReport, from: OpReport) {
     into.skipped.extend(from.skipped);
     into.failed.extend(from.failed);
     into.warnings.extend(from.warnings);
+    into.replaced.extend(from.replaced);
     into.cancelled |= from.cancelled;
 }
 
@@ -926,8 +934,6 @@ fn emit<R: Runtime, S: Serialize + Clone>(kk: &Kernkraft<R>, event: &str, payloa
 struct Asker<'a, R: Runtime> {
     kk: &'a Kernkraft<R>,
     op: &'a OpHandle,
-    /// Existing paths answered `Replace`, for the journal.
-    replaced: Mutex<Vec<PathBuf>>,
     /// Sources whose prompt a cancel released.
     cancel_skipped: Mutex<Vec<PathBuf>>,
 }
@@ -938,7 +944,7 @@ impl<R: Runtime> Asker<'_, R> {
         let mut prompt = lock(&op.prompt);
         if let Some(choice) = prompt.for_all {
             drop(prompt);
-            return self.chose(choice, existing);
+            return choice;
         }
         if op.is_cancelled() {
             drop(prompt);
@@ -985,7 +991,7 @@ impl<R: Runtime> Asker<'_, R> {
                     prompt.for_all = Some(choice);
                 }
                 drop(prompt);
-                self.chose(choice, existing)
+                choice
             }
             None => {
                 drop(prompt);
@@ -993,13 +999,6 @@ impl<R: Runtime> Asker<'_, R> {
                 Conflict::Skip
             }
         }
-    }
-
-    fn chose(&self, choice: Conflict, existing: &Path) -> Conflict {
-        if choice == Conflict::Replace {
-            lock(&self.replaced).push(existing.to_path_buf());
-        }
-        choice
     }
 }
 

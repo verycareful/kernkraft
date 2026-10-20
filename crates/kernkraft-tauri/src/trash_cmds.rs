@@ -4,19 +4,22 @@
 //! The trash view: list, restore and purge (FreeDesktop Trash 1.0).
 //!
 //! An item the webview names is acted on only if it matches, field for
-//! field, an item the trash lists at that moment. The webview is untrusted:
-//! a forged name such as `../x` would otherwise point a purge outside the
-//! trash.
+//! field, an item the trash lists at that moment, `id` included. The
+//! webview is untrusted: a forged name such as `../x` would otherwise point
+//! a purge outside the trash. The `id` is the identity of the entry's two
+//! files when it was listed, so a stale item, or another entry that took a
+//! freed name within the same second of `DeletionDate`, is refused with
+//! `Changed` instead of being purged or restored in its place.
 
 use std::path::PathBuf;
 
-use kernkraft_fs::{OpReport, TrashedItem};
+use kernkraft_fs::{Change, FsError, OpReport, TrashedItem};
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
 
 use crate::error::{PluginError, WireError, WireItemError};
 use crate::fs_cmds::describe;
-use crate::ops::{held, WireReport};
+use crate::ops::{held, Seen, WireReport};
 use crate::state::Kernkraft;
 use crate::wire::WirePath;
 
@@ -25,6 +28,9 @@ use crate::wire::WirePath;
 /// holding the item under `files/<name>`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireTrashedItem {
+    /// Opaque: the device, inode and change time of `files/<name>` and of
+    /// the info file when listed. Pass it back unchanged.
+    pub id: String,
     pub name: String,
     pub original: WirePath,
     pub deleted: String,
@@ -35,6 +41,7 @@ pub struct WireTrashedItem {
 impl From<&TrashedItem> for WireTrashedItem {
     fn from(item: &TrashedItem) -> WireTrashedItem {
         WireTrashedItem {
+            id: Seen::of(item).id(),
             name: item.name.clone(),
             original: WirePath::from(&item.original),
             deleted: item.deleted.clone(),
@@ -116,11 +123,28 @@ impl<R: Runtime> Kernkraft<R> {
         let mut found = Vec::new();
         let mut rejected = Vec::new();
         for wire in items {
-            match listed
-                .iter()
-                .find(|item| WireTrashedItem::from(*item) == *wire)
-            {
-                Some(item) => found.push(item.clone()),
+            let same_fields = |item: &&TrashedItem| {
+                item.name == wire.name
+                    && WirePath::from(&item.original) == wire.original
+                    && item.deleted == wire.deleted
+                    && WirePath::from(&item.trash_dir) == wire.trash_dir
+                    && item.is_dir == wire.is_dir
+            };
+            match listed.iter().find(same_fields) {
+                Some(item) => {
+                    let seen = Seen::of(item);
+                    if seen.complete() && seen.id() == wire.id {
+                        found.push(item.clone());
+                    } else {
+                        rejected.push(WireItemError::new(
+                            &item.original,
+                            &FsError::Changed {
+                                path: held(item),
+                                what: Change::Taken,
+                            },
+                        ));
+                    }
+                }
                 None => {
                     // Shown only, never acted on: a path that does not
                     // decode is shown as its lossy text.

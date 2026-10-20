@@ -34,6 +34,14 @@ pub struct OpReport {
     pub warnings: Vec<(PathBuf, FsError)>,
     /// The operation stopped early because its [`Progress`] asked to.
     pub cancelled: bool,
+    /// Existing entries that were in fact replaced: a file or symlink a
+    /// source was put over, and a folder that a merge put at least one
+    /// entry into. Listed when the replace happens, so an item that failed
+    /// or was cancelled afterwards (a move across devices whose source
+    /// could not then be removed, a merge cancelled partway) still has its
+    /// replaces here. A conflict answered `Replace` that never got that far
+    /// is not listed.
+    pub replaced: Vec<PathBuf>,
 }
 
 /// Creates directory `parent/name`. [`FsError::Exists`] if anything already

@@ -9,6 +9,14 @@
 //!
 //! JavaScript passes arguments in camelCase (`newName`, `applyToAll`), as
 //! Tauri maps them to these snake_case parameters.
+//!
+//! Every failure a command itself reports is a [`WireError`]. Some calls
+//! are rejected by Tauri before any plugin code runs, and those reject
+//! with a plain string instead: a missing argument key, an argument of the
+//! wrong type other than a path (a path of any shape is accepted and, if
+//! malformed, reported as a `BadPath` WireError), a call the ACL denies,
+//! and an unknown command. Kern Desktop's `invoke` wrapper turns those
+//! strings into `{ kind: "Ipc", message }`.
 
 use tauri::{AppHandle, Runtime, Window};
 

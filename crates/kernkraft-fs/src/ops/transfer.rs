@@ -226,6 +226,9 @@ impl<'a> Transfer<'a> {
         };
         match renamed {
             Ok(()) => {
+                if replace {
+                    self.report.replaced.push(target.to_path_buf());
+                }
                 self.advance(tree_size(target), target);
                 Placed::Done(target.to_path_buf())
             }
@@ -257,7 +260,12 @@ impl<'a> Transfer<'a> {
             self.copy_file(src, meta, target, replace)
         } else if kind.is_symlink() {
             match copy_symlink(src, target, replace) {
-                Ok(()) => Placed::Done(target.to_path_buf()),
+                Ok(()) => {
+                    if replace {
+                        self.report.replaced.push(target.to_path_buf());
+                    }
+                    Placed::Done(target.to_path_buf())
+                }
                 Err(e) => self.fail(src, e),
             }
         } else if kind.is_dir() {
@@ -326,7 +334,12 @@ impl<'a> Transfer<'a> {
             temp.persist_noclobber(target).map(drop)
         };
         match persisted {
-            Ok(()) => Placed::Done(target.to_path_buf()),
+            Ok(()) => {
+                if replace {
+                    self.report.replaced.push(target.to_path_buf());
+                }
+                Placed::Done(target.to_path_buf())
+            }
             Err(e) if e.error.kind() == ErrorKind::AlreadyExists => self.fail(
                 src,
                 FsError::Exists {
@@ -392,14 +405,18 @@ impl<'a> Transfer<'a> {
 
     /// Copies every entry of `src` into the existing directory `target`.
     fn copy_children(&mut self, src: &Path, target: &Path) -> Placed {
-        self.each_child(Mode::Copy, src, target)
+        self.each_child(Mode::Copy, src, target).0
     }
 
     /// Merges directory `src` into the existing directory `target`, clashes
     /// settled entry by entry. After a move whose every entry went over,
     /// the emptied source directory is removed.
     fn merge(&mut self, mode: Mode, src: &Path, target: &Path) -> Placed {
-        let outcome = self.each_child(mode, src, target);
+        let (outcome, placed) = self.each_child(mode, src, target);
+        if placed > 0 {
+            // Mixed with what was there, whatever happens next.
+            self.report.replaced.push(target.to_path_buf());
+        }
         if mode == Mode::Move && matches!(outcome, Placed::Done(_)) {
             if let Err(e) = fs::remove_dir(src) {
                 self.fail(src, FsError::io(src, e));
@@ -409,23 +426,30 @@ impl<'a> Transfer<'a> {
         outcome
     }
 
-    fn each_child(&mut self, mode: Mode, src: &Path, target: &Path) -> Placed {
+    /// Places every entry of `src` into `target`. Also returns how many
+    /// entries went in, whole or in part.
+    fn each_child(&mut self, mode: Mode, src: &Path, target: &Path) -> (Placed, usize) {
         let entries = match read_dir_sorted(src) {
             Ok(entries) => entries,
-            Err(e) => return self.fail(src, e),
+            Err(e) => return (self.fail(src, e), 0),
         };
         let mut complete = true;
+        let mut placed = 0;
         for child in entries {
             match self.place(mode, &child, target, false) {
-                Placed::Done(_) => {}
-                Placed::Skipped | Placed::Failed | Placed::Partial => complete = false,
-                Placed::Cancelled => return Placed::Cancelled,
+                Placed::Done(_) => placed += 1,
+                Placed::Partial => {
+                    placed += 1;
+                    complete = false;
+                }
+                Placed::Skipped | Placed::Failed => complete = false,
+                Placed::Cancelled => return (Placed::Cancelled, placed),
             }
         }
         if complete {
-            Placed::Done(target.to_path_buf())
+            (Placed::Done(target.to_path_buf()), placed)
         } else {
-            Placed::Partial
+            (Placed::Partial, placed)
         }
     }
 

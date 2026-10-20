@@ -1061,20 +1061,18 @@ fn failed_replace_records_nothing() {
     let f = fixture();
     fs::create_dir(f.src.join("d")).unwrap();
     fs::write(f.dest.join("d"), "a file in the way").unwrap();
-    let replaced = RefCell::new(Vec::new());
-    let resolve = |_: &Path, existing: &Path| {
-        replaced.borrow_mut().push(existing.to_path_buf());
-        Conflict::Replace
-    };
+    let resolve = |_: &Path, _: &Path| Conflict::Replace;
     let report = copy(&[f.src.join("d")], &f.dest, &resolve, &NoProgress).unwrap();
     assert!(report.done.is_empty());
     assert_eq!(report.failed.len(), 1);
+    // A folder over a file is refused, so nothing was replaced.
+    assert!(report.replaced.is_empty());
     let mut journal = Journal::new();
 
     journal.record(undoable_from_report(
         OpKind::Copy,
         &report,
-        &replaced.borrow(),
+        &report.replaced,
     ));
 
     assert!(journal.peek_undo().is_none());
@@ -1328,4 +1326,24 @@ fn merged_prior_stamps_chain_every_item() {
         trashed_originals(&f.trash),
         [f.dest.join("a"), f.dest.join("b")]
     );
+}
+
+#[test]
+fn replace_with_nothing_placed_is_still_irreversible() {
+    // As a move across devices reports it when the replace went through but
+    // the source could not be removed: nothing in done, one path replaced.
+    let f = fixture();
+    let report = OpReport {
+        failed: vec![(f.src.join("a"), FsError::Cancelled)],
+        replaced: vec![f.dest.join("a")],
+        ..OpReport::default()
+    };
+    let op = undoable_from_report(OpKind::Move, &report, &report.replaced);
+    assert!(matches!(
+        op,
+        Undoable::Irreversible {
+            reason: IrreversibleReason::ReplacedExisting,
+            ..
+        }
+    ));
 }

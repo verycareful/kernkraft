@@ -286,33 +286,21 @@ impl OpKind {
 /// The journal entry for an operation that produced `report`.
 ///
 /// Only `report.done` items are journalled; skipped and failed items were
-/// never placed. A report with nothing placed gives an empty entry, whatever
-/// `replaced` holds. `replaced` lists every existing path the conflict resolver
-/// answered `Replace` for. Any entry there makes the operation
-/// [`Undoable::Irreversible`]: [`IrreversibleReason::MergedDirectory`] when
-/// one of them is a directory, else
-/// [`IrreversibleReason::ReplacedExisting`]. An [`OpReport`] does not mark
-/// a merge itself (a merged directory is in `done` as `(source,
-/// Some(existing directory))`, like a placed one), so `replaced` is what
-/// tells them apart; listing a path there that was not in the end replaced
-/// only makes the operation irreversible.
+/// never placed. `replaced` lists the existing paths that were in fact
+/// replaced, which is [`OpReport::replaced`]. Any entry there makes the
+/// operation [`Undoable::Irreversible`], even when nothing ended up in
+/// `done` (a move across devices whose replace went through but whose
+/// source could not then be removed, a merge cancelled partway):
+/// [`IrreversibleReason::MergedDirectory`] when one of them is a directory,
+/// else [`IrreversibleReason::ReplacedExisting`]. Passing the conflict
+/// resolver's `Replace` answers instead would also count answers that were
+/// never carried out, and make an operation irreversible without cause.
+/// Otherwise a report with nothing placed gives an empty entry.
 ///
 /// Each placed item is stamped now, so this is called right after the
 /// operation. An item that cannot be stamped is recorded as unverifiable
 /// and its undo is refused with [`Change::Unverified`].
 pub fn undoable_from_report(kind: OpKind, report: &OpReport, replaced: &[PathBuf]) -> Undoable {
-    let placed_any = report.done.iter().any(|(_, dest)| dest.is_some());
-    if !placed_any {
-        // Nothing was placed, so nothing was replaced either, whatever the
-        // resolver answered; an empty entry, which `record` ignores.
-        return match kind {
-            OpKind::Copy => Undoable::Copied {
-                created: Vec::new(),
-            },
-            OpKind::Move => Undoable::Moved { items: Vec::new() },
-            OpKind::Trash => Undoable::Trashed { items: Vec::new() },
-        };
-    }
     if let Some(first) = replaced.first() {
         let merged = replaced
             .iter()
@@ -324,6 +312,18 @@ pub fn undoable_from_report(kind: OpKind, report: &OpReport, replaced: &[PathBuf
         return Undoable::Irreversible {
             what: format!("{} onto {}", kind.verb(), path.display()),
             reason,
+        };
+    }
+    let placed_any = report.done.iter().any(|(_, dest)| dest.is_some());
+    if !placed_any {
+        // Nothing placed and nothing replaced: an empty entry, which
+        // `record` ignores.
+        return match kind {
+            OpKind::Copy => Undoable::Copied {
+                created: Vec::new(),
+            },
+            OpKind::Move => Undoable::Moved { items: Vec::new() },
+            OpKind::Trash => Undoable::Trashed { items: Vec::new() },
         };
     }
     let placed = report

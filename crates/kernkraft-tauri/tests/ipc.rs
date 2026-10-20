@@ -272,7 +272,7 @@ fn ipc_trash_list() {
     let item = &listing["items"][0];
     assert_eq!(
         keys(item),
-        ["deleted", "is_dir", "name", "original", "trash_dir"]
+        ["deleted", "id", "is_dir", "name", "original", "trash_dir"]
     );
     assert_eq!(item["original"], wp(&a));
 

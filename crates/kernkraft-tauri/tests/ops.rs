@@ -715,3 +715,119 @@ fn replace_answered_but_not_done_stays_undoable() {
     e.kk.undo().unwrap();
     assert_eq!(names(&dest), ["a"]);
 }
+
+fn trash_and_list(e: &common::Env, name: &str) -> (PathBuf, WireTrashedItem) {
+    let src = e.dir("src");
+    let p = src.join(name);
+    fs::write(&p, "first").unwrap();
+    let op = e.kk.start_op("trash", vec![w(&p)], None, None).unwrap();
+    e.wait_done(op);
+    let item =
+        e.kk.trash_list()
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|i| path(&i.original) == p)
+            .unwrap();
+    (p, item)
+}
+
+#[test]
+fn trash_item_with_a_stale_id_is_refused() {
+    let e = env();
+    let (a, item) = trash_and_list(&e, "a");
+    let mut stale = item.clone();
+    stale.id = "1:2:3:4/5:6:7:8".into();
+
+    let report = e.kk.trash_purge(vec![stale.clone()]).unwrap();
+    assert!(report.done.is_empty());
+    assert_eq!(report.failed[0].error.kind, "Changed");
+    let report = e.kk.trash_restore(vec![stale]).unwrap();
+    assert!(report.done.is_empty());
+    assert_eq!(report.failed[0].error.kind, "Changed");
+    assert_eq!(e.trashed(), std::slice::from_ref(&a));
+    assert!(!a.exists());
+
+    // The item as listed still works.
+    let report = e.kk.trash_restore(vec![item]).unwrap();
+    assert_eq!(report.done.len(), 1);
+    assert_eq!(fs::read_to_string(&a).unwrap(), "first");
+}
+
+#[test]
+fn trash_item_replaced_under_the_same_fields_is_refused() {
+    // Another program empties the item and trashes a new `a`, which takes
+    // the freed name; its deletion date is set to the old one, as happens
+    // when both fall in the same second. Every field the UI holds now
+    // matches the new entry; only the id tells them apart.
+    let e = env();
+    let (a, old) = trash_and_list(&e, "a");
+    let trash = kernkraft_fs::Trash::with_home_trash(e.trash_dir.clone());
+    let listed = trash.list().unwrap().items.remove(0);
+    trash.purge(&listed).unwrap();
+    fs::write(&a, "second").unwrap();
+    let new = trash.put(&a).unwrap();
+    assert_eq!(new.name, old.name);
+    let info = e
+        .trash_dir
+        .join("info")
+        .join(format!("{}.trashinfo", new.name));
+    let text = fs::read_to_string(&info).unwrap();
+    fs::write(&info, text.replace(&new.deleted, &old.deleted)).unwrap();
+    let now = e.kk.trash_list().unwrap().items.remove(0);
+    assert_eq!((&now.name, &now.deleted), (&old.name, &old.deleted));
+    assert_ne!(now.id, old.id);
+
+    let report = e.kk.trash_purge(vec![old.clone()]).unwrap();
+    assert!(report.done.is_empty());
+    assert_eq!(report.failed[0].error.kind, "Changed");
+    let report = e.kk.trash_restore(vec![old]).unwrap();
+    assert!(report.done.is_empty());
+    assert_eq!(e.trashed(), std::slice::from_ref(&a));
+}
+
+#[test]
+fn replace_done_inside_a_cancelled_merge_is_irreversible() {
+    // b is copied; folder d is merged into the existing d, x inside it is
+    // replaced, and the operation is cancelled at y's prompt. The merge is
+    // not in done, but x was replaced: the copy cannot be undone.
+    let e = env();
+    let src = e.dir("src");
+    let dest = e.dir("dest");
+    fs::write(src.join("b"), "b").unwrap();
+    for (dir, content) in [(&src, "new"), (&dest, "old")] {
+        fs::create_dir(dir.join("d")).unwrap();
+        fs::write(dir.join("d/x"), content).unwrap();
+        fs::write(dir.join("d/y"), content).unwrap();
+    }
+    let kk = e.kk.clone();
+    let y = dest.join("d/y");
+    tauri::Listener::listen_any(&e.app, EVENT_OP_CONFLICT, move |ev| {
+        let c: serde_json::Value = serde_json::from_str(ev.payload()).unwrap();
+        let (op, id) = (c["op"].as_u64().unwrap(), c["conflict"].as_u64().unwrap());
+        let existing: WirePath = serde_json::from_value(c["existing"].clone()).unwrap();
+        if path(&existing) == y {
+            kk.cancel_op(op).unwrap();
+        } else {
+            kk.answer_conflict(op, id, "replace", false).unwrap();
+        }
+    });
+    let op =
+        e.kk.start_op(
+            "copy",
+            vec![w(&src.join("b")), w(&src.join("d"))],
+            Some(w(&dest)),
+            None,
+        )
+        .unwrap();
+    let (_, done) = e.wait_done(op);
+    let report = done.report.unwrap();
+    assert!(report.cancelled);
+    assert_eq!(report.done.len(), 1);
+    assert_eq!(fs::read_to_string(dest.join("d/x")).unwrap(), "new");
+    assert_eq!(fs::read_to_string(dest.join("d/y")).unwrap(), "old");
+
+    let err = e.kk.undo().unwrap_err();
+    assert_eq!(err.kind, "Irreversible");
+    assert!(dest.join("b").exists());
+}

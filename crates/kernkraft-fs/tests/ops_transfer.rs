@@ -656,3 +656,101 @@ fn copy_keeps_directory_xattr() {
     let n = rustix::fs::getxattr(dest.join("d"), NAME, &mut buf[..]).ok();
     assert_eq!(n.map(|n| &buf[..n]), Some(&b"d"[..]));
 }
+
+#[test]
+fn report_lists_replaced_files_and_links() {
+    let s = setup();
+    for n in ["f", "g"] {
+        fs::write(s.src.join(n), "new").unwrap();
+        fs::write(s.dest.join(n), "old").unwrap();
+    }
+    symlink("f", s.src.join("l")).unwrap();
+    fs::write(s.dest.join("l"), "old").unwrap();
+    let report = copy(
+        &[s.src.join("f"), s.src.join("l")],
+        &s.dest,
+        &always(Conflict::Replace),
+        &NoProgress,
+    )
+    .unwrap();
+    assert_eq!(report.replaced, [s.dest.join("f"), s.dest.join("l")]);
+    let moved = move_items(
+        &[s.src.join("g")],
+        &s.dest,
+        &always(Conflict::Replace),
+        &NoProgress,
+    )
+    .unwrap();
+    assert_eq!(moved.replaced, [s.dest.join("g")]);
+    // Keep both and skip replace nothing.
+    let kept = copy(
+        &[s.src.join("f")],
+        &s.dest,
+        &always(Conflict::KeepBoth),
+        &NoProgress,
+    )
+    .unwrap();
+    assert!(kept.replaced.is_empty());
+}
+
+#[test]
+fn report_lists_a_merge_once_something_went_in() {
+    let s = setup();
+    fs::create_dir_all(s.src.join("d")).unwrap();
+    fs::create_dir_all(s.dest.join("d")).unwrap();
+    fs::write(s.src.join("d/x"), "new").unwrap();
+    fs::write(s.dest.join("d/x"), "old").unwrap();
+    fs::write(s.src.join("d/y"), "y").unwrap();
+
+    // Folder merged, x replaced inside it, y added.
+    let resolve = |_: &Path, _: &Path| Conflict::Replace;
+    let report = copy(&[s.src.join("d")], &s.dest, &resolve, &NoProgress).unwrap();
+    assert_eq!(report.replaced, [s.dest.join("d/x"), s.dest.join("d")]);
+
+    // A merge in which every clash is skipped and nothing is new leaves the
+    // folder as it was: nothing replaced.
+    let s = setup();
+    fs::create_dir_all(s.src.join("d")).unwrap();
+    fs::create_dir_all(s.dest.join("d")).unwrap();
+    fs::write(s.src.join("d/x"), "new").unwrap();
+    fs::write(s.dest.join("d/x"), "old").unwrap();
+    let top = s.dest.join("d");
+    let resolve = move |_: &Path, existing: &Path| {
+        if existing == top {
+            Conflict::Replace
+        } else {
+            Conflict::Skip
+        }
+    };
+    let report = copy(&[s.src.join("d")], &s.dest, &resolve, &NoProgress).unwrap();
+    assert!(report.replaced.is_empty(), "{:?}", report.replaced);
+    assert_eq!(fs::read_to_string(s.dest.join("d/x")).unwrap(), "old");
+}
+
+#[test]
+fn report_lists_a_replace_whose_source_was_not_removed() {
+    // A move across devices replaces the destination, then cannot delete
+    // its source: the replace happened and is reported.
+    let near = tempfile::tempdir().unwrap();
+    let far = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    if fs::metadata(near.path()).unwrap().dev() == fs::metadata(far.path()).unwrap().dev() {
+        eprintln!("skipped: temp dirs share a device");
+        return;
+    }
+    let locked = near.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("f"), "new").unwrap();
+    fs::write(far.path().join("f"), "old").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    let report = move_items(
+        &[locked.join("f")],
+        far.path(),
+        &always(Conflict::Replace),
+        &NoProgress,
+    )
+    .unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.replaced, [far.path().join("f")]);
+    assert_eq!(fs::read_to_string(far.path().join("f")).unwrap(), "new");
+}

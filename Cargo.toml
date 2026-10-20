@@ -10,7 +10,7 @@ resolver = "2"
 # commit index on a dev branch) is written as its first three parts with the
 # rest as build metadata: label 0.1.0.0 is 0.1.0+0, label 0.1.0.0.3 is
 # 0.1.0+0.3. The kernkraft-fs version test checks the two agree.
-version = "0.1.1+0.24"
+version = "0.1.1+0.25"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -26,6 +26,11 @@ kernkraft-thumb = { path = "crates/kernkraft-thumb" }
 kernkraft-bus = { path = "crates/kernkraft-bus" }
 kernkraft-theme = { path = "crates/kernkraft-theme" }
 kernkraft-volumes = { path = "crates/kernkraft-volumes" }
+# Adapter crate only; no core crate may depend on tauri (scripts/check-boundary.sh).
+# Default features stay off here: the application chooses its windowing backend.
+tauri = { version = "2.12", default-features = false }
+tauri-plugin = { version = "2.5", features = ["build"] }
+base64 = "0.22"
 lopdf = { version = "0.45", default-features = false }
 mupdf = "0.6"
 thiserror = "2"

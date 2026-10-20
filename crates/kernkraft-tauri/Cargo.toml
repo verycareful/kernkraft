@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+[package]
+name = "kernkraft-tauri"
+description = "Tauri 2 plugin exposing kernkraft to a webview, with wire types for paths and errors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+links = "kernkraft-tauri"
+
+[dependencies]
+kernkraft-fs.workspace = true
+kernkraft-text.workspace = true
+kernkraft-xdg-apps.workspace = true
+kernkraft-thumb.workspace = true
+kernkraft-bus.workspace = true
+kernkraft-theme.workspace = true
+kernkraft-volumes.workspace = true
+tauri.workspace = true
+serde.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+tauri-plugin.workspace = true
+
+[dev-dependencies]
+tauri = { workspace = true, features = ["test"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

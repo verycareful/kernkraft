@@ -4,16 +4,24 @@
 # kernkraft never touches the network: HTTP clients, async runtimes and raw
 # socket crates are banned outright. tauri is banned except as a dependency of
 # kernkraft-tauri, so no core crate can pull it in; jni is banned outright
-# until kernkraft-jni exists. tokio is banned except as a dependency of the
-# tauri crates (tauri, its runtime and windowing crates) and kernkraft-tauri,
-# which use it for the app runtime and open no socket. `wrappers` names the
-# only crates allowed to depend on a banned crate.
+# until kernkraft-jni exists. tokio is banned except as a dependency of tauri,
+# which uses it for the app runtime on the Linux targets and opens no socket;
+# its `net` feature is denied outright below, so no dependency can enable it.
+# `wrappers` names the only crates allowed to depend on a banned crate.
 
+# Linux is the only platform kernkraft ships for. tauri pulls reqwest (and
+# through it hyper, socket2 and tokio's `net`) and jni only for its Android and
+# iOS targets, so the graph is checked for the Linux targets.
 [graph]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 all-features = true
 
 [advisories]
 yanked = "deny"
+# tauri's Linux runtime is built on the GTK 3 bindings, which are unmaintained
+# and carry unmaintained transitive crates kernkraft cannot replace. Only
+# crates the workspace depends on directly are held to this.
+unmaintained = "workspace"
 # zbus 5 is the newest release whose dependency tree opens no socket crate:
 # zbus 6 folds in zbus_utils and always pulls socket2, which is banned below.
 # zbus's TCP transport code is compiled in but unreachable: connections are
@@ -38,12 +46,16 @@ deny = [
     { name = "isahc" },
     { name = "surf" },
     { name = "attohttpc" },
-    { name = "tokio", wrappers = ["tauri", "tauri-runtime", "tauri-runtime-wry", "wry", "tao", "kernkraft-tauri"] },
+    { name = "tokio", wrappers = ["tauri"] },
     { name = "async-std" },
     { name = "socket2" },
     { name = "tauri", wrappers = ["kernkraft-tauri"] },
     { name = "jni" },
 ]
+
+[[bans.features]]
+crate = "tokio"
+deny = ["net"]
 
 [licenses]
 confidence-threshold = 0.9

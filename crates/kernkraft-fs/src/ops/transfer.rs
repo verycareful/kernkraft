@@ -527,9 +527,48 @@ fn copy_symlink(src: &Path, target: &Path, replace: bool) -> Result<(), FsError>
     })
 }
 
+/// Copies the single entry `src` to the new path `target` as [`copy`]
+/// copies it (contents, permission bits, times and extended attributes;
+/// a symlink recreated, never followed), never replacing anything at
+/// `target`. `progress` is polled for cancellation; its reports count
+/// bytes. Returns the warnings the copy produced.
+///
+/// On failure or cancel nothing is left at `target`: what this call
+/// created there holds only what it copied, and is removed again.
+pub(crate) fn copy_exact(
+    src: &Path,
+    target: &Path,
+    progress: &dyn Progress,
+) -> Result<Vec<(PathBuf, FsError)>, FsError> {
+    let meta = fs::symlink_metadata(src).map_err(|e| FsError::not_found_or_io(src, e))?;
+    let skip = |_: &Path, _: &Path| Conflict::Skip;
+    let mut t = Transfer {
+        resolve: &skip,
+        progress,
+        done_bytes: 0,
+        total_bytes: tree_size(src),
+        report: OpReport::default(),
+    };
+    let placed = t.copy_entry(src, &meta, target, false);
+    let mut report = t.report;
+    let complete = report.failed.is_empty() && report.skipped.is_empty();
+    match placed {
+        Placed::Done(_) if complete => return Ok(report.warnings),
+        Placed::Done(_) | Placed::Partial => delete_tree(target)?,
+        Placed::Skipped | Placed::Failed | Placed::Cancelled => {}
+    }
+    if let Some((_, e)) = report.failed.drain(..).next() {
+        return Err(e);
+    }
+    if let Some(path) = report.skipped.into_iter().next() {
+        return Err(FsError::Exists { path });
+    }
+    Err(FsError::Cancelled)
+}
+
 /// Deletes a moved source after its copy: a directory with its contents,
 /// never following a symlink.
-fn delete_tree(path: &Path) -> Result<(), FsError> {
+pub(crate) fn delete_tree(path: &Path) -> Result<(), FsError> {
     let meta = fs::symlink_metadata(path).map_err(|e| FsError::io(path, e))?;
     let removed = if meta.is_dir() {
         fs::remove_dir_all(path)

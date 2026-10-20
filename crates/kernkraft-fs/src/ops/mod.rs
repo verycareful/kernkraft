@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 pub use names::{unique_name, validate_name};
 pub use transfer::{copy, move_items, Conflict};
+pub(crate) use transfer::{copy_exact, delete_tree};
 
 use crate::sys::rename_noreplace;
 use crate::{FsError, Progress};

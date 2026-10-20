@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::undo::{Change, IrreversibleReason};
+
 /// Every failure `kernkraft-fs` reports.
 #[derive(Debug, thiserror::Error)]
 pub enum FsError {
@@ -34,6 +36,31 @@ pub enum FsError {
     XattrsNotKept { path: PathBuf, names: Vec<String> },
     #[error("cancelled")]
     Cancelled,
+    /// An undo or redo found `path` different from what the journal
+    /// recorded, before doing anything.
+    #[error("{path} {what}")]
+    Changed { path: PathBuf, what: Change },
+    /// The journal entry on top cannot be reversed; it stays there.
+    #[error("{what} cannot be undone: {reason}")]
+    Irreversible {
+        what: String,
+        reason: IrreversibleReason,
+    },
+    /// An undo or redo stopped partway. `done` lists the items it reversed
+    /// and `not_done` the items it did not reach, each by its path outside
+    /// the trash (see [`crate::UndoOutcome`]); `cause` says why it stopped.
+    /// `warnings` are those of the items done.
+    #[error("stopped after {} of {} items: {cause}", done.len(), done.len() + not_done.len())]
+    Partial {
+        done: Vec<PathBuf>,
+        not_done: Vec<PathBuf>,
+        cause: Box<FsError>,
+        warnings: Vec<(PathBuf, FsError)>,
+    },
+    #[error("nothing to undo")]
+    NothingToUndo,
+    #[error("nothing to redo")]
+    NothingToRedo,
 }
 
 impl FsError {

@@ -67,7 +67,7 @@ impl FileStamp {
         Self::from_metadata(path, &meta)
     }
 
-    fn from_metadata(path: &Path, meta: &fs::Metadata) -> Result<FileStamp, FsError> {
+    pub(crate) fn from_metadata(path: &Path, meta: &fs::Metadata) -> Result<FileStamp, FsError> {
         const NANOS_PER_SEC: i128 = 1_000_000_000;
         Ok(FileStamp {
             len: meta.len(),

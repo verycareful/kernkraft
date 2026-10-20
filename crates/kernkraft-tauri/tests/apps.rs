@@ -14,7 +14,9 @@
 
 mod common;
 
+use std::ffi::OsStr;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -138,13 +140,15 @@ fn open_default_reports_missing_handler() {
     // application is the default for.
     let blob = file(&dir, "blob", b"\0\0\0");
 
-    let err = e.kk.open_default(vec![w(&text), w(&blob)]).unwrap_err();
+    let err =
+        e.kk.open_default(vec![w(&text), w(&blob)], None)
+            .unwrap_err();
     assert_eq!(err.kind, "NoDefaultApp");
     assert_eq!(err.path, Some(w(&blob)));
     // Nothing is opened when any path has no default.
     assert!(no_records("rec-open", "odrm"));
 
-    e.kk.open_default(vec![w(&text)]).unwrap();
+    e.kk.open_default(vec![w(&text)], None).unwrap();
     let got = records("rec-open", "odrm", 1);
     assert_eq!(got.len(), 1);
     assert_eq!(got[0][1..], [text.to_string_lossy().into_owned()]);
@@ -158,7 +162,7 @@ fn open_default_groups_paths_by_app() {
     let dir = e.dir("group");
     let a = file(&dir, "a.txt", b"a");
     let b = file(&dir, "b.txt", b"b");
-    e.kk.open_default(vec![w(&a), w(&b)]).unwrap();
+    e.kk.open_default(vec![w(&a), w(&b)], None).unwrap();
     // %F: one launch with both files.
     let got = records("rec-open", "group", 1);
     assert_eq!(got.len(), 1);
@@ -183,7 +187,7 @@ fn launch_app_runs_exec_with_files() {
     let dir = e.dir("launch");
     let a = file(&dir, "x.md", b"#");
     let b = file(&dir, "y.md", b"#");
-    e.kk.launch_app("editor.desktop".to_owned(), vec![w(&a), w(&b)])
+    e.kk.launch_app("editor.desktop".to_owned(), vec![w(&a), w(&b)], None)
         .unwrap();
     // %f: one launch per file.
     let got = records("rec-launch", "launch", 2);
@@ -197,7 +201,7 @@ fn launch_app_runs_exec_with_files() {
     );
 
     let err =
-        e.kk.launch_app("missing.desktop".to_owned(), vec![w(&a)])
+        e.kk.launch_app("missing.desktop".to_owned(), vec![w(&a)], None)
             .unwrap_err();
     assert_eq!(err.kind, "UnknownApp");
 }
@@ -275,4 +279,58 @@ fn apps_for_reports_skipped_entries() {
     let mime = e.kk.mime_of(w(&doc)).unwrap();
     assert_eq!(mime.mime, "text/plain");
     assert!(mime.is_text);
+}
+
+/// The complete records of stub `name` whose bytes contain `marker`, as
+/// raw lines, waiting until one is there. For arguments that are not UTF-8.
+fn raw_records(name: &str, marker: &[u8]) -> Vec<Vec<Vec<u8>>> {
+    let deadline = Instant::now() + EVENT_WAIT;
+    loop {
+        let mut found = Vec::new();
+        for entry in fs::read_dir(&stubs().log).unwrap() {
+            let entry = entry.unwrap();
+            if !entry
+                .file_name()
+                .as_bytes()
+                .starts_with(format!("{name}.").as_bytes())
+            {
+                continue;
+            }
+            let bytes = fs::read(entry.path()).unwrap_or_default();
+            let lines: Vec<Vec<u8>> = bytes
+                .split(|b| *b == b'\n')
+                .filter(|l| !l.is_empty())
+                .map(<[u8]>::to_vec)
+                .collect();
+            if lines.last().map(Vec::as_slice) == Some(b"END".as_slice())
+                && bytes.windows(marker.len()).any(|w| w == marker)
+            {
+                found.push(lines[..lines.len() - 1].to_vec());
+            }
+        }
+        if !found.is_empty() || Instant::now() > deadline {
+            return found;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn launch_app_passes_non_utf8_names_as_their_bytes() {
+    stubs();
+    let e = env();
+    desktop(
+        &e,
+        "bytes.desktop",
+        "[Desktop Entry]\nType=Application\nName=Bytes\nExec=rec-launch %F\n",
+    );
+    let dir = e.dir("nonutf8-launch");
+    // 0xFF never occurs in UTF-8 (RFC 3629 section 1).
+    let odd = dir.join(OsStr::from_bytes(b"caf\xFF.md"));
+    fs::write(&odd, "#").unwrap();
+    e.kk.launch_app("bytes.desktop".to_owned(), vec![w(&odd)], None)
+        .unwrap();
+    let got = raw_records("rec-launch", b"nonutf8-launch");
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0][1..], [odd.as_os_str().as_bytes().to_vec()]);
 }

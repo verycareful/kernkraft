@@ -23,7 +23,7 @@
 //! `error` too. Only a failure to read the file or to write the cache is an
 //! `error`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
@@ -59,28 +59,110 @@ struct Item {
     /// The key's epoch when queued; a cancel moves the key to the next one,
     /// so an item of an earlier epoch sends nothing.
     epoch: u64,
-    origin: Option<String>,
     path: PathBuf,
     mime: String,
     size: ThumbSize,
 }
 
+/// What the queue tracks per key, while the key has work queued or being
+/// made; the entry goes when the last of it is done or cancelled, so keys
+/// of closed views do not pile up.
+#[derive(Default)]
+struct KeyState {
+    epoch: u64,
+    /// Items queued plus items a worker is on.
+    outstanding: usize,
+    /// Labels of the windows that queued under the key.
+    origins: HashSet<String>,
+}
+
 #[derive(Default)]
 struct Queue {
     items: VecDeque<Item>,
-    epochs: HashMap<String, u64>,
+    /// `(key, path, size)` of every queued item, to drop a repeated request.
+    queued: HashSet<(String, PathBuf, ThumbSize)>,
+    keys: HashMap<String, KeyState>,
     workers: usize,
     stopped: bool,
 }
 
 impl Queue {
-    fn epoch(&self, key: &str) -> u64 {
-        self.epochs.get(key).copied().unwrap_or(0)
+    /// Queues one thumbnail. A request for a `(key, path, size)` still
+    /// queued is dropped: the queued one sends the event.
+    fn push(
+        &mut self,
+        key: &str,
+        origin: Option<&str>,
+        path: PathBuf,
+        mime: String,
+        size: ThumbSize,
+    ) {
+        if !self.queued.insert((key.to_owned(), path.clone(), size)) {
+            return;
+        }
+        let state = self.keys.entry(key.to_owned()).or_default();
+        state.outstanding += 1;
+        if let Some(origin) = origin {
+            state.origins.insert(origin.to_owned());
+        }
+        self.items.push_back(Item {
+            key: key.to_owned(),
+            epoch: state.epoch,
+            path,
+            mime,
+            size,
+        });
     }
 
+    /// The next item; it stays outstanding until [`Queue::finish`].
+    fn pop(&mut self) -> Option<Item> {
+        let item = self.items.pop_front()?;
+        self.queued
+            .remove(&(item.key.clone(), item.path.clone(), item.size));
+        Some(item)
+    }
+
+    /// Marks `item` done and says whether its event goes out: not after a
+    /// cancel of its key, nor once the queue has stopped.
+    fn finish(&mut self, item: &Item) -> bool {
+        let Some(state) = self.keys.get_mut(&item.key) else {
+            return false;
+        };
+        let current = state.epoch == item.epoch;
+        state.outstanding = state.outstanding.saturating_sub(1);
+        if state.outstanding == 0 {
+            self.keys.remove(&item.key);
+        }
+        current && !self.stopped
+    }
+
+    /// Drops the key's queued items and suppresses the events of those in
+    /// flight.
     fn cancel(&mut self, key: &str) {
+        let before = self.items.len();
         self.items.retain(|i| i.key != key);
-        *self.epochs.entry(key.to_owned()).or_insert(0) += 1;
+        let removed = before - self.items.len();
+        self.queued.retain(|(k, _, _)| k != key);
+        if let Some(state) = self.keys.get_mut(key) {
+            state.epoch += 1;
+            state.outstanding = state.outstanding.saturating_sub(removed);
+            if state.outstanding == 0 {
+                self.keys.remove(key);
+            }
+        }
+    }
+
+    /// Cancels every key window `label` queued under.
+    fn cancel_origin(&mut self, label: &str) {
+        let keys: Vec<String> = self
+            .keys
+            .iter()
+            .filter(|(_, s)| s.origins.contains(label))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in keys {
+            self.cancel(&key);
+        }
     }
 }
 
@@ -134,8 +216,9 @@ fn in_cache(path: &Path, root: &Path) -> bool {
 
 impl<R: Runtime> Kernkraft<R> {
     /// Queues thumbnails of `paths` at `size` (`"normal"`, 128 pixels, or
-    /// `"large"`, 256) under `key`, after any already queued. `origin` is
-    /// the label of the window asking; closing it drops what it queued.
+    /// `"large"`, 256) under `key`, after any already queued; a path still
+    /// queued at that size under that key is not queued twice. `origin` is
+    /// the label of the window asking; closing it cancels its keys.
     pub fn thumb_request(
         &self,
         key: String,
@@ -164,17 +247,9 @@ impl<R: Runtime> Kernkraft<R> {
             // The app is exiting: no window is left to show a thumbnail.
             return Ok(());
         }
-        let epoch = queue.epoch(&key);
-        queue
-            .items
-            .extend(typed.into_iter().map(|(path, mime)| Item {
-                key: key.clone(),
-                epoch,
-                origin: origin.clone(),
-                path,
-                mime,
-                size,
-            }));
+        for (path, mime) in typed {
+            queue.push(&key, origin.as_deref(), path, mime, size);
+        }
         self.start_workers(&mut queue)?;
         thumbs.wake.notify_all();
         Ok(())
@@ -222,7 +297,7 @@ impl<R: Runtime> Kernkraft<R> {
                     if queue.stopped {
                         return;
                     }
-                    if let Some(item) = queue.items.pop_front() {
+                    if let Some(item) = queue.pop() {
                         break item;
                     }
                     queue = thumbs
@@ -234,8 +309,8 @@ impl<R: Runtime> Kernkraft<R> {
             let (file, error) = self.make_thumb(&item);
             // Sent under the queue lock, so a cancel either comes first and
             // suppresses it, or returns after it is out.
-            let queue = thumbs.lock();
-            if !queue.stopped && queue.epoch(&item.key) == item.epoch {
+            let mut queue = thumbs.lock();
+            if queue.finish(&item) {
                 let event = ThumbEvent {
                     key: item.key,
                     path: WirePath::from(&item.path),
@@ -273,29 +348,115 @@ impl<R: Runtime> Kernkraft<R> {
         }
     }
 
-    /// Cancels every key window `label` has thumbnails queued under (keys
-    /// are per view, so per window), or for `None` drops everything and
-    /// stops the workers.
+    /// Cancels every key window `label` queued under (keys are per view, so
+    /// per window), queued and in-flight items alike, or for `None` drops
+    /// everything and stops the workers.
     pub(crate) fn thumbs_shutdown(&self, label: Option<&str>) {
         let thumbs = &self.0.thumbs;
         let mut queue = thumbs.lock();
         match label {
-            Some(label) => {
-                let keys: Vec<String> = queue
-                    .items
-                    .iter()
-                    .filter(|i| i.origin.as_deref() == Some(label))
-                    .map(|i| i.key.clone())
-                    .collect();
-                for key in keys {
-                    queue.cancel(&key);
-                }
-            }
+            Some(label) => queue.cancel_origin(label),
             None => {
                 queue.items.clear();
+                queue.queued.clear();
                 queue.stopped = true;
             }
         }
         thumbs.wake.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::path::PathBuf;
+
+    use kernkraft_thumb::ThumbSize;
+
+    use super::Queue;
+
+    fn push(q: &mut Queue, key: &str, origin: Option<&str>, path: &str) {
+        q.push(
+            key,
+            origin,
+            PathBuf::from(path),
+            "image/png".to_owned(),
+            ThumbSize::Normal,
+        );
+    }
+
+    #[test]
+    fn key_state_goes_when_its_work_is_done() {
+        let mut q = Queue::default();
+        push(&mut q, "k", None, "/a.png");
+        push(&mut q, "k", None, "/b.png");
+        let a = q.pop().unwrap();
+        assert!(q.finish(&a));
+        assert_eq!(q.keys.len(), 1);
+        let b = q.pop().unwrap();
+        assert!(q.finish(&b));
+        assert!(q.keys.is_empty());
+        assert!(q.queued.is_empty());
+    }
+
+    #[test]
+    fn cancel_suppresses_in_flight_and_then_forgets_the_key() {
+        let mut q = Queue::default();
+        push(&mut q, "k", None, "/a.png");
+        push(&mut q, "k", None, "/b.png");
+        let in_flight = q.pop().unwrap();
+        q.cancel("k");
+        assert!(q.items.is_empty());
+        // The key is kept while its in-flight item runs...
+        assert_eq!(q.keys.len(), 1);
+        // ...a new request under it is served...
+        push(&mut q, "k", None, "/c.png");
+        // ...and the item from before the cancel sends nothing.
+        assert!(!q.finish(&in_flight));
+        let c = q.pop().unwrap();
+        assert!(q.finish(&c));
+        assert!(q.keys.is_empty());
+
+        // Cancelling with nothing outstanding leaves no entry behind.
+        q.cancel("never");
+        assert!(q.keys.is_empty());
+    }
+
+    #[test]
+    fn repeated_request_still_queued_is_dropped() {
+        let mut q = Queue::default();
+        push(&mut q, "k", None, "/a.png");
+        push(&mut q, "k", None, "/a.png");
+        // Another key, or another size, is another request.
+        push(&mut q, "j", None, "/a.png");
+        q.push(
+            "k",
+            None,
+            PathBuf::from("/a.png"),
+            "image/png".to_owned(),
+            ThumbSize::Large,
+        );
+        assert_eq!(q.items.len(), 3);
+        assert_eq!(q.keys["k"].outstanding, 2);
+        // Once popped, the same request may be queued again.
+        let first = q.pop().unwrap();
+        push(&mut q, "k", None, "/a.png");
+        assert_eq!(q.items.len(), 3);
+        assert!(q.finish(&first));
+    }
+
+    #[test]
+    fn closing_a_window_cancels_its_keys_in_flight_too() {
+        let mut q = Queue::default();
+        push(&mut q, "grid-1", Some("main"), "/a.png");
+        push(&mut q, "grid-1", Some("main"), "/b.png");
+        push(&mut q, "grid-2", Some("doc-1"), "/c.png");
+        let in_flight = q.pop().unwrap();
+        q.cancel_origin("main");
+        assert_eq!(q.items.len(), 1);
+        assert_eq!(q.items[0].key, "grid-2");
+        assert!(!q.finish(&in_flight));
+        assert_eq!(q.keys.len(), 1);
     }
 }

@@ -514,8 +514,28 @@ fn text_and_path_error_kind_names() {
                 "TooLargeToOpen",
                 false,
             ),
+            (
+                TextError::ReadOnly {
+                    path: p("/a"),
+                    reason: kernkraft_text::ReadOnly::Utf16,
+                },
+                "ReadOnly",
+                true,
+            ),
         ],
         WireError::from,
+    );
+    let wire = WireError::from(TextError::ReadOnly {
+        path: p("/a"),
+        reason: kernkraft_text::ReadOnly::MixedLineEndings {
+            lf: 1,
+            crlf: 1,
+            cr: 0,
+        },
+    });
+    assert_eq!(
+        serde_json::to_value(wire.details.unwrap()).unwrap(),
+        serde_json::json!({"k": "ReadOnly", "reason": "MixedLineEndings"})
     );
     check(
         vec![

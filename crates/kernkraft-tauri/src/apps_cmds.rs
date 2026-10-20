@@ -23,7 +23,9 @@
 
 use std::path::PathBuf;
 
-use kernkraft_xdg_apps::{launch, open_terminal, set_default, AppRegistry, DesktopEntry, MimeDb};
+use kernkraft_xdg_apps::{
+    launch_in_terminal, open_terminal, set_default, AppRegistry, DesktopEntry, MimeDb,
+};
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
 
@@ -140,15 +142,27 @@ impl<R: Runtime> Kernkraft<R> {
     }
 
     /// Starts application `id` with `paths`, detached (see
-    /// `kernkraft_xdg_apps::launch`). `UnknownApp` when no installed
-    /// application has that ID.
-    pub fn launch_app(&self, id: String, paths: Vec<WirePath>) -> Result<(), WireError> {
+    /// `kernkraft_xdg_apps::launch_in_terminal`). `terminal` is the user's
+    /// Terminal setting: for a `Terminal=true` application it is the last
+    /// choice of terminal, after `xdg-terminal-exec` and `$TERMINAL`.
+    /// `UnknownApp` when no installed application has that ID.
+    pub fn launch_app(
+        &self,
+        id: String,
+        paths: Vec<WirePath>,
+        terminal: Option<String>,
+    ) -> Result<(), WireError> {
         let paths = decode(paths)?;
         let registry = self.registry()?;
         let entry = registry
             .get(&id)
             .ok_or_else(|| PluginError::UnknownApp(id.clone()))?;
-        Ok(launch(entry, &paths, None)?)
+        Ok(launch_in_terminal(
+            entry,
+            &paths,
+            None,
+            terminal.as_deref(),
+        )?)
     }
 
     /// Opens each of `paths` with the default application for its type,
@@ -157,8 +171,13 @@ impl<R: Runtime> Kernkraft<R> {
     /// no default application, nothing is opened and the error is
     /// `NoDefaultApp` naming the first such path, so the UI can offer
     /// "Open with" for it. A launch that fails stops the ones after it;
-    /// the ones before have started.
-    pub fn open_default(&self, paths: Vec<WirePath>) -> Result<(), WireError> {
+    /// the ones before have started. `terminal` is the user's Terminal
+    /// setting, as for [`Kernkraft::launch_app`].
+    pub fn open_default(
+        &self,
+        paths: Vec<WirePath>,
+        terminal: Option<String>,
+    ) -> Result<(), WireError> {
         let paths = decode(paths)?;
         let db = self.mime()?;
         let registry = self.registry()?;
@@ -174,7 +193,7 @@ impl<R: Runtime> Kernkraft<R> {
             }
         }
         for (app, group) in groups {
-            launch(app, &group, None)?;
+            launch_in_terminal(app, &group, None, terminal.as_deref())?;
         }
         Ok(())
     }

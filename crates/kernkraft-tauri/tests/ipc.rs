@@ -659,7 +659,7 @@ fn ipc_launch_app() {
         invoke(
             &v,
             "launch_app",
-            json!({"id": "none.desktop", "paths": [wp(&path)]}),
+            json!({"id": "none.desktop", "paths": [wp(&path)], "terminal": "foot"}),
         ),
         "UnknownApp",
     );
@@ -672,7 +672,11 @@ fn ipc_open_default() {
     let path = e.dir("d").join("a.txt");
     fs::write(&path, "x").unwrap();
     let err = assert_wire_error(
-        invoke(&v, "open_default", json!({"paths": [wp(&path)]})),
+        invoke(
+            &v,
+            "open_default",
+            json!({"paths": [wp(&path)], "terminal": null}),
+        ),
         "NoDefaultApp",
     );
     assert_eq!(err["path"], wp(&path));

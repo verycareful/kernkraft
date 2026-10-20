@@ -178,6 +178,13 @@ impl<R: Runtime> Kernkraft<R> {
     /// else `ExternalModification` and nothing is written. `None` writes
     /// whatever is there: Save As to a new path, or an overwrite the user
     /// chose after being told the file changed. Returns the new stamp.
+    ///
+    /// In both cases an existing file whose content decodes read-only (not
+    /// UTF-8, UTF-16, mixed line endings) is never replaced: the save fails
+    /// with `ReadOnly`, whose details name the reason, and the file keeps
+    /// its bytes. The text shown for such a file is a lossy copy, and a UI
+    /// slip must not write it back over the original. Save As to a path
+    /// with nothing there is not affected.
     pub fn text_save(
         &self,
         path: WirePath,

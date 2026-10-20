@@ -12,7 +12,10 @@
 //! A file that cannot be saved back byte for byte (not UTF-8, UTF-16, mixed
 //! line endings, too large to edit, not writable) is still opened, as a
 //! lossy display copy marked [`ReadOnly`]; the caller must not offer Save
-//! for it. [`save`] itself never checks that mark.
+//! for it. [`save`] checks the file it would replace as well: content that
+//! decodes read-only (not UTF-8, UTF-16, mixed line endings) is never
+//! overwritten, so a slip in the caller cannot replace the original bytes
+//! with the lossy copy.
 
 mod decode;
 mod encode;

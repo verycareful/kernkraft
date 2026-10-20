@@ -191,3 +191,81 @@ fn no_write_permission_outranks_decode_reasons() {
         Some(ReadOnly::NoWritePermission)
     );
 }
+
+/// Every content reason a file opens read-only for: saving the lossy copy
+/// over it would replace the original bytes.
+fn lossy_files() -> Vec<(&'static str, &'static [u8])> {
+    vec![
+        // 0xE9 alone is not UTF-8 (RFC 3629 section 4).
+        ("NotUtf8", b"caf\xE9\n"),
+        // UTF-16 LE byte order mark (Unicode Standard 23.8).
+        ("Utf16", b"\xFF\xFEh\0i\0"),
+        ("MixedLineEndings", b"a\r\nb\n"),
+    ]
+}
+
+#[test]
+fn save_with_stamp_refuses_lossy_content() {
+    for (kind, bytes) in lossy_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        fs::write(&path, bytes).unwrap();
+        let file = open(&path).unwrap();
+        assert!(file.decoded.read_only.is_some(), "{kind}");
+        // A UI that offered Save anyway: the lossy text goes nowhere.
+        let err = save(
+            &path,
+            &file.decoded.text,
+            file.decoded.ending,
+            file.decoded.bom,
+            Some(&file.stamp),
+        )
+        .unwrap_err();
+        match &err {
+            TextError::ReadOnly { path: p, reason } => {
+                assert_eq!(p, &path, "{kind}");
+                assert_eq!(format!("{reason:?}").split([' ', '{']).next(), Some(kind));
+            }
+            other => panic!("{kind}: {other:?}"),
+        }
+        assert_eq!(fs::read(&path).unwrap(), bytes, "{kind}");
+    }
+}
+
+#[test]
+fn overwrite_without_stamp_refuses_lossy_content() {
+    for (kind, bytes) in lossy_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        fs::write(&path, bytes).unwrap();
+        let err = save(&path, "new\n", LineEnding::Lf, false, None).unwrap_err();
+        assert!(matches!(err, TextError::ReadOnly { .. }), "{kind}: {err:?}");
+        assert_eq!(fs::read(&path).unwrap(), bytes, "{kind}");
+    }
+}
+
+#[test]
+fn save_as_to_a_new_path_and_overwrite_of_clean_text_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let new = dir.path().join("new.txt");
+    save(&new, "n\n", LineEnding::CrLf, false, None).unwrap();
+    assert_eq!(fs::read(&new).unwrap(), b"n\r\n");
+    // An existing file that decodes cleanly may be overwritten unstamped.
+    save(&new, "m\n", LineEnding::Lf, false, None).unwrap();
+    assert_eq!(fs::read(&new).unwrap(), b"m\n");
+}
+
+#[test]
+fn save_with_stamp_of_deleted_file_is_external_modification() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.txt");
+    fs::write(&path, "a").unwrap();
+    let file = open(&path).unwrap();
+    fs::remove_file(&path).unwrap();
+    let err = save(&path, "b", LineEnding::Lf, false, Some(&file.stamp)).unwrap_err();
+    assert!(
+        matches!(err, TextError::Fs(FsError::ExternalModification { .. })),
+        "{err:?}"
+    );
+    assert!(!path.exists());
+}

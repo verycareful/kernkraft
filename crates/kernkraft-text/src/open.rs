@@ -143,12 +143,26 @@ fn read_regular(path: &Path) -> Result<(Vec<u8>, FileStamp), TextError> {
 }
 
 /// Encodes `text` and writes it to `path` atomically; see
-/// [`kernkraft_fs::write_atomic`]. With `expected` the file must still
-/// match that stamp, else [`FsError::ExternalModification`] and nothing is
-/// written. Returns the stamp of the file now on disk.
+/// [`kernkraft_fs::write_atomic`]. Returns the stamp of the file now on disk.
 ///
-/// This does not look at [`ReadOnly`]: not offering Save for read-only
-/// content is the caller's job.
+/// With `expected` the file must still match that stamp, else
+/// [`FsError::ExternalModification`] and nothing is written (a file deleted
+/// since counts as changed). Without it, whatever is at `path` is replaced:
+/// Save As to a new path, or an overwrite the user chose.
+///
+/// Either way, an existing file is read and decoded first (through the
+/// same handle-checked read as [`open`]), and one whose content decodes
+/// read-only for a content reason ([`ReadOnly::is_content`]: not UTF-8,
+/// UTF-16, mixed line endings) is refused with [`TextError::ReadOnly`]:
+/// the text the caller holds for it is a lossy copy, and writing it would
+/// replace the original bytes. With `expected`, the stamp of that read must
+/// match, and the write checks the stamp again, so a change between the
+/// read and the write is caught too. An existing file above
+/// [`OPEN_LIMIT`] cannot be checked and is refused with
+/// [`TextError::TooLargeToOpen`]; anything that is not a regular file is
+/// refused as in [`open`]. [`ReadOnly::TooLarge`] and
+/// [`ReadOnly::NoWritePermission`] are not checked here: the text of such a
+/// file is exact, and a write the user may not make fails on its own.
 pub fn save(
     path: &Path,
     text: &str,
@@ -156,6 +170,26 @@ pub fn save(
     bom: bool,
     expected: Option<&FileStamp>,
 ) -> Result<FileStamp, TextError> {
+    match read_regular(path) {
+        Ok((bytes, stamp)) => {
+            if expected.is_some_and(|e| *e != stamp) {
+                return Err(FsError::ExternalModification {
+                    path: path.to_path_buf(),
+                }
+                .into());
+            }
+            if let Some(reason) = decode(&bytes).read_only.filter(ReadOnly::is_content) {
+                return Err(TextError::ReadOnly {
+                    path: path.to_path_buf(),
+                    reason,
+                });
+            }
+        }
+        // Nothing there: a new file, or (with `expected`) one deleted
+        // since, which the write reports as changed.
+        Err(TextError::Fs(FsError::NotFound { .. })) => {}
+        Err(e) => return Err(e),
+    }
     Ok(write_bytes_atomic(
         path,
         expected,

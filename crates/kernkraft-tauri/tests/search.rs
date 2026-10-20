@@ -7,14 +7,19 @@
 
 mod common;
 
+use std::ffi::OsStr;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
+use std::sync::{mpsc, Mutex};
 
-use common::{env, path, w, Env};
+use common::{env, path, w, Env, EVENT_WAIT};
+use kernkraft_tauri::WirePath;
 use kernkraft_tauri::{
     OpDoneEvent, OpId, SearchHitEvent, EVENT_OP_DONE, EVENT_SEARCH_HIT, SEARCH_BATCH,
 };
+use tauri::Listener;
 
 /// Every search-hit batch of `op`, in order, and its op-done.
 fn collect(e: &Env, op: OpId) -> (Vec<SearchHitEvent>, OpDoneEvent) {
@@ -133,37 +138,101 @@ fn search_hidden_only_when_asked() {
 #[test]
 fn search_refuses_empty_query() {
     let e = env();
-    let err =
-        e.kk.search("k".to_owned(), vec![w(&e.base)], String::new(), false, None)
-            .unwrap_err();
-    assert_eq!(err.kind, "InvalidArgument");
+    for q in ["", "   ", "\t\n"] {
+        let err =
+            e.kk.search("k".to_owned(), vec![w(&e.base)], q.to_owned(), false, None)
+                .unwrap_err();
+        assert_eq!(err.kind, "InvalidArgument", "{q:?}");
+    }
+}
+
+#[test]
+fn search_trims_the_query() {
+    let e = env();
+    let root = e.dir("trim");
+    fs::write(root.join("Budget.txt"), "").unwrap();
+    // Surrounding spaces are not part of what is searched for.
+    let op =
+        e.kk.search(
+            "t".to_owned(),
+            vec![w(&root)],
+            "  budget ".to_owned(),
+            false,
+            None,
+        )
+        .unwrap();
+    assert_eq!(found(&collect(&e, op).0), [root.join("Budget.txt")]);
+}
+
+#[test]
+fn search_hits_keep_non_utf8_names() {
+    let e = env();
+    let root = e.dir("bytes");
+    // 0xE9 alone is not UTF-8 (RFC 3629 section 4).
+    let odd = root.join(OsStr::from_bytes(b"caf\xE9-needle.txt"));
+    fs::write(&odd, "").unwrap();
+    let op =
+        e.kk.search(
+            "b".to_owned(),
+            vec![w(&root)],
+            "needle".to_owned(),
+            false,
+            None,
+        )
+        .unwrap();
+    let (batches, _) = collect(&e, op);
+    let entry = &batches[0].entries[0];
+    // Shown with a replacement character, acted on with the real bytes.
+    assert_eq!(entry.name, "caf\u{FFFD}-needle.txt");
+    assert!(matches!(entry.path, WirePath::Bytes(_)));
+    assert_eq!(path(&entry.path), odd);
 }
 
 #[test]
 fn search_cancel_reports_cancelled() {
     let e = env();
     let root = e.dir("c");
-    for i in 0..50 {
-        let d = root.join(format!("d{i}"));
+    const DIRS: usize = 50;
+    const PER_DIR: usize = 20;
+    for i in 0..DIRS {
+        let d = root.join(format!("d{i:02}"));
         fs::create_dir(&d).unwrap();
-        for j in 0..20 {
+        for j in 0..PER_DIR {
             fs::write(d.join(format!("f{j}.txt")), "").unwrap();
         }
     }
+    // Event listeners run on the emitting thread, so holding the first
+    // batch's listener holds the walk right after that batch: the cancel
+    // lands while the walk still has folders left.
+    let (release, held) = mpsc::channel::<()>();
+    let held = Mutex::new(Some(held));
+    let (reached, at_batch) = mpsc::channel::<()>();
+    let reached = Mutex::new(reached);
+    e.app.listen_any(EVENT_SEARCH_HIT, move |_| {
+        if let Some(rx) = held.lock().unwrap().take() {
+            let _ = reached.lock().unwrap().send(());
+            let _ = rx.recv_timeout(EVENT_WAIT);
+        }
+    });
+
     let op =
         e.kk.search("c".to_owned(), vec![w(&root)], "f".to_owned(), false, None)
             .unwrap();
+    at_batch.recv_timeout(EVENT_WAIT).unwrap();
     // A search only reads, so it does not hold undo back: with nothing
     // journalled, undo says so instead of Busy.
     assert_eq!(e.kk.undo().unwrap_err().kind, "NothingToUndo");
-    // Cancelled at once; the walk polls before each folder. The op may
-    // already have ended, which is the only way the cancel can fail.
-    let cancelled = e.kk.cancel_op(op).is_ok();
-    let (_, done) = collect(&e, op);
+    e.kk.cancel_op(op).unwrap();
+    release.send(()).unwrap();
+
+    let (batches, done) = collect(&e, op);
     let scan = done.scan.unwrap();
-    if cancelled {
-        assert!(scan.cancelled || scan.found == 1000);
-    }
+    assert!(scan.cancelled);
+    let total = (DIRS * PER_DIR) as u64;
+    // The first full batch went out; the walk stopped before the end.
+    assert!(scan.found >= SEARCH_BATCH as u64, "{}", scan.found);
+    assert!(scan.found < total, "{} of {total}", scan.found);
+    assert_eq!(found(&batches).len() as u64, scan.found);
 }
 
 #[test]

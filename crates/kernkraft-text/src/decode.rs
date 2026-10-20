@@ -35,6 +35,34 @@ pub enum ReadOnly {
     NoWritePermission,
 }
 
+impl ReadOnly {
+    /// Whether the reason is in the file's content (not UTF-8, UTF-16,
+    /// mixed line endings): text shown for such a file is a lossy copy.
+    /// `TooLarge` and `NoWritePermission` are not; the text is exact.
+    pub fn is_content(&self) -> bool {
+        matches!(
+            self,
+            ReadOnly::NotUtf8 { .. } | ReadOnly::Utf16 | ReadOnly::MixedLineEndings { .. }
+        )
+    }
+}
+
+impl std::fmt::Display for ReadOnly {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadOnly::NotUtf8 { offset } => write!(f, "not valid UTF-8 from byte {offset}"),
+            ReadOnly::Utf16 => write!(f, "UTF-16 text"),
+            ReadOnly::MixedLineEndings { lf, crlf, cr } => {
+                write!(f, "mixed line endings ({lf} LF, {crlf} CRLF, {cr} CR)")
+            }
+            ReadOnly::TooLarge { len, limit } => {
+                write!(f, "{len} bytes, above the {limit} byte limit for editing")
+            }
+            ReadOnly::NoWritePermission => write!(f, "not writable by this user"),
+        }
+    }
+}
+
 /// A decoded file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Decoded {

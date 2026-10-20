@@ -129,3 +129,38 @@ fn text_check_refuses_a_forged_stamp() {
     let err = e.kk.text_check(w(&path), forged).unwrap_err();
     assert_eq!(err.kind, "InvalidArgument");
 }
+
+#[test]
+fn text_save_refuses_to_replace_lossy_content() {
+    let e = env();
+    let path = e.dir("t").join("latin1.txt");
+    let original: &[u8] = b"caf\xE9\r\nx\n";
+    fs::write(&path, original).unwrap();
+    let opened = e.kk.text_open(w(&path)).unwrap();
+    assert!(opened.read_only.is_some());
+
+    // Save with the stamp from the open: refused, the bytes stay.
+    let err =
+        e.kk.text_save(
+            w(&path),
+            opened.text.clone(),
+            opened.ending.clone(),
+            opened.bom,
+            Some(opened.stamp.clone()),
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, "ReadOnly");
+    assert_eq!(err.path, Some(w(&path)));
+    // An explicit overwrite (no stamp) of that file is refused too.
+    let err =
+        e.kk.text_save(w(&path), "new\n".to_owned(), "lf".to_owned(), false, None)
+            .unwrap_err();
+    assert_eq!(err.kind, "ReadOnly");
+    assert_eq!(fs::read(&path).unwrap(), original);
+
+    // Save As of the same text to a new path works.
+    let copy = e.dir("t").join("copy.txt");
+    e.kk.text_save(w(&copy), opened.text, "lf".to_owned(), false, None)
+        .unwrap();
+    assert!(copy.is_file());
+}

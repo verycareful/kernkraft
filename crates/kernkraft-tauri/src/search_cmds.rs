@@ -79,10 +79,11 @@ fn is_document(e: &Entry, db: &MimeDb) -> bool {
 
 impl<R: Runtime> Kernkraft<R> {
     /// Starts a search of `roots` and everything under them for names
-    /// containing `query`, ignoring case; dotfiles and dot-folders only with
-    /// `hidden`. An empty query is refused: it would list every file.
-    /// `origin` is the label of the window asking; closing it cancels the
-    /// search.
+    /// containing `query`, ignoring case and the query's leading and
+    /// trailing whitespace; dotfiles and dot-folders only with `hidden`. A
+    /// query that is empty or only whitespace is refused: it would list
+    /// every file. `origin` is the label of the window asking; closing it
+    /// cancels the search.
     pub fn search(
         &self,
         key: String,
@@ -91,19 +92,14 @@ impl<R: Runtime> Kernkraft<R> {
         hidden: bool,
         origin: Option<String>,
     ) -> Result<OpId, WireError> {
-        if query.is_empty() {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
             return Err(WireError::from(PluginError::InvalidArgument {
                 what: "search query",
                 value: query,
             }));
         }
-        self.start_scan(
-            key,
-            roots,
-            hidden,
-            ScanFilter::Name(query.to_lowercase()),
-            origin,
-        )
+        self.start_scan(key, roots, hidden, ScanFilter::Name(needle), origin)
     }
 
     /// Starts the Documents walk of `roots`: every text file under them, by

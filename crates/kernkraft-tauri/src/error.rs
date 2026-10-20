@@ -85,6 +85,11 @@ pub enum WireDetails {
     /// [`FsError::Irreversible`]: why, as the name of the
     /// `IrreversibleReason` variant.
     Irreversible { reason: String },
+    /// `TextError::ReadOnly`: the save was refused because the file on disk
+    /// decodes read-only; `reason` is the name of the
+    /// `kernkraft_text::ReadOnly` variant (`NotUtf8`, `Utf16`,
+    /// `MixedLineEndings`).
+    ReadOnly { reason: String },
     /// [`VolumesError::EjectIncomplete`]: what the eject did before `failed`
     /// stopped it. `unmounted` are mount points. `locked` are UDisks object
     /// paths (D-Bus object paths, ASCII by the D-Bus specification), and
@@ -279,6 +284,13 @@ impl From<kernkraft_text::TextError> for WireError {
             TextError::Fs(inner) => WireError::forwarded(WireError::from(inner), e.to_string()),
             TextError::TooLargeToOpen { .. } => {
                 WireError::new("TooLargeToOpen", e.to_string(), None)
+            }
+            TextError::ReadOnly { path, reason } => {
+                WireError::new("ReadOnly", e.to_string(), Some(path)).with_details(
+                    WireDetails::ReadOnly {
+                        reason: crate::text_cmds::WireReadOnly::from(reason).kind,
+                    },
+                )
             }
         }
     }

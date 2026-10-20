@@ -289,18 +289,20 @@ pub(crate) async fn launch_app<R: Runtime>(
     app: AppHandle<R>,
     id: String,
     paths: Vec<WirePath>,
+    terminal: Option<String>,
 ) -> Result<(), WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.launch_app(id, paths)).await
+    blocking(move || kk.launch_app(id, paths, terminal)).await
 }
 
 #[tauri::command]
 pub(crate) async fn open_default<R: Runtime>(
     app: AppHandle<R>,
     paths: Vec<WirePath>,
+    terminal: Option<String>,
 ) -> Result<(), WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.open_default(paths)).await
+    blocking(move || kk.open_default(paths, terminal)).await
 }
 
 #[tauri::command]

@@ -16,7 +16,7 @@ fn p(s: &str) -> PathBuf {
 
 #[test]
 fn wire_path_round_trips_non_utf8() {
-    let original = PathBuf::from(OsStr::from_bytes(b"a\xffb"));
+    let original = PathBuf::from(OsStr::from_bytes(b"/a\xffb"));
     let wire = WirePath::from(original.as_path());
     assert!(matches!(wire, WirePath::Bytes(_)));
     let json = serde_json::to_string(&wire).unwrap();
@@ -170,7 +170,7 @@ fn fs_error_kind_names() {
 
 #[test]
 fn wire_error_carries_non_utf8_path() {
-    let path = PathBuf::from(OsStr::from_bytes(b"x\xfe"));
+    let path = PathBuf::from(OsStr::from_bytes(b"/x\xfe"));
     let wire = WireError::from(FsError::Exists { path: path.clone() });
     let json = serde_json::to_string(&wire).unwrap();
     let back: WireError = serde_json::from_str(&json).unwrap();
@@ -519,6 +519,8 @@ fn text_and_path_error_kind_names() {
     check(
         vec![
             (WirePathError::BadBase64("x".into()), "BadBase64", false),
+            (WirePathError::BadPath("x".into()), "BadPath", false),
+            (WirePathError::NotAbsolute("a".into()), "NotAbsolute", false),
             (WirePathError::Nul, "Nul", false),
         ],
         WireError::from,
@@ -652,4 +654,49 @@ fn eject_incomplete_details() {
     assert_eq!(json["unmounted"][0]["v"], "/m");
     assert_eq!(json["failed"]["v"], "/n");
     assert_eq!(json["cause"]["kind"], "Timeout");
+}
+
+#[test]
+fn wire_path_refuses_relative_and_empty() {
+    for rel in ["", "a", "./a", "../a", "a/b"] {
+        assert!(
+            matches!(
+                PathBuf::try_from(WirePath::Utf8(rel.into())),
+                Err(WirePathError::NotAbsolute(_))
+            ),
+            "{rel:?}"
+        );
+        assert_eq!(
+            WireError::from(PathBuf::try_from(WirePath::Utf8(rel.into())).unwrap_err()).kind,
+            "NotAbsolute"
+        );
+    }
+    // base64 of the bytes 61 FF 62: relative, and not UTF-8.
+    assert!(matches!(
+        PathBuf::try_from(WirePath::Bytes("Yf9i".into())),
+        Err(WirePathError::NotAbsolute(_))
+    ));
+    assert_eq!(
+        PathBuf::try_from(WirePath::Utf8("/".into())).unwrap(),
+        p("/")
+    );
+}
+
+#[test]
+fn wire_path_deserialises_anything_and_decodes_bad_shapes_as_bad_path() {
+    for raw in [
+        r#"{"k":"Nope","v":"/x"}"#,
+        r#"{"k":"Utf8"}"#,
+        r#"{"k":"Utf8","v":3}"#,
+        r#""/plain""#,
+        "null",
+        "[1,2]",
+    ] {
+        let wire: WirePath = serde_json::from_str(raw).unwrap();
+        assert!(matches!(wire, WirePath::Invalid(_)), "{raw}");
+        let err = WireError::from(PathBuf::try_from(wire).unwrap_err());
+        assert_eq!(err.kind, "BadPath", "{raw}");
+    }
+    let ok: WirePath = serde_json::from_str(r#"{"k":"Utf8","v":"/a"}"#).unwrap();
+    assert_eq!(ok, WirePath::Utf8("/a".into()));
 }

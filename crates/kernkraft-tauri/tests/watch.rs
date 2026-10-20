@@ -120,3 +120,23 @@ fn rewatching_a_key_replaces_the_watch() {
         Some(RecvTimeoutError::Timeout)
     );
 }
+
+#[test]
+fn renaming_a_parent_sends_no_event() {
+    // The watch follows the folder itself; a rename above it changes only
+    // the path, which the view finds out from its next listing.
+    let e = env();
+    let child = e.dir("parent/child");
+    e.kk.watch_dir("k".into(), w(&child), None).unwrap();
+    fs::rename(e.base.join("parent"), e.base.join("renamed")).unwrap();
+    assert_eq!(
+        e.events
+            .recv_timeout(Duration::from_millis(DEBOUNCE_MS * 4))
+            .err(),
+        Some(RecvTimeoutError::Timeout)
+    );
+    assert_eq!(
+        e.kk.list_dir(w(&child), false).unwrap_err().kind,
+        "NotFound"
+    );
+}

@@ -38,9 +38,9 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use kernkraft_fs::{
-    copy, delete_permanently, measure, move_items, undoable_from_report, Conflict, Entry, FsError,
-    IrreversibleReason, OpKind, OpReport, PriorStamps, Progress, Trash, TrashListing, TrashedItem,
-    Undoable,
+    copy, delete_permanently, measure, move_items, undoable_from_report, Change, Conflict, Entry,
+    FsError, IrreversibleReason, OpKind, OpReport, PriorStamps, Progress, Trash, TrashListing,
+    TrashedItem, Undoable,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Runtime};
@@ -78,6 +78,9 @@ pub struct OpProgressEvent {
     pub done: u64,
     pub total: u64,
     pub unit: String,
+    /// Display-only text: the path's bytes decoded lossily (U+FFFD for any
+    /// that are not UTF-8). Never turn it back into a path; use the
+    /// `WirePath`s of the report.
     pub stage: String,
 }
 
@@ -182,6 +185,27 @@ pub(crate) struct Registry {
     last: OpId,
     ops: HashMap<OpId, Arc<OpHandle>>,
     undo_running: bool,
+    /// Background workers not yet finished, op-done sent included.
+    workers: usize,
+}
+
+/// Longest the app's exit waits for cancelled workers. A cancelled copy
+/// stops within one 1 MiB chunk and then removes its temp file or the
+/// folder it was building; two seconds covers that on a slow disk, while a
+/// worker stuck in the kernel (a hung network mount) cannot hold the exit
+/// open for good.
+pub(crate) const EXIT_WAIT: Duration = Duration::from_secs(2);
+
+/// Counts a background worker until dropped, at the very end of its thread.
+struct Worker<R: Runtime> {
+    kk: Kernkraft<R>,
+}
+
+impl<R: Runtime> Drop for Worker<R> {
+    fn drop(&mut self) {
+        lock(&self.kk.0.registry).workers -= 1;
+        self.kk.0.idle.notify_all();
+    }
 }
 
 /// A running operation's cancel flag and conflict prompt.
@@ -266,6 +290,7 @@ enum Job {
     EmptyTrash {
         trash: Trash,
         listing: TrashListing,
+        seen: Vec<Seen>,
     },
     Properties {
         paths: Vec<PathBuf>,
@@ -367,7 +392,12 @@ impl<R: Runtime> Kernkraft<R> {
                     }
                     let trash = self.trash()?.clone();
                     let listing = trash.list().map_err(WireError::from)?;
-                    Job::EmptyTrash { trash, listing }
+                    let seen = listing.items.iter().map(Seen::of).collect();
+                    Job::EmptyTrash {
+                        trash,
+                        listing,
+                        seen,
+                    }
                 }
             },
         };
@@ -420,6 +450,26 @@ impl<R: Runtime> Kernkraft<R> {
     pub fn cancel_op(&self, op: OpId) -> Result<(), WireError> {
         self.handle(op)?.cancel();
         Ok(())
+    }
+
+    /// Waits until every background worker has finished, at most
+    /// `limit`. Returns whether they all did.
+    pub(crate) fn wait_for_workers(&self, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        let mut registry = lock(&self.0.registry);
+        while registry.workers > 0 {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            registry = self
+                .0
+                .idle
+                .wait_timeout(registry, deadline - now)
+                .map(|(guard, _)| guard)
+                .unwrap_or_else(|e| e.into_inner().0);
+        }
+        true
     }
 
     pub(crate) fn cancel_from(&self, label: Option<&str>) {
@@ -487,8 +537,12 @@ impl<R: Runtime> Kernkraft<R> {
         let running = self.register(origin)?;
         let id = running.handle.id;
         let kk = self.clone();
+        lock(&self.0.registry).workers += 1;
+        let counted = Worker { kk: self.clone() };
         // Detached: the worker reports through events, never a return value.
         drop(tauri::async_runtime::spawn_blocking(move || {
+            // Dropped last, after op-done is out.
+            let _counted = counted;
             let worker = kk.clone();
             let result = catch_unwind(AssertUnwindSafe(move || {
                 let handle = running.handle.clone();
@@ -545,9 +599,13 @@ impl<R: Runtime> Kernkraft<R> {
                 });
                 Outcome::Report(WireReport::new(&report, &not_reached))
             }
-            Job::EmptyTrash { trash, listing } => {
+            Job::EmptyTrash {
+                trash,
+                listing,
+                seen,
+            } => {
                 let progress = Throttle::new(self, op, "items");
-                Outcome::Report(self.empty_trash(op, &progress, &trash, listing))
+                Outcome::Report(self.empty_trash(op, &progress, &trash, listing, &seen))
             }
             Job::Properties { paths } => {
                 let progress = Throttle::new(self, op, "entries");
@@ -634,7 +692,16 @@ impl<R: Runtime> Kernkraft<R> {
             Mode::Copy => OpKind::Copy,
             Mode::Move => OpKind::Move,
         };
-        let replaced = std::mem::take(&mut *lock(&asker.replaced));
+        let mut replaced = std::mem::take(&mut *lock(&asker.replaced));
+        // A replace that was answered but never carried out (the item was
+        // then cancelled or failed) changed nothing; only a replaced path
+        // at or inside a placed item makes the operation irreversible.
+        replaced.retain(|r| {
+            report
+                .done
+                .iter()
+                .any(|(_, d)| d.as_ref().is_some_and(|d| r.starts_with(d)))
+        });
         // Stamped before the journal is locked: stamping a large tree takes
         // a while, and a rename waits on the journal.
         let entry = undoable_from_report(kind, &report, &replaced);
@@ -688,6 +755,7 @@ impl<R: Runtime> Kernkraft<R> {
         progress: &Throttle<'_, R>,
         trash: &Trash,
         listing: TrashListing,
+        seen: &[Seen],
     ) -> WireReport {
         let mut report = OpReport::default();
         let mut not_reached = Vec::new();
@@ -695,14 +763,14 @@ impl<R: Runtime> Kernkraft<R> {
         // the user is told the trash is not fully empty.
         report.failed.extend(listing.unreadable);
         let total = listing.items.len() as u64;
-        for (i, item) in listing.items.iter().enumerate() {
+        for (i, (item, seen)) in listing.items.iter().zip(seen).enumerate() {
             if op.is_cancelled() {
                 report.cancelled = true;
                 not_reached.extend(listing.items[i..].iter().map(|it| it.original.clone()));
                 break;
             }
             progress.report(i as u64, total, &item.original.to_string_lossy());
-            match trash.purge(item) {
+            match seen.check().and_then(|()| trash.purge(item)) {
                 Ok(()) => report.done.push((item.original.clone(), None)),
                 Err(e) => report.failed.push((item.original.clone(), e)),
             }
@@ -734,6 +802,76 @@ impl<R: Runtime> Kernkraft<R> {
     ) -> Result<T, WireError> {
         let _running = self.register(None)?;
         f()
+    }
+}
+
+/// Name of the directory of info files inside a trash directory, and their
+/// suffix (FreeDesktop Trash 1.0, "Contents of a trash directory").
+const TRASH_INFO_DIR: &str = "info";
+const TRASH_INFO_SUFFIX: &str = ".trashinfo";
+
+/// Device, inode and change time of an entry, not following a symlink. A
+/// trash name is reused once its entry is purged, and so can an inode
+/// number; a new entry under the same name has a new change time as well.
+type Ident = (u64, u64, i64, i64);
+
+fn ident(path: &Path) -> std::io::Result<Ident> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::symlink_metadata(path)?;
+    Ok((m.dev(), m.ino(), m.ctime(), m.ctime_nsec()))
+}
+
+/// A trash entry as it was listed: the identity of its file under `files/`
+/// and of its info file. Emptying the trash lists it when asked and purges
+/// later; an entry purged and replaced by a new item of the same name in
+/// between must not be purged in its place.
+pub(crate) struct Seen {
+    held: PathBuf,
+    held_id: Option<Ident>,
+    info: PathBuf,
+    info_id: Option<Ident>,
+}
+
+impl Seen {
+    pub(crate) fn of(item: &TrashedItem) -> Seen {
+        let held = held(item);
+        let info = item
+            .trash_dir
+            .join(TRASH_INFO_DIR)
+            .join(format!("{}{TRASH_INFO_SUFFIX}", item.name));
+        Seen {
+            held_id: ident(&held).ok(),
+            info_id: ident(&info).ok(),
+            held,
+            info,
+        }
+    }
+
+    /// Fails unless both files are still the entries listed. An entry that
+    /// could not be read when listed cannot be shown to be the same, and
+    /// is refused.
+    pub(crate) fn check(&self) -> Result<(), FsError> {
+        for (path, then) in [(&self.held, self.held_id), (&self.info, self.info_id)] {
+            match ident(path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(FsError::NotFound { path: path.clone() })
+                }
+                Err(e) => {
+                    return Err(FsError::Io {
+                        path: path.clone(),
+                        source: e,
+                    })
+                }
+                Ok(now) if Some(now) != then => {
+                    return Err(FsError::Changed {
+                        path: path.clone(),
+                        what: Change::Taken,
+                    })
+                }
+                Ok(_) => {}
+            }
+        }
+        Ok(())
     }
 }
 
@@ -966,5 +1104,52 @@ impl<R: Runtime> Progress for Offset<'_, R> {
 
     fn is_cancelled(&self) -> bool {
         self.inner.is_cancelled()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::fs;
+
+    use kernkraft_fs::{FsError, Trash};
+
+    use super::Seen;
+
+    #[test]
+    fn a_same_named_entry_trashed_after_listing_is_not_the_one_seen() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        let trash = Trash::with_home_trash(base.join("trash"));
+        let a = base.join("a");
+        fs::write(&a, "first").unwrap();
+        trash.put(&a).unwrap();
+        let listed = trash.list().unwrap().items;
+        let seen = Seen::of(&listed[0]);
+        assert!(seen.check().is_ok());
+
+        // Purged by someone else, and a new `a` trashed under the freed name.
+        trash.purge(&listed[0]).unwrap();
+        fs::write(&a, "second").unwrap();
+        let again = trash.put(&a).unwrap();
+        assert_eq!(again.name, listed[0].name);
+
+        assert!(matches!(seen.check(), Err(FsError::Changed { .. })));
+        assert_eq!(trash.list().unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn a_purged_entry_is_reported_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        let trash = Trash::with_home_trash(base.join("trash"));
+        let a = base.join("a");
+        fs::write(&a, "").unwrap();
+        trash.put(&a).unwrap();
+        let listed = trash.list().unwrap().items;
+        let seen = Seen::of(&listed[0]);
+        trash.purge(&listed[0]).unwrap();
+        assert!(matches!(seen.check(), Err(FsError::NotFound { .. })));
     }
 }

@@ -83,8 +83,13 @@ pub fn init_with<R: Runtime>(config: Config) -> TauriPlugin<R> {
             };
             match event {
                 // A worker blocked on a conflict prompt would otherwise wait
-                // for an answer no window can give.
-                RunEvent::Exit => kk.shutdown(None),
+                // for an answer no window can give. The exit then waits,
+                // bounded, for the cancelled workers to remove their partial
+                // output.
+                RunEvent::Exit => {
+                    kk.shutdown(None);
+                    kk.wait_for_workers(ops::EXIT_WAIT);
+                }
                 RunEvent::WindowEvent {
                     label,
                     event: WindowEvent::Destroyed,

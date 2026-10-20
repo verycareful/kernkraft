@@ -9,6 +9,11 @@
 //! and joins the thread. Changes inside the folder are debounced into one
 //! [`EVENT_DIR_CHANGED`]; the folder itself going away gives
 //! [`EVENT_DIR_GONE`] and ends the watch.
+//!
+//! The watch follows the folder's inode, not its path. Renaming or moving
+//! a folder above the watched one changes the path without touching the
+//! watched inode, so it sends nothing: the view learns of it when its next
+//! listing of the old path fails.
 
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};

@@ -17,8 +17,13 @@ use kernkraft_tauri::{
     EVENT_DIR_GONE, EVENT_OP_CONFLICT, EVENT_OP_DONE, EVENT_OP_PROGRESS,
 };
 use serde_json::Value;
-use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
-use tauri::{App, Listener};
+use tauri::ipc::{CallbackFn, InvokeBody};
+use tauri::test::{
+    get_ipc_response, mock_builder, mock_context, noop_assets, MockRuntime, INVOKE_KEY,
+};
+use tauri::utils::acl::ExecutionContext;
+use tauri::webview::InvokeRequest;
+use tauri::{App, Context, Listener, WebviewWindow, WebviewWindowBuilder};
 
 /// Longest a test waits for an event before failing. Only a guard against
 /// a hang: every wait ends on the event itself.
@@ -52,7 +57,7 @@ pub fn env() -> Env {
     };
     let app = mock_builder()
         .plugin(kernkraft_tauri::init_with(config))
-        .build(mock_context(noop_assets()))
+        .build(ipc_context())
         .unwrap();
     let (tx, events) = mpsc::channel();
     for name in [
@@ -129,6 +134,49 @@ impl Env {
         v.sort();
         v
     }
+}
+
+/// A mock context whose ACL lets the local origin call every kernkraft
+/// command, so IPC requests reach the handlers.
+///
+/// `RuntimeAuthority::__allow_command` is public but doc-hidden Tauri API
+/// with no stability promise; it is used here and nowhere else, so a Tauri
+/// update that changes it breaks this one helper.
+fn ipc_context() -> Context<MockRuntime> {
+    let mut ctx = mock_context(noop_assets());
+    for cmd in kernkraft_tauri::COMMANDS {
+        ctx.runtime_authority_mut()
+            .__allow_command(format!("plugin:kernkraft|{cmd}"), ExecutionContext::Local);
+    }
+    ctx
+}
+
+impl Env {
+    /// A webview window to send IPC requests from.
+    pub fn webview(&self, label: &str) -> WebviewWindow<MockRuntime> {
+        WebviewWindowBuilder::new(&self.app, label, Default::default())
+            .build()
+            .unwrap()
+    }
+}
+
+/// Invokes `plugin:kernkraft|<cmd>` with JSON `args` from `webview`, as the
+/// frontend's `invoke` does, and returns the JSON reply or error.
+pub fn invoke(
+    webview: &WebviewWindow<MockRuntime>,
+    cmd: &str,
+    args: Value,
+) -> Result<Value, Value> {
+    let request = InvokeRequest {
+        cmd: format!("plugin:kernkraft|{cmd}"),
+        callback: CallbackFn(0),
+        error: CallbackFn(1),
+        url: "tauri://localhost".parse().unwrap(),
+        body: InvokeBody::Json(args),
+        headers: Default::default(),
+        invoke_key: INVOKE_KEY.to_string(),
+    };
+    get_ipc_response(webview, request).map(|body| body.deserialize::<Value>().unwrap())
 }
 
 pub fn w(p: &Path) -> WirePath {

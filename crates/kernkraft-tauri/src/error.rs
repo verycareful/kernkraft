@@ -185,6 +185,8 @@ impl From<WirePathError> for WireError {
         let kind = match e {
             WirePathError::BadBase64(_) => "BadBase64",
             WirePathError::Nul => "Nul",
+            WirePathError::BadPath(_) => "BadPath",
+            WirePathError::NotAbsolute(_) => "NotAbsolute",
         };
         WireError::new(kind, e.to_string(), None)
     }

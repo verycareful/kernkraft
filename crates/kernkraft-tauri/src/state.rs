@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use kernkraft_fs::{base_dirs, Journal, Trash};
 use kernkraft_xdg_apps::MimeDb;
@@ -50,6 +50,8 @@ pub(crate) struct Inner<R: Runtime> {
     pub trash: Result<Trash, WireError>,
     pub journal: Mutex<Journal>,
     pub registry: Mutex<Registry>,
+    /// Notified each time a background worker finishes.
+    pub idle: Condvar,
     pub watches: Mutex<HashMap<String, DirWatch>>,
 }
 
@@ -75,6 +77,7 @@ impl<R: Runtime> Kernkraft<R> {
             trash,
             journal: Mutex::new(Journal::new()),
             registry: Mutex::new(Registry::default()),
+            idle: Condvar::new(),
             watches: Mutex::new(HashMap::new()),
         }))
     }

@@ -635,13 +635,83 @@ fn app_exit_releases_a_blocked_worker() {
             window.destroy().unwrap();
         }
     });
-    let done = loop {
-        let ev = events.recv_timeout(common::EVENT_WAIT).unwrap();
-        if ev.name == EVENT_OP_DONE {
-            break ev.payload;
-        }
-    };
+    // The exit waited for the cancelled worker: its op-done is already
+    // here, with no waiting.
+    let done = events
+        .try_iter()
+        .find(|ev| ev.name == EVENT_OP_DONE)
+        .expect("op-done sent before the exit returned")
+        .payload;
     assert_eq!(done["op"], op);
     assert_eq!(done["report"]["cancelled"], true);
     assert_eq!(fs::read_to_string(dest.join("a")).unwrap(), "old");
+}
+
+#[test]
+fn relative_and_empty_paths_are_refused() {
+    let e = env();
+    for rel in ["victim", "", "./victim", "../victim"] {
+        let p = WirePath::Utf8(rel.to_owned());
+        let kind = |r: Result<u64, kernkraft_tauri::WireError>| r.unwrap_err().kind;
+        assert_eq!(
+            kind(e.kk.start_op("delete", vec![p.clone()], None, None)),
+            "NotAbsolute"
+        );
+        assert_eq!(
+            kind(e.kk.start_op("trash", vec![p.clone()], None, None)),
+            "NotAbsolute"
+        );
+        assert_eq!(
+            e.kk.rename(p.clone(), "x".into()).unwrap_err().kind,
+            "NotAbsolute"
+        );
+        assert_eq!(
+            e.kk.list_dir(p.clone(), true).unwrap_err().kind,
+            "NotAbsolute"
+        );
+    }
+    // Refused before anything ran: no operation was started.
+    assert!(e.events.try_recv().is_err());
+    assert_eq!(e.kk.undo_state().undo, None);
+}
+
+#[test]
+fn replace_answered_but_not_done_stays_undoable() {
+    // b is copied; a's conflict is answered replace and the operation is
+    // cancelled in the same breath, so a is never replaced. The copy of b
+    // must stay undoable, not be marked as having replaced anything.
+    let e = env();
+    let src = e.dir("src");
+    let dest = e.dir("dest");
+    fs::write(src.join("b"), "b").unwrap();
+    fs::write(src.join("a"), "new").unwrap();
+    fs::write(dest.join("a"), "old").unwrap();
+    let kk = e.kk.clone();
+    // Answered and cancelled from the listener, which runs on the worker
+    // thread before it waits: the worker then sees the answer, and the copy
+    // sees the cancel before its first chunk.
+    tauri::Listener::listen_any(&e.app, EVENT_OP_CONFLICT, move |ev| {
+        let c: serde_json::Value = serde_json::from_str(ev.payload()).unwrap();
+        let (op, id) = (c["op"].as_u64().unwrap(), c["conflict"].as_u64().unwrap());
+        kk.answer_conflict(op, id, "replace", false).unwrap();
+        kk.cancel_op(op).unwrap();
+    });
+    let op =
+        e.kk.start_op(
+            "copy",
+            vec![w(&src.join("b")), w(&src.join("a"))],
+            Some(w(&dest)),
+            None,
+        )
+        .unwrap();
+    let (_, done) = e.wait_done(op);
+    let report = done.report.unwrap();
+    assert!(report.cancelled);
+    assert_eq!(report.done.len(), 1);
+    assert_eq!(report.not_reached, vec![w(&src.join("a"))]);
+    assert_eq!(fs::read_to_string(dest.join("a")).unwrap(), "old");
+
+    assert_eq!(e.kk.undo_state().undo.unwrap(), "Undo copy of b");
+    e.kk.undo().unwrap();
+    assert_eq!(names(&dest), ["a"]);
 }

@@ -5,55 +5,72 @@
 
 use std::fs;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use rustix::fs::{renameat_with, RenameFlags, CWD};
+use rustix::fs::{linkat, renameat_with, AtFlags, RenameFlags, CWD};
 use rustix::io::Errno;
 
 /// Renames `from` to `to`, failing with `AlreadyExists` instead of replacing
-/// anything at `to`.
+/// anything at `to`. Nothing is ever replaced, whatever runs alongside.
 ///
-/// Uses `renameat2(RENAME_NOREPLACE)`, which makes the check and the rename
-/// one atomic step. A filesystem that does not support the flag answers
-/// `EINVAL` (and an old kernel `ENOSYS`); there the check is a separate
-/// `lstat` before a plain rename, which leaves a window in which another
-/// process could create `to`.
+/// Uses `renameat2(RENAME_NOREPLACE)` (rename(2)), where the kernel checks
+/// and renames in one step. A filesystem that does not support the flag
+/// answers `EINVAL` (an old kernel `ENOSYS`); there the move falls back to
+/// [`link_then_unlink`], which never replaces either and refuses a
+/// directory. Every other error, `EXDEV` among them, is returned as it is.
 pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     match renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE) {
         Ok(()) => Ok(()),
-        Err(Errno::INVAL | Errno::NOSYS) => {
-            match fs::symlink_metadata(to) {
-                Ok(_) => return Err(io::Error::from(io::ErrorKind::AlreadyExists)),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
-            }
-            fs::rename(from, to)
-        }
+        Err(Errno::INVAL | Errno::NOSYS) => link_then_unlink(from, to),
         Err(e) => Err(e.into()),
     }
 }
 
-/// Renames `from` to `to`, failing with `AlreadyExists` instead of replacing
-/// anything at `to`, with no fallback.
+/// Moves the non-directory `from` to `to` with `link(2)`, which fails with
+/// `EEXIST` rather than replace anything, then removes `from`. A symlink is
+/// linked as itself (`linkat` without `AT_SYMLINK_FOLLOW`).
 ///
-/// The kernel makes the check and the rename one step
-/// (`renameat2(RENAME_NOREPLACE)`, rename(2)). A filesystem that does not
-/// support the flag answers `EINVAL` (an old kernel `ENOSYS`); that is
-/// reported as [`io::ErrorKind::Unsupported`] instead of falling back to a
-/// separate check, so a caller that must never replace anything is never
-/// exposed to the window [`rename_noreplace`] leaves there. (`EINVAL` also
-/// answers a directory renamed into itself; the one caller, undo, only
-/// moves an item back to where it was.) Every other error, `EXDEV` among
-/// them, is returned as it is.
-pub(crate) fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
-    match renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE) {
-        Ok(()) => Ok(()),
-        Err(Errno::INVAL | Errno::NOSYS) => Err(io::Error::new(
+/// A directory cannot be hard-linked, and no other step moves one without
+/// risk of replacing, so it is refused as `Unsupported`; so is a filesystem
+/// that does not support hard links (`EPERM`, `EOPNOTSUPP`, and `EXDEV` from
+/// some FUSE filesystems). If `from` cannot be removed after the link, the
+/// new link is removed again (only while `to` is still the same inode) and
+/// the error returned.
+pub(crate) fn link_then_unlink(from: &Path, to: &Path) -> io::Result<()> {
+    let unsupported = |what: &str| {
+        io::Error::new(
             io::ErrorKind::Unsupported,
-            "this filesystem cannot rename without the risk of replacing (no RENAME_NOREPLACE)",
-        )),
-        Err(e) => Err(e.into()),
+            format!("this filesystem cannot move {what} without the risk of replacing"),
+        )
+    };
+    let meta = fs::symlink_metadata(from)?;
+    if meta.is_dir() {
+        return Err(unsupported("a folder"));
     }
+    match linkat(CWD, from, CWD, to, AtFlags::empty()) {
+        Ok(()) => {}
+        Err(Errno::EXIST) => return Err(io::ErrorKind::AlreadyExists.into()),
+        Err(Errno::PERM | Errno::OPNOTSUPP | Errno::XDEV) => return Err(unsupported("an item")),
+        Err(e) => return Err(e.into()),
+    }
+    let Err(e) = fs::remove_file(from) else {
+        return Ok(());
+    };
+    let ours =
+        fs::symlink_metadata(to).is_ok_and(|m| m.dev() == meta.dev() && m.ino() == meta.ino());
+    if ours {
+        if let Err(cleanup) = fs::remove_file(to) {
+            return Err(io::Error::new(
+                cleanup.kind(),
+                format!(
+                    "{e}; the second name {} could not be removed: {cleanup}",
+                    to.display()
+                ),
+            ));
+        }
+    }
+    Err(e)
 }
 
 /// The effective user id of this process: the owner of everything it
@@ -74,24 +91,79 @@ pub(crate) fn parent_dir(path: &Path) -> &Path {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::rename_exclusive;
+    use super::{link_then_unlink, rename_noreplace};
     use std::fs;
     use std::io::ErrorKind;
+    use std::path::Path;
 
     #[test]
-    fn rename_exclusive_never_replaces() {
+    fn rename_noreplace_never_replaces() {
         let dir = tempfile::tempdir().unwrap();
         let (a, b) = (dir.path().join("a"), dir.path().join("b"));
         fs::write(&a, "a").unwrap();
         fs::write(&b, "b").unwrap();
 
-        let err = rename_exclusive(&a, &b).err().map(|e| e.kind());
+        let err = rename_noreplace(&a, &b).unwrap_err();
 
-        assert_eq!(err, Some(ErrorKind::AlreadyExists));
+        assert_eq!(err.kind(), ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(&b).unwrap(), "b");
-        assert!(a.exists());
         let c = dir.path().join("c");
-        rename_exclusive(&a, &c).unwrap();
+        rename_noreplace(&a, &c).unwrap();
         assert_eq!(fs::read_to_string(&c).unwrap(), "a");
+    }
+
+    #[test]
+    fn fallback_moves_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, c) = (dir.path().join("a"), dir.path().join("c"));
+        fs::write(&a, "a").unwrap();
+
+        link_then_unlink(&a, &c).unwrap();
+
+        assert!(!a.exists());
+        assert_eq!(fs::read_to_string(&c).unwrap(), "a");
+    }
+
+    #[test]
+    fn fallback_never_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+
+        let err = link_then_unlink(&a, &b).unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&a).unwrap(), "a");
+        assert_eq!(fs::read_to_string(&b).unwrap(), "b");
+    }
+
+    #[test]
+    fn fallback_refuses_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let (d, e) = (dir.path().join("d"), dir.path().join("e"));
+        fs::create_dir(&d).unwrap();
+
+        let err = link_then_unlink(&d, &e).unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::Unsupported);
+        assert!(d.is_dir());
+        assert!(!e.exists());
+    }
+
+    #[test]
+    fn fallback_moves_a_symlink_as_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::write(&target, "t").unwrap();
+        let (link, moved) = (dir.path().join("link"), dir.path().join("moved"));
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        link_then_unlink(&link, &moved).unwrap();
+
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert!(fs::symlink_metadata(&moved).unwrap().is_symlink());
+        assert_eq!(fs::read_link(&moved).unwrap(), Path::new(&target));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "t");
     }
 }

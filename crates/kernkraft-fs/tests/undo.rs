@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -416,10 +417,8 @@ fn replace_is_irreversible() {
         "{err:?}"
     );
     assert_eq!(fs::read_to_string(f.dest.join("a")).unwrap(), "new");
-    assert!(matches!(
-        journal.peek_undo(),
-        Some(Undoable::Irreversible { .. })
-    ));
+    // Reported once, then out of the way.
+    assert!(journal.peek_undo().is_none());
 }
 
 #[test]
@@ -754,7 +753,6 @@ fn undo_trash_refused_when_entry_is_another_item() {
 
 #[test]
 fn unreadable_at_record_refuses_undo() {
-    use std::os::unix::fs::PermissionsExt;
     let f = fixture();
     let tree = f.src.join("tree");
     fs::create_dir_all(tree.join("locked")).unwrap();
@@ -822,7 +820,6 @@ fn undo_move_refused_when_folder_gone() {
 fn undo_move_back_across_devices() {
     let near = tempfile::tempdir().unwrap();
     let far = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-    use std::os::unix::fs::MetadataExt;
     if fs::metadata(near.path()).unwrap().dev() == fs::metadata(far.path()).unwrap().dev() {
         eprintln!("skipped: temp dirs share a device");
         return;
@@ -855,4 +852,448 @@ fn undo_move_back_across_devices() {
         fs::read_to_string(far_dir.join("tree/sub/f")).unwrap(),
         "data"
     );
+}
+
+#[test]
+fn chained_undo_create_rename() {
+    let f = fixture();
+    let mut journal = Journal::new();
+    let made = create_file(&f.src, "new.txt").unwrap();
+    journal.record(Undoable::Created {
+        stamp: TreeStamp::of(&made).unwrap(),
+        path: made.clone(),
+    });
+    let prior = journal.prior_stamps(std::slice::from_ref(&made));
+    let to = rename(&made, "b.txt").unwrap();
+    journal.record_after(
+        Undoable::Renamed {
+            from: made.clone(),
+            to: to.clone(),
+            stamp: TreeStamp::of(&to).unwrap(),
+        },
+        prior,
+    );
+
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    journal.undo(&f.trash, &NoProgress).unwrap();
+
+    assert!(names(&f.src).is_empty());
+    assert_eq!(trashed_originals(&f.trash), std::slice::from_ref(&made));
+}
+
+#[test]
+fn chained_redo_create_rename() {
+    let f = fixture();
+    let mut journal = Journal::new();
+    let made = create_file(&f.src, "new.txt").unwrap();
+    journal.record(Undoable::Created {
+        stamp: TreeStamp::of(&made).unwrap(),
+        path: made.clone(),
+    });
+    let prior = journal.prior_stamps(std::slice::from_ref(&made));
+    let to = rename(&made, "b.txt").unwrap();
+    journal.record_after(
+        Undoable::Renamed {
+            from: made.clone(),
+            to: to.clone(),
+            stamp: TreeStamp::of(&to).unwrap(),
+        },
+        prior,
+    );
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    journal.undo(&f.trash, &NoProgress).unwrap();
+
+    journal.redo(&f.trash, &NoProgress).unwrap();
+    journal.redo(&f.trash, &NoProgress).unwrap();
+    assert_eq!(names(&f.src), ["b.txt"]);
+    // And down the chain once more.
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    assert!(names(&f.src).is_empty());
+}
+
+#[test]
+fn chained_undo_copy_trash() {
+    let f = fixture();
+    let mut journal = Journal::new();
+    journal.record(copy_files(&f, &["a"]));
+    let copied = f.dest.join("a");
+    let prior = journal.prior_stamps(std::slice::from_ref(&copied));
+    let report = trash_paths(&f.trash, std::slice::from_ref(&copied));
+    journal.record_after(undoable_from_report(OpKind::Trash, &report, &[]), prior);
+
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    assert_eq!(fs::read_to_string(&copied).unwrap(), "a");
+    journal.undo(&f.trash, &NoProgress).unwrap();
+
+    assert!(names(&f.dest).is_empty());
+    assert_eq!(trashed_originals(&f.trash), std::slice::from_ref(&copied));
+}
+
+#[test]
+fn chained_undo_move_rename() {
+    let f = fixture();
+    let a = f.src.join("a");
+    fs::write(&a, "alpha").unwrap();
+    let mut journal = Journal::new();
+    let report = move_items(std::slice::from_ref(&a), &f.dest, &never, &NoProgress).unwrap();
+    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    let moved = f.dest.join("a");
+    let prior = journal.prior_stamps(std::slice::from_ref(&moved));
+    let to = rename(&moved, "b").unwrap();
+    journal.record_after(
+        Undoable::Renamed {
+            from: moved.clone(),
+            to: to.clone(),
+            stamp: TreeStamp::of(&to).unwrap(),
+        },
+        prior,
+    );
+
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    journal.undo(&f.trash, &NoProgress).unwrap();
+
+    assert!(names(&f.dest).is_empty());
+    assert_eq!(fs::read_to_string(&a).unwrap(), "alpha");
+}
+
+#[test]
+fn chain_never_launders_edit() {
+    let f = fixture();
+    let mut journal = Journal::new();
+    let made = create_file(&f.src, "new.txt").unwrap();
+    journal.record(Undoable::Created {
+        stamp: TreeStamp::of(&made).unwrap(),
+        path: made.clone(),
+    });
+    fs::write(&made, "edited between the create and the rename").unwrap();
+    let prior = journal.prior_stamps(std::slice::from_ref(&made));
+    let to = rename(&made, "b.txt").unwrap();
+    journal.record_after(
+        Undoable::Renamed {
+            from: made.clone(),
+            to: to.clone(),
+            stamp: TreeStamp::of(&to).unwrap(),
+        },
+        prior,
+    );
+    journal.undo(&f.trash, &NoProgress).unwrap();
+
+    let err = journal.undo(&f.trash, &NoProgress).unwrap_err();
+
+    assert!(
+        matches!(&err, UndoError::Changed { path, what: Change::Modified } if *path == made),
+        "{err:?}"
+    );
+    assert!(made.exists());
+}
+
+#[test]
+fn redo_refuses_lookalike_trash_entry() {
+    let f = fixture();
+    let mut journal = Journal::new();
+    let made = create_file(&f.src, "a").unwrap();
+    journal.record(Undoable::Created {
+        stamp: TreeStamp::of(&made).unwrap(),
+        path: made.clone(),
+    });
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    // Emptied from the trash; another file from the same path is trashed
+    // under the same name, typically within the same second.
+    let item = f.trash.list().unwrap().items.remove(0);
+    f.trash.purge(&item).unwrap();
+    fs::write(&made, "a different file").unwrap();
+    let other = f.trash.put(&made).unwrap();
+    assert_eq!(other.name, item.name);
+
+    let err = journal.redo(&f.trash, &NoProgress).unwrap_err();
+
+    assert!(
+        matches!(
+            &err,
+            UndoError::Changed {
+                what: Change::Modified,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(!made.exists());
+    assert_eq!(trashed_originals(&f.trash), std::slice::from_ref(&made));
+}
+
+#[test]
+fn irreversible_reported_once_then_older_undo_proceeds() {
+    let f = fixture();
+    let mut journal = Journal::new();
+    let made = create_file(&f.src, "a").unwrap();
+    journal.record(Undoable::Created {
+        stamp: TreeStamp::of(&made).unwrap(),
+        path: made.clone(),
+    });
+    journal.record(Undoable::Irreversible {
+        what: "delete of b".to_string(),
+        reason: IrreversibleReason::PermanentDelete,
+    });
+
+    let err = journal.undo(&f.trash, &NoProgress).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            UndoError::Irreversible {
+                reason: IrreversibleReason::PermanentDelete,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(matches!(
+        journal.peek_undo(),
+        Some(Undoable::Created { .. })
+    ));
+
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    assert!(!made.exists());
+}
+
+#[test]
+fn failed_replace_records_nothing() {
+    let f = fixture();
+    fs::create_dir(f.src.join("d")).unwrap();
+    fs::write(f.dest.join("d"), "a file in the way").unwrap();
+    let replaced = RefCell::new(Vec::new());
+    let resolve = |_: &Path, existing: &Path| {
+        replaced.borrow_mut().push(existing.to_path_buf());
+        Conflict::Replace
+    };
+    let report = copy(&[f.src.join("d")], &f.dest, &resolve, &NoProgress).unwrap();
+    assert!(report.done.is_empty());
+    assert_eq!(report.failed.len(), 1);
+    let mut journal = Journal::new();
+
+    journal.record(undoable_from_report(
+        OpKind::Copy,
+        &report,
+        &replaced.borrow(),
+    ));
+
+    assert!(journal.peek_undo().is_none());
+}
+
+#[test]
+fn partial_undo_on_io_error() {
+    let f = fixture();
+    let (one, two) = (f.src.join("one"), f.src.join("two"));
+    fs::create_dir(&one).unwrap();
+    fs::create_dir(&two).unwrap();
+    fs::write(one.join("a"), "a").unwrap();
+    fs::write(two.join("b"), "b").unwrap();
+    let sources = [one.join("a"), two.join("b")];
+    let report = move_items(&sources, &f.dest, &never, &NoProgress).unwrap();
+    let mut journal = Journal::new();
+    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    // The check passes (the folder exists, the name is free); the move
+    // into a folder that cannot be written fails.
+    fs::set_permissions(&two, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let err = journal.undo(&f.trash, &NoProgress).unwrap_err();
+    fs::set_permissions(&two, fs::Permissions::from_mode(0o755)).unwrap();
+
+    match err {
+        UndoError::Partial {
+            done,
+            not_done,
+            cause,
+            ..
+        } => {
+            assert_eq!(done, [one.join("a")]);
+            assert_eq!(not_done, [f.dest.join("b")]);
+            assert!(matches!(*cause, FsError::Io { .. }), "{cause:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(names(&f.dest), ["b"]);
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    assert!(names(&f.dest).is_empty());
+    assert_eq!(names(&two), ["b"]);
+}
+
+#[test]
+fn partial_redo_splits_and_retry_finishes() {
+    let f = fixture();
+    let mut journal = Journal::new();
+    journal.record(copy_files(&f, &["a", "b", "c"]));
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    let progress = CancelAfterFirst {
+        reports: AtomicU32::new(0),
+    };
+
+    let err = journal.redo(&f.trash, &progress).unwrap_err();
+
+    match err {
+        UndoError::Partial {
+            done,
+            not_done,
+            cause,
+            ..
+        } => {
+            assert_eq!(done, [f.dest.join("a")]);
+            assert_eq!(not_done, [f.dest.join("b"), f.dest.join("c")]);
+            assert!(matches!(*cause, FsError::Cancelled), "{cause:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(names(&f.dest), ["a"]);
+    match journal.peek_redo() {
+        Some(Undoable::Copied { created }) => assert_eq!(created.len(), 2),
+        other => panic!("{other:?}"),
+    }
+    match journal.peek_undo() {
+        Some(Undoable::Copied { created }) => assert_eq!(created.len(), 1),
+        other => panic!("{other:?}"),
+    }
+    journal.redo(&f.trash, &NoProgress).unwrap();
+    assert_eq!(names(&f.dest), ["a", "b", "c"]);
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    assert!(names(&f.dest).is_empty());
+}
+
+#[test]
+fn undo_trash_refused_when_folder_gone() {
+    let f = fixture();
+    let sub = f.src.join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(sub.join("a"), "a").unwrap();
+    let report = trash_paths(&f.trash, &[sub.join("a")]);
+    let mut journal = Journal::new();
+    journal.record(undoable_from_report(OpKind::Trash, &report, &[]));
+    fs::remove_dir(&sub).unwrap();
+
+    let err = journal.undo(&f.trash, &NoProgress).unwrap_err();
+
+    assert!(
+        matches!(&err, UndoError::Changed { path, what: Change::Missing } if *path == sub),
+        "{err:?}"
+    );
+    assert!(!sub.exists());
+}
+
+#[test]
+fn undo_move_refused_when_folder_is_symlink() {
+    let f = fixture();
+    let sub = f.src.join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(sub.join("a"), "a").unwrap();
+    let report = move_items(&[sub.join("a")], &f.dest, &never, &NoProgress).unwrap();
+    let mut journal = Journal::new();
+    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    let elsewhere = f.src.join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    fs::remove_dir(&sub).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &sub).unwrap();
+
+    let err = journal.undo(&f.trash, &NoProgress).unwrap_err();
+
+    assert!(
+        matches!(&err, UndoError::Changed { path, what: Change::Modified } if *path == sub),
+        "{err:?}"
+    );
+    assert!(names(&elsewhere).is_empty());
+    assert_eq!(names(&f.dest), ["a"]);
+}
+
+/// Appends to `target` from inside the copy, at its second cancel poll
+/// (the first is the undo's own poll before the item).
+struct EditDuringCopy {
+    target: PathBuf,
+    polls: AtomicU32,
+}
+
+impl Progress for EditDuringCopy {
+    fn report(&self, _done: u64, _total: u64, _stage: &str) {}
+    fn is_cancelled(&self) -> bool {
+        if self.polls.fetch_add(1, Ordering::SeqCst) == 1 {
+            fs::OpenOptions::new()
+                .append(true)
+                .open(&self.target)
+                .unwrap()
+                .write_all(b" edited")
+                .unwrap();
+        }
+        false
+    }
+}
+
+/// Temp dirs on two devices, or `None` (with a note) where the test temp
+/// dir and Cargo's target temp dir share one.
+fn two_devices() -> Option<(tempfile::TempDir, tempfile::TempDir)> {
+    let near = tempfile::tempdir().unwrap();
+    let far = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    if fs::metadata(near.path()).unwrap().dev() == fs::metadata(far.path()).unwrap().dev() {
+        eprintln!("skipped: temp dirs share a device");
+        return None;
+    }
+    Some((near, far))
+}
+
+#[test]
+fn undo_move_back_across_devices_detects_change() {
+    let Some((near, far)) = two_devices() else {
+        return;
+    };
+    let near = near.path().canonicalize().unwrap();
+    let far_dir = far.path().canonicalize().unwrap();
+    let a = near.join("a");
+    fs::write(&a, "data").unwrap();
+    let trash = Trash::with_home_trash(near.join("trash"));
+    let report = move_items(std::slice::from_ref(&a), &far_dir, &never, &NoProgress).unwrap();
+    let mut journal = Journal::new();
+    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    let moved = far_dir.join("a");
+    let progress = EditDuringCopy {
+        target: moved.clone(),
+        polls: AtomicU32::new(0),
+    };
+
+    let err = journal.undo(&trash, &progress).unwrap_err();
+
+    assert!(
+        matches!(&err, UndoError::Changed { path, what: Change::Modified } if *path == moved),
+        "{err:?}"
+    );
+    assert!(!a.exists(), "the copy made for the move back is removed");
+    assert_eq!(fs::read_to_string(&moved).unwrap(), "data edited");
+}
+
+#[test]
+fn undo_move_back_across_devices_reports_source_left() {
+    let Some((near, far)) = two_devices() else {
+        return;
+    };
+    let near = near.path().canonicalize().unwrap();
+    let far_dir = far.path().canonicalize().unwrap();
+    let tree = near.join("tree");
+    fs::create_dir_all(tree.join("sub")).unwrap();
+    fs::write(tree.join("sub/f"), "data").unwrap();
+    let trash = Trash::with_home_trash(near.join("trash"));
+    let report = move_items(std::slice::from_ref(&tree), &far_dir, &never, &NoProgress).unwrap();
+    let mut journal = Journal::new();
+    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    // A directory's stamp is its identity and its entries, so this does not
+    // count as a change; it only stops the delete of `sub/f`.
+    let locked = far_dir.join("tree/sub");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let err = journal.undo(&trash, &NoProgress).unwrap_err();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    if tree.join("sub").exists() {
+        fs::set_permissions(tree.join("sub"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    assert!(
+        matches!(&err, UndoError::SourceNotRemoved { copy, left, .. } if *copy == tree && *left == far_dir.join("tree")),
+        "{err:?}"
+    );
+    assert_eq!(fs::read_to_string(tree.join("sub/f")).unwrap(), "data");
 }

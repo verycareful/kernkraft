@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use percent_encoding::{percent_decode_str, percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
 use crate::naming::numbered;
-use crate::sys::{rename_exclusive, rename_noreplace, uid};
+use crate::sys::{rename_noreplace, uid};
 use crate::undo::Change;
 use crate::{BaseDirs, FsError};
 
@@ -244,8 +244,11 @@ impl Trash {
     }
 
     /// Moves `item` back to its original path, creating missing parent
-    /// directories. Refuses with [`FsError::Exists`] if something now
-    /// occupies that path; nothing is replaced.
+    /// directories: restoring from the trash view after its folder was
+    /// deleted is a request to bring the item back, folder and all. (Undo
+    /// refuses in that case instead, since it reverses one recorded step.)
+    /// Refuses with [`FsError::Exists`] if something now occupies that path;
+    /// nothing is replaced.
     pub fn restore(&self, item: &TrashedItem) -> Result<PathBuf, FsError> {
         let (file, info) = item_paths(item);
         if let Some(parent) = item.original.parent() {
@@ -279,17 +282,14 @@ impl Trash {
     }
 }
 
-/// [`Trash::restore`] for undo: the item is renamed back with
-/// [`rename_exclusive`], so a filesystem that cannot refuse a replace in the
-/// same step as the rename is refused rather than raced. Once the item is
-/// back, a failure to remove its info file does not undo the restore; it is
-/// returned as `Ok(Some(warning))`.
-pub(crate) fn restore_exclusive(item: &TrashedItem) -> Result<Option<FsError>, FsError> {
+/// [`Trash::restore`] for undo. Unlike it, a missing parent folder is not
+/// recreated: undo checks beforehand that the folder exists, and a folder
+/// gone since makes the rename fail with [`FsError::NotFound`]. Once the
+/// item is back, a failure to remove its info file does not undo the
+/// restore; it is returned as `Ok(Some(warning))`.
+pub(crate) fn restore_for_undo(item: &TrashedItem) -> Result<Option<FsError>, FsError> {
     let (file, info) = item_paths(item);
-    if let Some(parent) = item.original.parent() {
-        fs::create_dir_all(parent).map_err(|e| FsError::io(parent, e))?;
-    }
-    rename_exclusive(&file, &item.original).map_err(|e| {
+    rename_noreplace(&file, &item.original).map_err(|e| {
         if e.kind() == ErrorKind::AlreadyExists {
             FsError::Exists {
                 path: item.original.clone(),
@@ -299,6 +299,11 @@ pub(crate) fn restore_exclusive(item: &TrashedItem) -> Result<Option<FsError>, F
         }
     })?;
     Ok(fs::remove_file(&info).err().map(|e| FsError::io(&info, e)))
+}
+
+/// Where `item` is held: `<trash dir>/files/<name>`.
+pub(crate) fn held_path(item: &TrashedItem) -> PathBuf {
+    item_paths(item).0
 }
 
 /// Checks that `item` is still in its trash as the same entry: the file

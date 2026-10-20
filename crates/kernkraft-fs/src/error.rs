@@ -40,7 +40,8 @@ pub enum FsError {
     /// recorded, before doing anything.
     #[error("{path} {what}")]
     Changed { path: PathBuf, what: Change },
-    /// The journal entry on top cannot be reversed; it stays there.
+    /// The journal entry on top cannot be reversed. It is reported once and
+    /// taken off the stack.
     #[error("{what} cannot be undone: {reason}")]
     Irreversible {
         what: String,
@@ -56,6 +57,14 @@ pub enum FsError {
         not_done: Vec<PathBuf>,
         cause: Box<FsError>,
         warnings: Vec<(PathBuf, FsError)>,
+    },
+    /// A move back across filesystems copied the item to `copy` in full,
+    /// but the item at `left` could not then be removed. Both now exist.
+    #[error("{copy} is back in full, but {left} could not be removed: {cause}")]
+    SourceNotRemoved {
+        copy: PathBuf,
+        left: PathBuf,
+        cause: Box<FsError>,
     },
     #[error("nothing to undo")]
     NothingToUndo,

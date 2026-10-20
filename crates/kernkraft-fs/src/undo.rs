@@ -18,10 +18,12 @@
 //!   free, and every trash entry must still be the entry recorded. On any
 //!   difference the undo returns [`FsError::Changed`] and does nothing.
 //! - **Each action refuses to replace.** Something can still appear between
-//!   the check and the action, so moves and restores use
+//!   the check and the action, so moves and restores rename with
 //!   `renameat2(RENAME_NOREPLACE)`, where the kernel checks and renames in
-//!   one step, and fail rather than replace. A filesystem without that flag
-//!   is refused, never raced.
+//!   one step. Where a filesystem lacks that flag, a file or symlink is
+//!   moved by `link(2)` then `unlink(2)`, which cannot replace either, and a
+//!   folder is refused. A trash entry is matched by its identity (device,
+//!   inode and stamp), not only by name, path and deletion date.
 //! - **A stop partway is reported exactly.** An action that fails, or a
 //!   cancel, stops the run: [`FsError::Partial`] lists the items reversed
 //!   and the items not reached, with the cause. The journal is split to
@@ -29,11 +31,25 @@
 //!   a retry carries on with exactly the items not yet reversed and checks
 //!   them again first.
 //!
+//! **Chains of operations on one item.** Renaming, trashing and restoring
+//! change an item's ctime, so an older entry's stamp of the item no longer
+//! matches once a newer entry is undone, even though nothing changed it.
+//! Each step therefore remembers the stamp the item had at its destination
+//! before the step that the step reverses. When the step runs, its own
+//! check has just matched the item exactly, and the item lands with nothing
+//! changed but its ctime; then every entry on either stack that expects the
+//! item there with exactly that remembered stamp is updated to the new one.
+//! For an operation recorded from outside, the remembered stamps come from
+//! [`Journal::prior_stamps`], taken just before the operation and passed to
+//! [`Journal::record_after`]. A stamp that differs in anything else is never
+//! carried over, so a change made from outside always stops the undo.
+//!
 //! A move back across filesystems is a copy then a delete. The source is
 //! compared with its stamp again after the copy and deleted only if it
 //! still matches; otherwise the fresh copy is removed and the undo stops.
 //! What remains is the short window between that last comparison and the
-//! delete, which no copy-then-delete can close.
+//! delete, which no copy-then-delete can close. The copy has new inodes, so
+//! a chain through such a move is not carried over.
 //!
 //! Whether another operation is running is not checked here; the caller
 //! that runs operations refuses undo while one is in flight.
@@ -47,8 +63,8 @@ use std::path::{Path, PathBuf};
 use rustix::io::Errno;
 
 use crate::ops::{copy_exact, delete_tree};
-use crate::sys::{parent_dir, rename_exclusive};
-use crate::trash::{item_at, restore_exclusive, verify_entry};
+use crate::sys::{parent_dir, rename_noreplace};
+use crate::trash::{held_path, item_at, restore_for_undo, verify_entry};
 use crate::{FileStamp, FsError, OpReport, Progress, Trash, TrashedItem};
 
 /// Entries kept on the undo stack: a session's worth of undo. When a new
@@ -132,6 +148,36 @@ impl TreeStamp {
     /// Each entry's relative path and stamp, sorted by path.
     pub fn entries(&self) -> &[(PathBuf, EntryStamp)] {
         &self.0
+    }
+
+    fn has_unrecorded(&self) -> bool {
+        self.0
+            .iter()
+            .any(|(_, e)| matches!(e, EntryStamp::Unrecorded))
+    }
+
+    /// Equal in everything but the ctime of a file at the top, which is all
+    /// that rename(2) changes; never true for a stamp holding an unrecorded
+    /// entry.
+    fn same_but_root_ctime(&self, other: &TreeStamp) -> bool {
+        if self.has_unrecorded() || other.has_unrecorded() || self.0.len() != other.0.len() {
+            return false;
+        }
+        self.0.iter().zip(&other.0).all(|((pa, a), (pb, b))| {
+            pa == pb
+                && match (a, b) {
+                    (EntryStamp::File(x), EntryStamp::File(y)) if pa.as_os_str().is_empty() => {
+                        FileStamp {
+                            changed_ns: 0,
+                            ..*x
+                        } == FileStamp {
+                            changed_ns: 0,
+                            ..*y
+                        }
+                    }
+                    _ => a == b,
+                }
+        })
     }
 
     /// [`TreeStamp::of`], or a stamp that matches nothing when `path`
@@ -240,7 +286,8 @@ impl OpKind {
 /// The journal entry for an operation that produced `report`.
 ///
 /// Only `report.done` items are journalled; skipped and failed items were
-/// never placed. `replaced` lists every existing path the conflict resolver
+/// never placed. A report with nothing placed gives an empty entry, whatever
+/// `replaced` holds. `replaced` lists every existing path the conflict resolver
 /// answered `Replace` for. Any entry there makes the operation
 /// [`Undoable::Irreversible`]: [`IrreversibleReason::MergedDirectory`] when
 /// one of them is a directory, else
@@ -254,6 +301,18 @@ impl OpKind {
 /// operation. An item that cannot be stamped is recorded as unverifiable
 /// and its undo is refused with [`Change::Unverified`].
 pub fn undoable_from_report(kind: OpKind, report: &OpReport, replaced: &[PathBuf]) -> Undoable {
+    let placed_any = report.done.iter().any(|(_, dest)| dest.is_some());
+    if !placed_any {
+        // Nothing was placed, so nothing was replaced either, whatever the
+        // resolver answered; an empty entry, which `record` ignores.
+        return match kind {
+            OpKind::Copy => Undoable::Copied {
+                created: Vec::new(),
+            },
+            OpKind::Move => Undoable::Moved { items: Vec::new() },
+            OpKind::Trash => Undoable::Trashed { items: Vec::new() },
+        };
+    }
     if let Some(first) = replaced.first() {
         let merged = replaced
             .iter()
@@ -300,18 +359,42 @@ pub struct UndoOutcome {
     pub warnings: Vec<(PathBuf, FsError)>,
 }
 
+/// Stamps of an operation's sources taken just before it runs, for
+/// [`Journal::record_after`]. Only sources some journal entry expects are
+/// stamped; a source that cannot be read is left out, which only means the
+/// older entries naming it are not carried over.
+#[derive(Clone, Debug, Default)]
+pub struct PriorStamps(Vec<(PathBuf, TreeStamp)>);
+
+impl PriorStamps {
+    fn get(&self, path: &Path) -> Option<&TreeStamp> {
+        self.0.iter().find(|(p, _)| p == path).map(|(_, s)| s)
+    }
+}
+
 /// One reversible action. Running it yields the action that reverses it.
+///
+/// `was`, on an action that puts an item back at a path, is the stamp the
+/// item had at that path before the action this one reverses; see the
+/// module documentation on chains.
 #[derive(Clone, Debug)]
 enum Step {
-    /// Put `path` in the trash.
+    /// Put the item at `path`, matching `stamp`, in the trash.
     Trash { path: PathBuf, stamp: TreeStamp },
-    /// Restore `item` from the trash.
-    Restore { item: TrashedItem },
-    /// Move the item at `at` to `dest`.
+    /// Restore `item`, whose trash file has identity `ident` (device,
+    /// inode) and stamp `held`.
+    Restore {
+        item: TrashedItem,
+        held: TreeStamp,
+        ident: (u64, u64),
+        was: Option<TreeStamp>,
+    },
+    /// Move the item at `at`, matching `stamp`, to `dest`.
     Move {
         at: PathBuf,
         dest: PathBuf,
         stamp: TreeStamp,
+        was: Option<TreeStamp>,
     },
 }
 
@@ -320,7 +403,7 @@ impl Step {
     fn before(&self) -> &Path {
         match self {
             Step::Trash { path, .. } => path,
-            Step::Restore { item } => &item.original,
+            Step::Restore { item, .. } => &item.original,
             Step::Move { at, .. } => at,
         }
     }
@@ -329,25 +412,60 @@ impl Step {
     fn after(&self) -> &Path {
         match self {
             Step::Trash { path, .. } => path,
-            Step::Restore { item } => &item.original,
+            Step::Restore { item, .. } => &item.original,
             Step::Move { dest, .. } => dest,
+        }
+    }
+
+    /// The path and stamp the step's check expects, for a step that
+    /// expects an item outside the trash.
+    fn expects_mut(&mut self) -> Option<(&Path, &mut TreeStamp)> {
+        match self {
+            Step::Trash { path, stamp } => Some((path, stamp)),
+            Step::Move { at, stamp, .. } => Some((at, stamp)),
+            Step::Restore { .. } => None,
+        }
+    }
+
+    fn expected_path(&self) -> Option<&Path> {
+        match self {
+            Step::Trash { path, .. } => Some(path),
+            Step::Move { at, .. } => Some(at),
+            Step::Restore { .. } => None,
         }
     }
 }
 
-/// The reversible variants of [`Undoable`].
-#[derive(Clone, Copy)]
+/// Device and inode of `path`, not following a symlink; `(0, 0)` when it
+/// cannot be read, in which case its stamp is unrecorded too and the entry
+/// is never restored.
+fn ident_of(path: &Path) -> (u64, u64) {
+    fs::symlink_metadata(path)
+        .map(|m| (m.dev(), m.ino()))
+        .unwrap_or((0, 0))
+}
+
+/// The variants of [`Undoable`].
+#[derive(Clone, Copy, Debug)]
 enum Shape {
     Created,
     Renamed,
     Moved,
     Copied,
     Trashed,
+    Irreversible,
 }
 
-/// The shape of `op` and the steps that undo it; `None` for
-/// [`Undoable::Irreversible`].
-fn undo_steps(op: &Undoable) -> Option<(Shape, Vec<Step>)> {
+/// The shape of `op` and the steps that undo it, with `prior` giving the
+/// remembered stamps of moved sources. A Trashed item's trash file is
+/// stamped now, so this runs right after the operation.
+fn undo_steps(op: &Undoable, prior: &PriorStamps) -> (Shape, Vec<Step>) {
+    let chain = |at: &Path, after: &TreeStamp| {
+        prior
+            .get(at)
+            .filter(|before| before.same_but_root_ctime(after))
+            .cloned()
+    };
     let trash = |path: &PathBuf, stamp: &TreeStamp| Step::Trash {
         path: path.clone(),
         stamp: stamp.clone(),
@@ -356,8 +474,9 @@ fn undo_steps(op: &Undoable) -> Option<(Shape, Vec<Step>)> {
         at: to.clone(),
         dest: from.clone(),
         stamp: stamp.clone(),
+        was: chain(from, stamp),
     };
-    Some(match op {
+    match op {
         Undoable::Created { path, stamp } => (Shape::Created, vec![trash(path, stamp)]),
         Undoable::Renamed { from, to, stamp } => (Shape::Renamed, vec![back(from, to, stamp)]),
         Undoable::Moved { items } => (
@@ -372,38 +491,35 @@ fn undo_steps(op: &Undoable) -> Option<(Shape, Vec<Step>)> {
             Shape::Trashed,
             items
                 .iter()
-                .map(|item| Step::Restore { item: item.clone() })
+                .map(|item| {
+                    let held_at = held_path(item);
+                    let held = TreeStamp::of_or_unrecorded(&held_at);
+                    Step::Restore {
+                        item: item.clone(),
+                        ident: ident_of(&held_at),
+                        was: chain(&item.original, &held),
+                        held,
+                    }
+                })
                 .collect(),
         ),
-        Undoable::Irreversible { .. } => return None,
-    })
+        Undoable::Irreversible { .. } => (Shape::Irreversible, Vec::new()),
+    }
 }
 
 /// The entry of shape `shape` that `steps` undo: the reverse of
 /// [`undo_steps`]. A `Created` or `Renamed` holding other than one step is
 /// returned as the equivalent `Copied` or `Moved`.
 fn from_undo_steps(shape: Shape, steps: Vec<Step>) -> Undoable {
-    let trashes = |steps: Vec<Step>| {
-        steps
-            .into_iter()
-            .filter_map(|s| match s {
-                Step::Trash { path, stamp } => Some((path, stamp)),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
-    let moves = |steps: Vec<Step>| {
-        steps
-            .into_iter()
-            .filter_map(|s| match s {
-                Step::Move { at, dest, stamp } => Some((dest, at, stamp)),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
     match shape {
-        Shape::Created | Shape::Copied => {
-            let mut created = trashes(steps);
+        Shape::Created | Shape::Copied | Shape::Irreversible => {
+            let mut created: Vec<_> = steps
+                .into_iter()
+                .filter_map(|s| match s {
+                    Step::Trash { path, stamp } => Some((path, stamp)),
+                    _ => None,
+                })
+                .collect();
             match (shape, created.len()) {
                 (Shape::Created, 1) => {
                     let (path, stamp) = created.remove(0);
@@ -413,7 +529,15 @@ fn from_undo_steps(shape: Shape, steps: Vec<Step>) -> Undoable {
             }
         }
         Shape::Renamed | Shape::Moved => {
-            let mut items = moves(steps);
+            let mut items: Vec<_> = steps
+                .into_iter()
+                .filter_map(|s| match s {
+                    Step::Move {
+                        at, dest, stamp, ..
+                    } => Some((dest, at, stamp)),
+                    _ => None,
+                })
+                .collect();
             match (shape, items.len()) {
                 (Shape::Renamed, 1) => {
                     let (from, to, stamp) = items.remove(0);
@@ -426,7 +550,7 @@ fn from_undo_steps(shape: Shape, steps: Vec<Step>) -> Undoable {
             items: steps
                 .into_iter()
                 .filter_map(|s| match s {
-                    Step::Restore { item } => Some(item),
+                    Step::Restore { item, .. } => Some(item),
                     _ => None,
                 })
                 .collect(),
@@ -434,19 +558,47 @@ fn from_undo_steps(shape: Shape, steps: Vec<Step>) -> Undoable {
     }
 }
 
-/// An undone operation: `shown` is the operation as recorded (what a redo
-/// repeats), `steps` the actions that repeat it.
+/// `op` without its first `k` items.
+fn tail(op: &Undoable, k: usize) -> Undoable {
+    match op {
+        Undoable::Moved { items } => Undoable::Moved {
+            items: items.iter().skip(k).cloned().collect(),
+        },
+        Undoable::Copied { created } => Undoable::Copied {
+            created: created.iter().skip(k).cloned().collect(),
+        },
+        Undoable::Trashed { items } => Undoable::Trashed {
+            items: items.iter().skip(k).cloned().collect(),
+        },
+        other => other.clone(),
+    }
+}
+
+/// A journal entry: `shown` is the operation as recorded (what an undo
+/// reverses or a redo repeats), `steps` the actions that do it.
 #[derive(Debug)]
-struct Redo {
+struct Entry {
+    shape: Shape,
     shown: Undoable,
     steps: Vec<Step>,
+}
+
+impl Entry {
+    /// An undo-stack entry, shown as the operation its steps undo.
+    fn undo(shape: Shape, steps: Vec<Step>) -> Entry {
+        Entry {
+            shape,
+            shown: from_undo_steps(shape, steps.clone()),
+            steps,
+        }
+    }
 }
 
 /// The session's undo and redo stacks.
 #[derive(Debug, Default)]
 pub struct Journal {
-    undo: VecDeque<Undoable>,
-    redo: Vec<Redo>,
+    undo: VecDeque<Entry>,
+    redo: Vec<Entry>,
 }
 
 impl Journal {
@@ -454,10 +606,38 @@ impl Journal {
         Journal::default()
     }
 
-    /// Records a completed operation and clears the redo stack. An
-    /// operation that placed nothing (an empty `Copied`, `Moved` or
-    /// `Trashed`) is not recorded and leaves both stacks as they are.
+    /// Records a completed operation and clears the redo stack; the same as
+    /// [`Journal::record_after`] with no prior stamps.
     pub fn record(&mut self, op: Undoable) {
+        self.record_after(op, PriorStamps::default());
+    }
+
+    /// Stamps, before an operation runs, those of its `sources` that an
+    /// entry on either stack expects to find. Pass the result to
+    /// [`Journal::record_after`] once the operation is done, so older
+    /// entries naming those items stay undoable after the new one is undone.
+    pub fn prior_stamps(&self, sources: &[PathBuf]) -> PriorStamps {
+        let expected: HashSet<&Path> = self
+            .undo
+            .iter()
+            .chain(&self.redo)
+            .flat_map(|e| e.steps.iter())
+            .filter_map(Step::expected_path)
+            .collect();
+        PriorStamps(
+            sources
+                .iter()
+                .filter(|s| expected.contains(s.as_path()))
+                .filter_map(|s| TreeStamp::of(s).ok().map(|stamp| (s.clone(), stamp)))
+                .collect(),
+        )
+    }
+
+    /// Records a completed operation, with `prior` from
+    /// [`Journal::prior_stamps`] taken just before it, and clears the redo
+    /// stack. An operation that placed nothing (an empty `Copied`, `Moved`
+    /// or `Trashed`) is not recorded and leaves both stacks as they are.
+    pub fn record_after(&mut self, op: Undoable, prior: PriorStamps) {
         let empty = match &op {
             Undoable::Moved { items } => items.is_empty(),
             Undoable::Copied { created } => created.is_empty(),
@@ -467,25 +647,32 @@ impl Journal {
         if empty {
             return;
         }
+        let (shape, steps) = undo_steps(&op, &prior);
         self.redo.clear();
-        self.push_undo(op);
+        self.push_undo(Entry {
+            shape,
+            shown: op,
+            steps,
+        });
     }
 
     /// The operation the next [`Journal::undo`] reverses.
     pub fn peek_undo(&self) -> Option<&Undoable> {
-        self.undo.back()
+        self.undo.back().map(|e| &e.shown)
     }
 
     /// The operation the next [`Journal::redo`] repeats.
     pub fn peek_redo(&self) -> Option<&Undoable> {
-        self.redo.last().map(|r| &r.shown)
+        self.redo.last().map(|e| &e.shown)
     }
 
     /// Reverses the most recent operation. `progress` counts items and is
     /// polled for cancellation before each one.
     ///
-    /// Errors: [`FsError::NothingToUndo`]; [`FsError::Irreversible`] for an
-    /// irreversible entry, which stays on top; [`FsError::Changed`] when the
+    /// Errors: [`FsError::NothingToUndo`]; [`FsError::Irreversible`] when
+    /// the most recent entry cannot be reversed: it is reported once and
+    /// taken off the stack, so the next undo goes on to the older entries,
+    /// each still guarded by its own check; [`FsError::Changed`] when the
     /// check before acting finds a difference, with nothing done; the cause
     /// itself when the first item fails, with nothing done;
     /// [`FsError::Partial`] when later items fail or the run is cancelled.
@@ -494,30 +681,31 @@ impl Journal {
         trash: &Trash,
         progress: &dyn Progress,
     ) -> Result<UndoOutcome, UndoError> {
-        let op = self.undo.back().ok_or(FsError::NothingToUndo)?;
-        let Some((shape, steps)) = undo_steps(op) else {
-            return Err(match op {
-                Undoable::Irreversible { what, reason } => FsError::Irreversible {
-                    what: what.clone(),
-                    reason: *reason,
-                },
-                _ => FsError::NothingToUndo,
-            });
-        };
-        check(&steps)?;
+        let top = self.undo.back().ok_or(FsError::NothingToUndo)?;
+        if let Undoable::Irreversible { what, reason } = &top.shown {
+            let err = FsError::Irreversible {
+                what: what.clone(),
+                reason: *reason,
+            };
+            self.undo.pop_back();
+            return Err(err);
+        }
+        check(&top.steps)?;
+        let (shape, steps) = (top.shape, top.steps.clone());
         let run = execute(steps, trash, progress);
         self.undo.pop_back();
         if !run.not_done.is_empty() {
             self.undo
-                .push_back(from_undo_steps(shape, run.not_done.clone()));
+                .push_back(Entry::undo(shape, run.not_done.clone()));
         }
         if !run.done.is_empty() {
-            let shown = from_undo_steps(shape, run.done.clone());
-            self.push_redo(Redo {
-                shown,
+            self.push_redo(Entry {
+                shape,
+                shown: from_undo_steps(shape, run.done.clone()),
                 steps: run.inverses.clone(),
             });
         }
+        self.carry(&run.carried);
         run.finish()
     }
 
@@ -529,44 +717,74 @@ impl Journal {
         progress: &dyn Progress,
     ) -> Result<UndoOutcome, UndoError> {
         let top = self.redo.last().ok_or(FsError::NothingToRedo)?;
-        let Some((shape, shown_steps)) = undo_steps(&top.shown) else {
-            return Err(FsError::NothingToRedo);
-        };
-        let steps = top.steps.clone();
-        check(&steps)?;
+        check(&top.steps)?;
+        let (shape, steps) = (top.shape, top.steps.clone());
+        let shown = top.shown.clone();
         let run = execute(steps, trash, progress);
         self.redo.pop();
         if !run.not_done.is_empty() {
-            let rest = shown_steps.into_iter().skip(run.done.len()).collect();
-            self.push_redo(Redo {
-                shown: from_undo_steps(shape, rest),
+            self.push_redo(Entry {
+                shape,
+                shown: tail(&shown, run.done.len()),
                 steps: run.not_done.clone(),
             });
         }
         if !run.done.is_empty() {
-            self.push_undo(from_undo_steps(shape, run.inverses.clone()));
+            self.push_undo(Entry::undo(shape, run.inverses.clone()));
         }
+        self.carry(&run.carried);
         run.finish()
     }
 
-    fn push_undo(&mut self, op: Undoable) {
-        self.undo.push_back(op);
+    fn push_undo(&mut self, entry: Entry) {
+        self.undo.push_back(entry);
         while self.undo.len() > JOURNAL_DEPTH {
             self.undo.pop_front();
         }
     }
 
-    fn push_redo(&mut self, entry: Redo) {
+    fn push_redo(&mut self, entry: Entry) {
         self.redo.push(entry);
         if self.redo.len() > JOURNAL_DEPTH {
             self.redo.remove(0);
+        }
+    }
+
+    /// For each `(path, old, new)`: every step on either stack that expects
+    /// the item at `path` with exactly `old` now expects `new`.
+    fn carry(&mut self, carried: &[(PathBuf, TreeStamp, TreeStamp)]) {
+        if carried.is_empty() {
+            return;
+        }
+        let update = |entry: &mut Entry| {
+            let mut changed = false;
+            for step in &mut entry.steps {
+                if let Some((at, stamp)) = step.expects_mut() {
+                    for (path, old, new) in carried {
+                        if at == path && stamp == old {
+                            *stamp = new.clone();
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            changed
+        };
+        for entry in &mut self.undo {
+            if update(entry) {
+                entry.shown = from_undo_steps(entry.shape, entry.steps.clone());
+            }
+        }
+        for entry in &mut self.redo {
+            update(entry);
         }
     }
 }
 
 /// The all-or-nothing check before the first action: every item matches
 /// its stamp, every trash entry is the one recorded, every destination is
-/// free and its folder exists, and no two items go to the same place.
+/// free and its folder exists as a real folder, and no two items go to the
+/// same place.
 fn check(steps: &[Step]) -> Result<(), FsError> {
     let changed = |(path, what)| FsError::Changed { path, what };
     let mut dests: HashSet<&Path> = HashSet::new();
@@ -577,25 +795,29 @@ fn check(steps: &[Step]) -> Result<(), FsError> {
                     return Err(changed(c));
                 }
             }
-            Step::Move { at, dest, stamp } => {
+            Step::Move {
+                at, dest, stamp, ..
+            } => {
                 if let Some(c) = compare(at, stamp)? {
                     return Err(changed(c));
                 }
-                let folder = parent_dir(dest);
-                match fs::metadata(folder) {
-                    Ok(m) if m.is_dir() => {}
-                    Ok(_) => return Err(changed((folder.to_path_buf(), Change::Modified))),
-                    Err(e) if e.kind() == ErrorKind::NotFound => {
-                        return Err(changed((folder.to_path_buf(), Change::Missing)))
-                    }
-                    Err(e) => return Err(FsError::io(folder, e)),
-                }
+                folder(parent_dir(dest))?;
                 free(dest)?;
             }
-            Step::Restore { item } => {
+            Step::Restore {
+                item, held, ident, ..
+            } => {
                 if let Some(c) = verify_entry(item)? {
                     return Err(changed(c));
                 }
+                let held_at = held_path(item);
+                if ident_of(&held_at) != *ident {
+                    return Err(changed((held_at, Change::Modified)));
+                }
+                if let Some(c) = compare(&held_at, held)? {
+                    return Err(changed(c));
+                }
+                folder(parent_dir(&item.original))?;
                 free(&item.original)?;
             }
         }
@@ -605,6 +827,22 @@ fn check(steps: &[Step]) -> Result<(), FsError> {
         }
     }
     Ok(())
+}
+
+/// [`FsError::Changed`] unless `path` is a folder: [`Change::Missing`] when
+/// nothing is there, [`Change::Modified`] when something else is, a symlink
+/// included (an item is only put back into the real folder it left).
+fn folder(path: &Path) -> Result<(), FsError> {
+    let what = match fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => return Ok(()),
+        Ok(_) => Change::Modified,
+        Err(e) if e.kind() == ErrorKind::NotFound => Change::Missing,
+        Err(e) => return Err(FsError::io(path, e)),
+    };
+    Err(FsError::Changed {
+        path: path.to_path_buf(),
+        what,
+    })
 }
 
 /// [`FsError::Changed`] with [`Change::Taken`] unless nothing is at `path`.
@@ -623,11 +861,7 @@ fn free(path: &Path) -> Result<(), FsError> {
 /// an entry added or changed is [`Change::Modified`], one removed
 /// [`Change::Missing`].
 fn compare(path: &Path, recorded: &TreeStamp) -> Result<Option<(PathBuf, Change)>, FsError> {
-    if recorded
-        .0
-        .iter()
-        .any(|(_, e)| matches!(e, EntryStamp::Unrecorded))
-    {
+    if recorded.has_unrecorded() {
         return Ok(Some((path.to_path_buf(), Change::Unverified)));
     }
     let current = match TreeStamp::of(path) {
@@ -679,6 +913,8 @@ struct Run {
     not_done: Vec<Step>,
     failure: Option<FsError>,
     warnings: Vec<(PathBuf, FsError)>,
+    /// Stamps to carry over to other entries: `(path, old, new)`.
+    carried: Vec<(PathBuf, TreeStamp, TreeStamp)>,
 }
 
 impl Run {
@@ -712,13 +948,14 @@ fn execute(steps: Vec<Step>, trash: &Trash, progress: &dyn Progress) -> Run {
         not_done: Vec::new(),
         failure: None,
         warnings: Vec::new(),
+        carried: Vec::new(),
     };
     let mut steps = steps.into_iter();
     while let Some(step) = steps.next() {
         let result = if progress.is_cancelled() {
             Err(FsError::Cancelled)
         } else {
-            run_step(&step, trash, progress, &mut run.warnings)
+            run_step(&step, trash, progress, &mut run)
         };
         match result {
             Ok(inverse) => {
@@ -741,41 +978,69 @@ fn execute(steps: Vec<Step>, trash: &Trash, progress: &dyn Progress) -> Run {
     run
 }
 
-/// Runs one step and returns the step that reverses it.
+/// Runs one step and returns the step that reverses it. Each step's check
+/// has just matched the item exactly; a landed item whose stamp differs
+/// from that in anything but the top ctime is not chained.
 fn run_step(
     step: &Step,
     trash: &Trash,
     progress: &dyn Progress,
-    warnings: &mut Vec<(PathBuf, FsError)>,
+    run: &mut Run,
 ) -> Result<Step, FsError> {
     match step {
-        Step::Trash { path, .. } => Ok(Step::Restore {
-            item: trash.put(path)?,
-        }),
-        Step::Restore { item } => {
-            if let Some(w) = restore_exclusive(item)? {
-                warnings.push((item.original.clone(), w));
+        Step::Trash { path, stamp } => {
+            let item = trash.put(path)?;
+            let held_at = held_path(&item);
+            let held = TreeStamp::of_or_unrecorded(&held_at);
+            Ok(Step::Restore {
+                ident: ident_of(&held_at),
+                was: stamp.same_but_root_ctime(&held).then(|| stamp.clone()),
+                held,
+                item,
+            })
+        }
+        Step::Restore {
+            item, held, was, ..
+        } => {
+            if let Some(w) = restore_for_undo(item)? {
+                run.warnings.push((item.original.clone(), w));
+            }
+            let now = TreeStamp::of_or_unrecorded(&item.original);
+            if let Some(was) = was.as_ref().filter(|_| held.same_but_root_ctime(&now)) {
+                run.carried
+                    .push((item.original.clone(), was.clone(), now.clone()));
             }
             Ok(Step::Trash {
                 path: item.original.clone(),
-                stamp: TreeStamp::of_or_unrecorded(&item.original),
+                stamp: now,
             })
         }
-        Step::Move { at, dest, stamp } => {
-            match rename_exclusive(at, dest) {
+        Step::Move {
+            at,
+            dest,
+            stamp,
+            was,
+        } => {
+            match rename_noreplace(at, dest) {
                 Ok(()) => {}
                 Err(e) if e.raw_os_error() == Some(Errno::XDEV.raw_os_error()) => {
-                    move_across(at, dest, stamp, progress, warnings)?;
+                    move_across(at, dest, stamp, progress, &mut run.warnings)?;
                 }
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => {
                     return Err(FsError::Exists { path: dest.clone() })
                 }
                 Err(e) => return Err(FsError::not_found_or_io(at, e)),
             }
+            let now = TreeStamp::of_or_unrecorded(dest);
+            let same = stamp.same_but_root_ctime(&now);
+            if let Some(was) = was.as_ref().filter(|_| same) {
+                run.carried.push((dest.clone(), was.clone(), now.clone()));
+            }
             Ok(Step::Move {
                 at: dest.clone(),
                 dest: at.clone(),
-                stamp: TreeStamp::of_or_unrecorded(dest),
+                stamp: now,
+                was: same.then(|| stamp.clone()),
             })
         }
     }
@@ -783,7 +1048,8 @@ fn run_step(
 
 /// Moves `at` to `dest` on another filesystem: copy, compare `at` with its
 /// stamp again, then delete it. If `at` changed during the copy, the copy is
-/// removed and nothing else is touched.
+/// removed and nothing else is touched. If `at` cannot be deleted after a
+/// complete copy, both remain and [`FsError::SourceNotRemoved`] says so.
 fn move_across(
     at: &Path,
     dest: &Path,
@@ -803,7 +1069,11 @@ fn move_across(
             return Err(e);
         }
     }
-    delete_tree(at)?;
+    delete_tree(at).map_err(|cause| FsError::SourceNotRemoved {
+        copy: dest.to_path_buf(),
+        left: at.to_path_buf(),
+        cause: Box::new(cause),
+    })?;
     warnings.extend(refused);
     Ok(())
 }

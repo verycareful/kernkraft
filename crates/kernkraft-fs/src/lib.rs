@@ -36,8 +36,8 @@ pub use trash::{
     TrashTarget, TrashedItem,
 };
 pub use undo::{
-    undoable_from_report, Change, EntryStamp, IrreversibleReason, Journal, OpKind, TreeStamp,
-    UndoError, UndoOutcome, Undoable, JOURNAL_DEPTH,
+    undoable_from_report, Change, EntryStamp, IrreversibleReason, Journal, OpKind, PriorStamps,
+    TreeStamp, UndoError, UndoOutcome, Undoable, JOURNAL_DEPTH,
 };
 pub use version::VERSION_LABEL;
 pub use xdg::{base_dirs, base_dirs_from, parse_user_dirs, user_dirs, BaseDirs, UserDirs};

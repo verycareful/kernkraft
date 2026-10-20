@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
-//! Listing, create, rename, properties, and undo and redo.
+//! Listing, create, rename, the user's folders, and undo and redo.
 //!
 //! Entries are typed by name alone (Shared MIME-info Database 0.21, glob
 //! matching) and by kind, never by reading their content: a listing of a
@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use kernkraft_fs::{
-    create_dir, create_file, list_dir, rename, undoable_from_report, Entry, EntryKind, FsError,
-    NoProgress, OpKind, OpReport, TreeStamp, UndoOutcome, Undoable,
+    create_dir, create_file, list_dir, rename, undoable_from_report, user_dirs, Entry, EntryKind,
+    FsError, NoProgress, OpKind, OpReport, TreeStamp, UndoOutcome, Undoable,
 };
 use kernkraft_xdg_apps::MimeDb;
 use serde::{Deserialize, Serialize};
@@ -135,6 +135,21 @@ pub struct WireUndoState {
     pub redo: Option<String>,
 }
 
+/// One of the user's folders (xdg-user-dirs): `name` is `"desktop"`,
+/// `"documents"`, `"download"`, `"music"`, `"pictures"` or `"videos"`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireUserDir {
+    pub name: String,
+    pub path: WirePath,
+}
+
+/// The home folder and the user's folders that exist, in the order above.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireUserDirs {
+    pub home: WirePath,
+    pub dirs: Vec<WireUserDir>,
+}
+
 /// A path's name for a label, or the whole path when it has none.
 fn name(p: &Path) -> String {
     p.file_name()
@@ -192,7 +207,7 @@ fn single(kind: OpKind, from: &Path, to: &Path) -> Undoable {
                 done: vec![(from.to_path_buf(), Some(to.to_path_buf()))],
                 ..OpReport::default()
             };
-            undoable_from_report(kind, &report, &[])
+            undoable_from_report(kind, &report)
         }
     }
 }
@@ -264,6 +279,34 @@ impl<R: Runtime> Kernkraft<R> {
         let _busy = self.begin_undo()?;
         let outcome = lock(&self.0.journal).redo(trash, &NoProgress)?;
         Ok(outcome.into())
+    }
+
+    /// The home folder and the user's folders (`$XDG_CONFIG_HOME/
+    /// user-dirs.dirs`, English defaults under home for any it does not
+    /// name). Only folders that exist are listed, and none that is home
+    /// itself: xdg-user-dirs sets a folder to `$HOME` to turn it off.
+    pub fn user_dirs(&self) -> Result<WireUserDirs, WireError> {
+        let base = self.base()?;
+        let dirs = user_dirs(base)?;
+        let named = [
+            ("desktop", dirs.desktop),
+            ("documents", dirs.documents),
+            ("download", dirs.download),
+            ("music", dirs.music),
+            ("pictures", dirs.pictures),
+            ("videos", dirs.videos),
+        ];
+        Ok(WireUserDirs {
+            home: WirePath::from(&base.home),
+            dirs: named
+                .into_iter()
+                .filter(|(_, p)| *p != base.home && p.is_dir())
+                .map(|(name, p)| WireUserDir {
+                    name: name.to_owned(),
+                    path: WirePath::from(&p),
+                })
+                .collect(),
+        })
     }
 
     /// What undo and redo would do now.

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-theme-set-prefs"
+description = "Enables the theme_set_prefs command without any pre-configured scope."
+commands.allow = ["theme_set_prefs"]
+
+[[permission]]
+identifier = "deny-theme-set-prefs"
+description = "Denies the theme_set_prefs command without any pre-configured scope."
+commands.deny = ["theme_set_prefs"]

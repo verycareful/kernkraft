@@ -18,13 +18,19 @@
 //! and an unknown command. Kern Desktop's `invoke` wrapper turns those
 //! strings into `{ kind: "Ipc", message }`.
 
+use kernkraft_theme::{Follow, UserChoice};
+use kernkraft_volumes::Device;
 use tauri::{AppHandle, Runtime, Window};
 
+use crate::apps_cmds::{WireAppDefault, WireAppList, WireMime};
 use crate::error::WireError;
-use crate::fs_cmds::{WireEntry, WireUndoOutcome, WireUndoState};
+use crate::fs_cmds::{WireEntry, WireUndoOutcome, WireUndoState, WireUserDirs};
 use crate::ops::{OpId, WireReport};
 use crate::state::{blocking, Kernkraft, KernkraftExt};
+use crate::text_cmds::{WireStamp, WireText};
+use crate::theme_cmds::WireTheme;
 use crate::trash_cmds::{WireTrashListing, WireTrashedItem};
+use crate::volumes_cmds::WireVolumes;
 use crate::wire::WirePath;
 
 fn origin<R: Runtime>(window: &Window<R>) -> Option<String> {
@@ -173,4 +179,212 @@ pub(crate) async fn properties<R: Runtime>(
     let kk = window.kernkraft();
     let origin = origin(&window);
     blocking(move || kk.properties(paths, origin)).await
+}
+
+#[tauri::command]
+pub(crate) async fn user_dirs<R: Runtime>(app: AppHandle<R>) -> Result<WireUserDirs, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.user_dirs()).await
+}
+
+#[tauri::command]
+pub(crate) async fn text_open<R: Runtime>(
+    app: AppHandle<R>,
+    path: WirePath,
+) -> Result<WireText, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.text_open(path)).await
+}
+
+#[tauri::command]
+pub(crate) async fn text_save<R: Runtime>(
+    app: AppHandle<R>,
+    path: WirePath,
+    text: String,
+    ending: String,
+    bom: bool,
+    stamp: Option<WireStamp>,
+) -> Result<WireStamp, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.text_save(path, text, ending, bom, stamp)).await
+}
+
+#[tauri::command]
+pub(crate) async fn text_check<R: Runtime>(
+    app: AppHandle<R>,
+    path: WirePath,
+    stamp: WireStamp,
+) -> Result<String, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.text_check(path, stamp)).await
+}
+
+#[tauri::command]
+pub(crate) async fn thumb_request<R: Runtime>(
+    window: Window<R>,
+    key: String,
+    paths: Vec<WirePath>,
+    size: String,
+) -> Result<(), WireError> {
+    let kk = window.kernkraft();
+    let origin = origin(&window);
+    blocking(move || kk.thumb_request(key, paths, size, origin)).await
+}
+
+#[tauri::command]
+pub(crate) async fn thumb_cancel<R: Runtime>(
+    app: AppHandle<R>,
+    key: String,
+) -> Result<(), WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.thumb_cancel(key)).await
+}
+
+#[tauri::command]
+pub(crate) async fn theme_get<R: Runtime>(
+    app: AppHandle<R>,
+    follow: Follow,
+    user: UserChoice,
+) -> Result<WireTheme, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.theme_get(follow, user)).await
+}
+
+#[tauri::command]
+pub(crate) async fn theme_set_prefs<R: Runtime>(
+    app: AppHandle<R>,
+    follow: Follow,
+    user: UserChoice,
+) -> Result<WireTheme, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.theme_set_prefs(follow, user)).await
+}
+
+#[tauri::command]
+pub(crate) async fn apps_for<R: Runtime>(
+    app: AppHandle<R>,
+    path: WirePath,
+) -> Result<WireAppList, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.apps_for(path)).await
+}
+
+#[tauri::command]
+pub(crate) async fn app_default<R: Runtime>(
+    app: AppHandle<R>,
+    path: WirePath,
+) -> Result<WireAppDefault, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.app_default(path)).await
+}
+
+#[tauri::command]
+pub(crate) async fn all_apps<R: Runtime>(app: AppHandle<R>) -> Result<WireAppList, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.all_apps()).await
+}
+
+#[tauri::command]
+pub(crate) async fn launch_app<R: Runtime>(
+    app: AppHandle<R>,
+    id: String,
+    paths: Vec<WirePath>,
+) -> Result<(), WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.launch_app(id, paths)).await
+}
+
+#[tauri::command]
+pub(crate) async fn open_default<R: Runtime>(
+    app: AppHandle<R>,
+    paths: Vec<WirePath>,
+) -> Result<(), WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.open_default(paths)).await
+}
+
+#[tauri::command]
+pub(crate) async fn set_default_app<R: Runtime>(
+    app: AppHandle<R>,
+    id: String,
+    mime: String,
+) -> Result<(), WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.set_default_app(id, mime)).await
+}
+
+#[tauri::command]
+pub(crate) async fn open_terminal<R: Runtime>(
+    app: AppHandle<R>,
+    dir: WirePath,
+    setting: Option<String>,
+) -> Result<(), WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.open_terminal(dir, setting)).await
+}
+
+#[tauri::command]
+pub(crate) async fn mime_of<R: Runtime>(
+    app: AppHandle<R>,
+    path: WirePath,
+) -> Result<WireMime, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.mime_of(path)).await
+}
+
+#[tauri::command]
+pub(crate) async fn volumes_list<R: Runtime>(app: AppHandle<R>) -> Result<WireVolumes, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.volumes_list()).await
+}
+
+#[tauri::command]
+pub(crate) async fn volume_mount<R: Runtime>(
+    app: AppHandle<R>,
+    device: Device,
+) -> Result<WirePath, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.volume_mount(device)).await
+}
+
+#[tauri::command]
+pub(crate) async fn volume_unmount<R: Runtime>(
+    app: AppHandle<R>,
+    mount_point: WirePath,
+) -> Result<(), WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.volume_unmount(mount_point)).await
+}
+
+#[tauri::command]
+pub(crate) async fn volume_eject<R: Runtime>(
+    app: AppHandle<R>,
+    mount_point: WirePath,
+) -> Result<(), WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.volume_eject(mount_point)).await
+}
+
+#[tauri::command]
+pub(crate) async fn search<R: Runtime>(
+    window: Window<R>,
+    key: String,
+    roots: Vec<WirePath>,
+    query: String,
+    hidden: bool,
+) -> Result<OpId, WireError> {
+    let kk = window.kernkraft();
+    let origin = origin(&window);
+    blocking(move || kk.search(key, roots, query, hidden, origin)).await
+}
+
+#[tauri::command]
+pub(crate) async fn documents<R: Runtime>(
+    window: Window<R>,
+    key: String,
+    roots: Vec<WirePath>,
+) -> Result<OpId, WireError> {
+    let kk = window.kernkraft();
+    let origin = origin(&window);
+    blocking(move || kk.documents(key, roots, origin)).await
 }

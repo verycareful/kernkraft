@@ -20,6 +20,28 @@ Allows every kernkraft command
 - `allow-watch-dir`
 - `allow-unwatch-dir`
 - `allow-properties`
+- `allow-user-dirs`
+- `allow-text-open`
+- `allow-text-save`
+- `allow-text-check`
+- `allow-thumb-request`
+- `allow-thumb-cancel`
+- `allow-theme-get`
+- `allow-theme-set-prefs`
+- `allow-apps-for`
+- `allow-app-default`
+- `allow-all-apps`
+- `allow-launch-app`
+- `allow-open-default`
+- `allow-set-default-app`
+- `allow-open-terminal`
+- `allow-mime-of`
+- `allow-volumes-list`
+- `allow-volume-mount`
+- `allow-volume-unmount`
+- `allow-volume-eject`
+- `allow-search`
+- `allow-documents`
 
 ## Permission Table
 
@@ -29,6 +51,32 @@ Allows every kernkraft command
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-all-apps`
+
+</td>
+<td>
+
+Enables the all_apps command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-all-apps`
+
+</td>
+<td>
+
+Denies the all_apps command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>
@@ -52,6 +100,58 @@ Enables the answer_conflict command without any pre-configured scope.
 <td>
 
 Denies the answer_conflict command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-app-default`
+
+</td>
+<td>
+
+Enables the app_default command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-app-default`
+
+</td>
+<td>
+
+Denies the app_default command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-apps-for`
+
+</td>
+<td>
+
+Enables the apps_for command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-apps-for`
+
+</td>
+<td>
+
+Denies the apps_for command without any pre-configured scope.
 
 </td>
 </tr>
@@ -137,6 +237,58 @@ Denies the create_file command without any pre-configured scope.
 <tr>
 <td>
 
+`kernkraft-tauri:allow-documents`
+
+</td>
+<td>
+
+Enables the documents command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-documents`
+
+</td>
+<td>
+
+Denies the documents command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-launch-app`
+
+</td>
+<td>
+
+Enables the launch_app command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-launch-app`
+
+</td>
+<td>
+
+Denies the launch_app command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `kernkraft-tauri:allow-list-dir`
 
 </td>
@@ -156,6 +308,84 @@ Enables the list_dir command without any pre-configured scope.
 <td>
 
 Denies the list_dir command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-mime-of`
+
+</td>
+<td>
+
+Enables the mime_of command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-mime-of`
+
+</td>
+<td>
+
+Denies the mime_of command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-open-default`
+
+</td>
+<td>
+
+Enables the open_default command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-open-default`
+
+</td>
+<td>
+
+Denies the open_default command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-open-terminal`
+
+</td>
+<td>
+
+Enables the open_terminal command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-open-terminal`
+
+</td>
+<td>
+
+Denies the open_terminal command without any pre-configured scope.
 
 </td>
 </tr>
@@ -241,6 +471,58 @@ Denies the rename command without any pre-configured scope.
 <tr>
 <td>
 
+`kernkraft-tauri:allow-search`
+
+</td>
+<td>
+
+Enables the search command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-search`
+
+</td>
+<td>
+
+Denies the search command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-set-default-app`
+
+</td>
+<td>
+
+Enables the set_default_app command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-set-default-app`
+
+</td>
+<td>
+
+Denies the set_default_app command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `kernkraft-tauri:allow-start-op`
 
 </td>
@@ -260,6 +542,188 @@ Enables the start_op command without any pre-configured scope.
 <td>
 
 Denies the start_op command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-text-check`
+
+</td>
+<td>
+
+Enables the text_check command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-text-check`
+
+</td>
+<td>
+
+Denies the text_check command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-text-open`
+
+</td>
+<td>
+
+Enables the text_open command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-text-open`
+
+</td>
+<td>
+
+Denies the text_open command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-text-save`
+
+</td>
+<td>
+
+Enables the text_save command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-text-save`
+
+</td>
+<td>
+
+Denies the text_save command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-theme-get`
+
+</td>
+<td>
+
+Enables the theme_get command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-theme-get`
+
+</td>
+<td>
+
+Denies the theme_get command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-theme-set-prefs`
+
+</td>
+<td>
+
+Enables the theme_set_prefs command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-theme-set-prefs`
+
+</td>
+<td>
+
+Denies the theme_set_prefs command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-thumb-cancel`
+
+</td>
+<td>
+
+Enables the thumb_cancel command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-thumb-cancel`
+
+</td>
+<td>
+
+Denies the thumb_cancel command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-thumb-request`
+
+</td>
+<td>
+
+Enables the thumb_request command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-thumb-request`
+
+</td>
+<td>
+
+Denies the thumb_request command without any pre-configured scope.
 
 </td>
 </tr>
@@ -416,6 +880,136 @@ Enables the unwatch_dir command without any pre-configured scope.
 <td>
 
 Denies the unwatch_dir command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-user-dirs`
+
+</td>
+<td>
+
+Enables the user_dirs command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-user-dirs`
+
+</td>
+<td>
+
+Denies the user_dirs command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-volume-eject`
+
+</td>
+<td>
+
+Enables the volume_eject command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-volume-eject`
+
+</td>
+<td>
+
+Denies the volume_eject command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-volume-mount`
+
+</td>
+<td>
+
+Enables the volume_mount command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-volume-mount`
+
+</td>
+<td>
+
+Denies the volume_mount command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-volume-unmount`
+
+</td>
+<td>
+
+Enables the volume_unmount command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-volume-unmount`
+
+</td>
+<td>
+
+Denies the volume_unmount command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-volumes-list`
+
+</td>
+<td>
+
+Enables the volumes_list command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-volumes-list`
+
+</td>
+<td>
+
+Denies the volumes_list command without any pre-configured scope.
 
 </td>
 </tr>

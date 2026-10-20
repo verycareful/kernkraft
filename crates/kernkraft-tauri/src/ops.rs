@@ -25,10 +25,12 @@
 //! stays undoable (see `kernkraft_fs::Journal::prior_stamps`).
 //!
 //! Every registered operation, `properties` included, makes undo and redo
-//! return `Busy`: the registry does not tell readers from writers, and a
-//! properties walk is short next to a user reaching for undo. Operations
-//! may run side by side; each item's failure, a source removed by another
-//! operation included, is in that operation's report.
+//! return `Busy`: a properties walk is short next to a user reaching for
+//! undo. The exceptions are search and the Documents walk (see
+//! `search_cmds`), registered as readers: they can run for minutes over a
+//! home folder, only read, and neither wait for nor hold back an undo.
+//! Operations may run side by side; each item's failure, a source removed
+//! by another operation included, is in that operation's report.
 
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -47,6 +49,7 @@ use tauri::{Emitter, Runtime};
 
 use crate::error::{PluginError, WireError, WireItemError};
 use crate::fs_cmds::{describe, WireEntry};
+use crate::search_cmds::{ScanFilter, WireScanDone};
 use crate::state::{lock, Kernkraft};
 use crate::wire::WirePath;
 
@@ -167,15 +170,19 @@ pub struct WireProperties {
     pub cancelled: bool,
 }
 
-/// Payload of [`EVENT_OP_DONE`]. `report` is set for every operation but
-/// properties, `properties` for properties. `error` is set instead of
-/// either when the worker itself failed (a panic, which is a bug); nothing
-/// of the operation's outcome is known then beyond the files themselves.
+/// Payload of [`EVENT_OP_DONE`]. `report` is set for the file operations,
+/// `properties` for properties, `scan` for a search or Documents walk.
+/// `error` is set instead of any of them when the worker itself failed (a
+/// panic, which is a bug, or a walk whose MIME database is unavailable);
+/// nothing of the operation's outcome is known then beyond the files
+/// themselves.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpDoneEvent {
     pub op: OpId,
     pub report: Option<WireReport>,
     pub properties: Option<WireProperties>,
+    #[serde(default)]
+    pub scan: Option<WireScanDone>,
     pub error: Option<WireError>,
 }
 
@@ -213,6 +220,8 @@ pub(crate) struct OpHandle {
     id: OpId,
     /// Label of the window that started it, if any.
     origin: Option<String>,
+    /// Only reads: does not make undo wait, and may start while one runs.
+    reader: bool,
     cancelled: AtomicBool,
     prompt: Mutex<Prompt>,
     wake: Condvar,
@@ -269,12 +278,12 @@ impl<R: Runtime> Drop for UndoGuard<R> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub(crate) enum Mode {
     Copy,
     Move,
 }
 
-enum Job {
+pub(crate) enum Job {
     Transfer {
         mode: Mode,
         sources: Vec<PathBuf>,
@@ -295,11 +304,19 @@ enum Job {
     Properties {
         paths: Vec<PathBuf>,
     },
+    Scan {
+        key: String,
+        roots: Vec<PathBuf>,
+        hidden: bool,
+        filter: ScanFilter,
+    },
 }
 
 enum Outcome {
     Report(WireReport),
     Properties(WireProperties),
+    Scan(WireScanDone),
+    Failed(WireError),
 }
 
 fn invalid(what: &'static str, value: &str) -> WireError {
@@ -317,7 +334,7 @@ fn decode_all(paths: Vec<WirePath>) -> Result<Vec<PathBuf>, WireError> {
 }
 
 /// Fails unless `dest` is a directory.
-fn check_dest(dest: &Path) -> Result<(), WireError> {
+pub(crate) fn check_dest(dest: &Path) -> Result<(), WireError> {
     let meta = std::fs::metadata(dest).map_err(|e| {
         WireError::from(if e.kind() == std::io::ErrorKind::NotFound {
             FsError::NotFound {
@@ -494,8 +511,14 @@ impl<R: Runtime> Kernkraft<R> {
 
     /// Registers an operation. Refused while an undo or redo runs.
     pub(crate) fn register(&self, origin: Option<String>) -> Result<Running<R>, WireError> {
+        self.register_as(origin, false)
+    }
+
+    /// Registers an operation; a `reader` is not refused while an undo or
+    /// redo runs.
+    fn register_as(&self, origin: Option<String>, reader: bool) -> Result<Running<R>, WireError> {
         let mut registry = lock(&self.0.registry);
-        if registry.undo_running {
+        if registry.undo_running && !reader {
             return Err(WireError::from(PluginError::Busy(
                 "an undo or redo is running",
             )));
@@ -504,6 +527,7 @@ impl<R: Runtime> Kernkraft<R> {
         let handle = Arc::new(OpHandle {
             id: registry.last,
             origin,
+            reader,
             cancelled: AtomicBool::new(false),
             prompt: Mutex::new(Prompt::default()),
             wake: Condvar::new(),
@@ -524,7 +548,7 @@ impl<R: Runtime> Kernkraft<R> {
                 "an undo or redo is running",
             )));
         }
-        if !registry.ops.is_empty() {
+        if registry.ops.values().any(|h| !h.reader) {
             return Err(WireError::from(PluginError::Busy(
                 "a file operation is running; undo and redo wait until it ends",
             )));
@@ -533,8 +557,9 @@ impl<R: Runtime> Kernkraft<R> {
         Ok(UndoGuard { kk: self.clone() })
     }
 
-    fn spawn(&self, job: Job, origin: Option<String>) -> Result<OpId, WireError> {
-        let running = self.register(origin)?;
+    pub(crate) fn spawn(&self, job: Job, origin: Option<String>) -> Result<OpId, WireError> {
+        let reader = matches!(job, Job::Scan { .. });
+        let running = self.register_as(origin, reader)?;
         let id = running.handle.id;
         let kk = self.clone();
         lock(&self.0.registry).workers += 1;
@@ -555,11 +580,14 @@ impl<R: Runtime> Kernkraft<R> {
                 op: id,
                 report: None,
                 properties: None,
+                scan: None,
                 error: None,
             };
             match result {
                 Ok(Outcome::Report(r)) => done.report = Some(r),
                 Ok(Outcome::Properties(p)) => done.properties = Some(p),
+                Ok(Outcome::Scan(s)) => done.scan = Some(s),
+                Ok(Outcome::Failed(e)) => done.error = Some(e),
                 Err(panic) => {
                     let message = panic
                         .downcast_ref::<&str>()
@@ -618,6 +646,20 @@ impl<R: Runtime> Kernkraft<R> {
                     unreadable: m.unreadable.iter().map(WirePath::from).collect(),
                     cancelled: m.cancelled,
                 })
+            }
+            Job::Scan {
+                key,
+                roots,
+                hidden,
+                filter,
+            } => {
+                let progress = Throttle::new(self, op, "entries");
+                let done = self.run_scan(op.id, &progress, key, &roots, hidden, &filter);
+                progress.finish();
+                match done {
+                    Ok(s) => Outcome::Scan(s),
+                    Err(e) => Outcome::Failed(e),
+                }
             }
         }
     }
@@ -696,7 +738,7 @@ impl<R: Runtime> Kernkraft<R> {
         // kernkraft-fs lists a replace when it happens, so one answered but
         // never carried out is not there, and one carried out before the
         // item failed or was cancelled is.
-        let entry = undoable_from_report(kind, &report, &report.replaced);
+        let entry = undoable_from_report(kind, &report);
         lock(&self.0.journal).record_after(entry, prior);
         WireReport::new(&report, &not_reached)
     }
@@ -736,7 +778,7 @@ impl<R: Runtime> Kernkraft<R> {
         }
         progress.report(total, total, "");
         progress.finish();
-        let entry = undoable_from_report(OpKind::Trash, &report, &[]);
+        let entry = undoable_from_report(OpKind::Trash, &report);
         lock(&self.0.journal).record_after(entry, prior);
         WireReport::new(&report, &not_reached)
     }

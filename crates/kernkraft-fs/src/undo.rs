@@ -286,21 +286,21 @@ impl OpKind {
 /// The journal entry for an operation that produced `report`.
 ///
 /// Only `report.done` items are journalled; skipped and failed items were
-/// never placed. `replaced` lists the existing paths that were in fact
-/// replaced, which is [`OpReport::replaced`]. Any entry there makes the
-/// operation [`Undoable::Irreversible`], even when nothing ended up in
+/// never placed. Any path in [`OpReport::replaced`] (the existing paths that
+/// were in fact replaced, not the conflict answers that asked for it) makes
+/// the operation [`Undoable::Irreversible`], even when nothing ended up in
 /// `done` (a move across devices whose replace went through but whose
 /// source could not then be removed, a merge cancelled partway):
 /// [`IrreversibleReason::MergedDirectory`] when one of them is a directory,
-/// else [`IrreversibleReason::ReplacedExisting`]. Passing the conflict
-/// resolver's `Replace` answers instead would also count answers that were
-/// never carried out, and make an operation irreversible without cause.
-/// Otherwise a report with nothing placed gives an empty entry.
+/// else [`IrreversibleReason::ReplacedExisting`]. The barrier is read from
+/// the report itself, so no caller can leave it out. Otherwise a report
+/// with nothing placed gives an empty entry.
 ///
 /// Each placed item is stamped now, so this is called right after the
 /// operation. An item that cannot be stamped is recorded as unverifiable
 /// and its undo is refused with [`Change::Unverified`].
-pub fn undoable_from_report(kind: OpKind, report: &OpReport, replaced: &[PathBuf]) -> Undoable {
+pub fn undoable_from_report(kind: OpKind, report: &OpReport) -> Undoable {
+    let replaced = &report.replaced;
     if let Some(first) = replaced.first() {
         let merged = replaced
             .iter()

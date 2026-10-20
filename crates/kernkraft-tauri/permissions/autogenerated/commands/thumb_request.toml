@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-thumb-request"
+description = "Enables the thumb_request command without any pre-configured scope."
+commands.allow = ["thumb_request"]
+
+[[permission]]
+identifier = "deny-thumb-request"
+description = "Denies the thumb_request command without any pre-configured scope."
+commands.deny = ["thumb_request"]

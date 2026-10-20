@@ -473,8 +473,9 @@ fn volumes_error_kind_names() {
                 failed: p("/n"),
                 cause: Box::new(VolumesError::NoUser { uid: 1 }),
             },
+            // `failed` may be a UDisks object path, so it is no `path`.
             "EjectIncomplete",
-            true,
+            false,
         ),
         (VolumesError::Timeout { what: "w".into() }, "Timeout", false),
         (
@@ -652,7 +653,13 @@ fn eject_incomplete_details() {
     let json = serde_json::to_value(wire.details.unwrap()).unwrap();
     assert_eq!(json["k"], "EjectIncomplete");
     assert_eq!(json["unmounted"][0]["v"], "/m");
-    assert_eq!(json["failed"]["v"], "/n");
+    // UDisks object paths are plain strings, not file paths.
+    assert_eq!(
+        json["locked"][0],
+        "/org/freedesktop/UDisks2/block_devices/dm_2d0"
+    );
+    assert_eq!(json["failed"], "/n");
+    assert_eq!(wire.path, None);
     assert_eq!(json["cause"]["kind"], "Timeout");
 }
 

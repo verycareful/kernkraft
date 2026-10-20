@@ -86,11 +86,14 @@ pub enum WireDetails {
     /// `IrreversibleReason` variant.
     Irreversible { reason: String },
     /// [`VolumesError::EjectIncomplete`]: what the eject did before `failed`
-    /// stopped it. `failed` may be a UDisks object path, not a file path.
+    /// stopped it. `unmounted` are mount points. `locked` are UDisks object
+    /// paths (D-Bus object paths, ASCII by the D-Bus specification), and
+    /// `failed` is a mount point or such an object path, so both are plain
+    /// strings, for display only, never file paths to act on.
     EjectIncomplete {
         unmounted: Vec<WirePath>,
-        locked: Vec<WirePath>,
-        failed: WirePath,
+        locked: Vec<String>,
+        failed: String,
         cause: Box<WireError>,
     },
 }
@@ -151,6 +154,16 @@ pub enum PluginError {
     /// A trash item the webview named is not in the trash as listed now.
     #[error("{} is not in the trash", .0.display())]
     NotInTrash(PathBuf),
+    /// No installed application has this desktop file ID.
+    #[error("no application {0:?} is installed")]
+    UnknownApp(String),
+    /// No default application is set for the type of `path`; the UI offers
+    /// "Open with" instead.
+    #[error("no default application opens {} ({mime})", path.display())]
+    NoDefaultApp { path: PathBuf, mime: String },
+    /// A device to mount that UDisks does not list as unmounted now.
+    #[error("UDisks lists no unmounted filesystem {0:?}")]
+    UnknownDevice(String),
     #[error("watching {}: {source}", path.display())]
     Watch {
         path: PathBuf,
@@ -173,6 +186,9 @@ impl From<PluginError> for WireError {
             PluginError::InvalidArgument { .. } => ("InvalidArgument", None),
             PluginError::NoHome => ("NoHome", None),
             PluginError::NotInTrash(path) => ("NotInTrash", Some(path)),
+            PluginError::UnknownApp(_) => ("UnknownApp", None),
+            PluginError::NoDefaultApp { path, .. } => ("NoDefaultApp", Some(path)),
+            PluginError::UnknownDevice(_) => ("UnknownDevice", None),
             PluginError::Watch { path, .. } => ("Watch", Some(path)),
             PluginError::Internal(_) => ("Internal", None),
         };
@@ -270,7 +286,13 @@ impl From<kernkraft_text::TextError> for WireError {
 
 impl From<AppsError> for WireError {
     fn from(e: AppsError) -> WireError {
-        let (kind, path) = match &e {
+        WireError::from(&e)
+    }
+}
+
+impl From<&AppsError> for WireError {
+    fn from(e: &AppsError) -> WireError {
+        let (kind, path) = match e {
             AppsError::Io { path, .. } => ("Io", Some(path)),
             AppsError::MalformedMimeDb { path, .. } => ("MalformedMimeDb", Some(path)),
             AppsError::InvalidDesktopEntry { path, .. } => ("InvalidDesktopEntry", Some(path)),
@@ -334,7 +356,8 @@ impl From<&VolumesError> for WireError {
             VolumesError::NotMounted { mount_point } => ("NotMounted", Some(mount_point)),
             VolumesError::NoEject { mount_point } => ("NoEject", Some(mount_point)),
             VolumesError::EjectRefused { mount_point, .. } => ("EjectRefused", Some(mount_point)),
-            VolumesError::EjectIncomplete { failed, .. } => ("EjectIncomplete", Some(failed)),
+            // `failed` may be a UDisks object path; it is in the details.
+            VolumesError::EjectIncomplete { .. } => ("EjectIncomplete", None),
             VolumesError::Timeout { .. } => ("Timeout", None),
             VolumesError::Udisks { .. } => ("Udisks", None),
             VolumesError::Dbus { .. } => ("Dbus", None),
@@ -348,8 +371,11 @@ impl From<&VolumesError> for WireError {
                 cause,
             } => wire.with_details(WireDetails::EjectIncomplete {
                 unmounted: wire_paths(unmounted),
-                locked: wire_paths(locked),
-                failed: WirePath::from(failed),
+                locked: locked
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
+                failed: failed.to_string_lossy().into_owned(),
                 cause: Box::new(WireError::from(cause.as_ref())),
             }),
             _ => wire,

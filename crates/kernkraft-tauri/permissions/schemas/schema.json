@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the all_apps command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-all-apps",
+          "markdownDescription": "Enables the all_apps command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the all_apps command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-all-apps",
+          "markdownDescription": "Denies the all_apps command without any pre-configured scope."
+        },
+        {
           "description": "Enables the answer_conflict command without any pre-configured scope.",
           "type": "string",
           "const": "allow-answer-conflict",
@@ -305,6 +317,30 @@
           "type": "string",
           "const": "deny-answer-conflict",
           "markdownDescription": "Denies the answer_conflict command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the app_default command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-app-default",
+          "markdownDescription": "Enables the app_default command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the app_default command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-app-default",
+          "markdownDescription": "Denies the app_default command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the apps_for command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-apps-for",
+          "markdownDescription": "Enables the apps_for command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the apps_for command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-apps-for",
+          "markdownDescription": "Denies the apps_for command without any pre-configured scope."
         },
         {
           "description": "Enables the cancel_op command without any pre-configured scope.",
@@ -343,6 +379,30 @@
           "markdownDescription": "Denies the create_file command without any pre-configured scope."
         },
         {
+          "description": "Enables the documents command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-documents",
+          "markdownDescription": "Enables the documents command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the documents command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-documents",
+          "markdownDescription": "Denies the documents command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the launch_app command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-launch-app",
+          "markdownDescription": "Enables the launch_app command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the launch_app command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-launch-app",
+          "markdownDescription": "Denies the launch_app command without any pre-configured scope."
+        },
+        {
           "description": "Enables the list_dir command without any pre-configured scope.",
           "type": "string",
           "const": "allow-list-dir",
@@ -353,6 +413,42 @@
           "type": "string",
           "const": "deny-list-dir",
           "markdownDescription": "Denies the list_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mime_of command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mime-of",
+          "markdownDescription": "Enables the mime_of command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mime_of command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mime-of",
+          "markdownDescription": "Denies the mime_of command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_default command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-default",
+          "markdownDescription": "Enables the open_default command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_default command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-default",
+          "markdownDescription": "Denies the open_default command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_terminal command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-terminal",
+          "markdownDescription": "Enables the open_terminal command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_terminal command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-terminal",
+          "markdownDescription": "Denies the open_terminal command without any pre-configured scope."
         },
         {
           "description": "Enables the properties command without any pre-configured scope.",
@@ -391,6 +487,30 @@
           "markdownDescription": "Denies the rename command without any pre-configured scope."
         },
         {
+          "description": "Enables the search command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-search",
+          "markdownDescription": "Enables the search command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the search command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-search",
+          "markdownDescription": "Denies the search command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_default_app command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-default-app",
+          "markdownDescription": "Enables the set_default_app command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_default_app command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-default-app",
+          "markdownDescription": "Denies the set_default_app command without any pre-configured scope."
+        },
+        {
           "description": "Enables the start_op command without any pre-configured scope.",
           "type": "string",
           "const": "allow-start-op",
@@ -401,6 +521,90 @@
           "type": "string",
           "const": "deny-start-op",
           "markdownDescription": "Denies the start_op command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the text_check command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-text-check",
+          "markdownDescription": "Enables the text_check command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the text_check command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-text-check",
+          "markdownDescription": "Denies the text_check command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the text_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-text-open",
+          "markdownDescription": "Enables the text_open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the text_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-text-open",
+          "markdownDescription": "Denies the text_open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the text_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-text-save",
+          "markdownDescription": "Enables the text_save command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the text_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-text-save",
+          "markdownDescription": "Denies the text_save command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the theme_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-theme-get",
+          "markdownDescription": "Enables the theme_get command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the theme_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-theme-get",
+          "markdownDescription": "Denies the theme_get command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the theme_set_prefs command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-theme-set-prefs",
+          "markdownDescription": "Enables the theme_set_prefs command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the theme_set_prefs command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-theme-set-prefs",
+          "markdownDescription": "Denies the theme_set_prefs command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the thumb_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-thumb-cancel",
+          "markdownDescription": "Enables the thumb_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the thumb_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-thumb-cancel",
+          "markdownDescription": "Denies the thumb_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the thumb_request command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-thumb-request",
+          "markdownDescription": "Enables the thumb_request command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the thumb_request command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-thumb-request",
+          "markdownDescription": "Denies the thumb_request command without any pre-configured scope."
         },
         {
           "description": "Enables the trash_list command without any pre-configured scope.",
@@ -475,6 +679,66 @@
           "markdownDescription": "Denies the unwatch_dir command without any pre-configured scope."
         },
         {
+          "description": "Enables the user_dirs command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-user-dirs",
+          "markdownDescription": "Enables the user_dirs command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the user_dirs command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-user-dirs",
+          "markdownDescription": "Denies the user_dirs command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the volume_eject command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-volume-eject",
+          "markdownDescription": "Enables the volume_eject command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the volume_eject command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-volume-eject",
+          "markdownDescription": "Denies the volume_eject command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the volume_mount command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-volume-mount",
+          "markdownDescription": "Enables the volume_mount command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the volume_mount command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-volume-mount",
+          "markdownDescription": "Denies the volume_mount command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the volume_unmount command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-volume-unmount",
+          "markdownDescription": "Enables the volume_unmount command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the volume_unmount command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-volume-unmount",
+          "markdownDescription": "Denies the volume_unmount command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the volumes_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-volumes-list",
+          "markdownDescription": "Enables the volumes_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the volumes_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-volumes-list",
+          "markdownDescription": "Denies the volumes_list command without any pre-configured scope."
+        },
+        {
           "description": "Enables the watch_dir command without any pre-configured scope.",
           "type": "string",
           "const": "allow-watch-dir",
@@ -487,10 +751,10 @@
           "markdownDescription": "Denies the watch_dir command without any pre-configured scope."
         },
         {
-          "description": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`",
+          "description": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`\n- `allow-user-dirs`\n- `allow-text-open`\n- `allow-text-save`\n- `allow-text-check`\n- `allow-thumb-request`\n- `allow-thumb-cancel`\n- `allow-theme-get`\n- `allow-theme-set-prefs`\n- `allow-apps-for`\n- `allow-app-default`\n- `allow-all-apps`\n- `allow-launch-app`\n- `allow-open-default`\n- `allow-set-default-app`\n- `allow-open-terminal`\n- `allow-mime-of`\n- `allow-volumes-list`\n- `allow-volume-mount`\n- `allow-volume-unmount`\n- `allow-volume-eject`\n- `allow-search`\n- `allow-documents`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`"
+          "markdownDescription": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`\n- `allow-user-dirs`\n- `allow-text-open`\n- `allow-text-save`\n- `allow-text-check`\n- `allow-thumb-request`\n- `allow-thumb-cancel`\n- `allow-theme-get`\n- `allow-theme-set-prefs`\n- `allow-apps-for`\n- `allow-app-default`\n- `allow-all-apps`\n- `allow-launch-app`\n- `allow-open-default`\n- `allow-set-default-app`\n- `allow-open-terminal`\n- `allow-mime-of`\n- `allow-volumes-list`\n- `allow-volume-mount`\n- `allow-volume-unmount`\n- `allow-volume-eject`\n- `allow-search`\n- `allow-documents`"
         }
       ]
     }

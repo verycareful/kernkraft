@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-thumb-cancel"
+description = "Enables the thumb_cancel command without any pre-configured scope."
+commands.allow = ["thumb_cancel"]
+
+[[permission]]
+identifier = "deny-thumb-cancel"
+description = "Denies the thumb_cancel command without any pre-configured scope."
+commands.deny = ["thumb_cancel"]

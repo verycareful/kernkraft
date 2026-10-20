@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-volumes-list"
+description = "Enables the volumes_list command without any pre-configured scope."
+commands.allow = ["volumes_list"]
+
+[[permission]]
+identifier = "deny-volumes-list"
+description = "Denies the volumes_list command without any pre-configured scope."
+commands.deny = ["volumes_list"]

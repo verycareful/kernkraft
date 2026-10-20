@@ -9,34 +9,48 @@
 //! [`WirePath`], which is lossless for names that are not UTF-8, and every
 //! failure as [`WireError`], whose `kind` is the name of the error variant.
 //!
-//! File operations run in the background and report through events
-//! (`kernkraft://op-progress`, `op-conflict`, `op-done`; see the `ops`
-//! items); folder watches report `kernkraft://dir-changed` and `dir-gone`.
+//! File operations, searches and the Documents walk run in the background
+//! and report through events (`kernkraft://op-progress`, `op-conflict`,
+//! `op-done`, and `search-hit` for the walks; see the `ops` items); folder
+//! watches report `kernkraft://dir-changed` and `dir-gone`, thumbnails
+//! `kernkraft://thumb`, and theme changes `kernkraft://theme-changed`.
 //! The same operations are methods of [`Kernkraft`], reached from Rust with
 //! [`KernkraftExt::kernkraft`].
 //!
 //! This is an adapter crate: it is the only kernkraft crate that depends on
 //! `tauri`. The core crates never do.
 
+mod apps_cmds;
 mod commands;
 mod error;
 mod fs_cmds;
 mod ops;
+mod search_cmds;
 mod state;
+mod text_cmds;
+mod theme_cmds;
+mod thumb_cmds;
 mod trash_cmds;
+mod volumes_cmds;
 mod watch;
 mod wire;
 
 include!("command_list.rs");
 
+pub use apps_cmds::{WireApp, WireAppDefault, WireAppList, WireMime};
 pub use error::{PluginError, WireDetails, WireError, WireItemError};
-pub use fs_cmds::{WireEntry, WireUndoOutcome, WireUndoState};
+pub use fs_cmds::{WireEntry, WireUndoOutcome, WireUndoState, WireUserDir, WireUserDirs};
 pub use ops::{
     OpConflictEvent, OpDoneEvent, OpId, OpProgressEvent, WireDone, WireProperties, WireReport,
     EVENT_OP_CONFLICT, EVENT_OP_DONE, EVENT_OP_PROGRESS, PROGRESS_INTERVAL_MS,
 };
+pub use search_cmds::{SearchHitEvent, WireScanDone, EVENT_SEARCH_HIT, SEARCH_BATCH};
 pub use state::{Config, Kernkraft, KernkraftExt};
+pub use text_cmds::{WireReadOnly, WireStamp, WireText};
+pub use theme_cmds::{WireTheme, EVENT_THEME_CHANGED};
+pub use thumb_cmds::{ThumbEvent, EVENT_THUMB};
 pub use trash_cmds::{WireTrashListing, WireTrashedItem};
+pub use volumes_cmds::{WireMount, WireVolumes};
 pub use watch::{DirEvent, DEBOUNCE_MS, EVENT_DIR_CHANGED, EVENT_DIR_GONE};
 pub use wire::{WirePath, WirePathError};
 
@@ -72,6 +86,28 @@ pub fn init_with<R: Runtime>(config: Config) -> TauriPlugin<R> {
             commands::watch_dir,
             commands::unwatch_dir,
             commands::properties,
+            commands::user_dirs,
+            commands::text_open,
+            commands::text_save,
+            commands::text_check,
+            commands::thumb_request,
+            commands::thumb_cancel,
+            commands::theme_get,
+            commands::theme_set_prefs,
+            commands::apps_for,
+            commands::app_default,
+            commands::all_apps,
+            commands::launch_app,
+            commands::open_default,
+            commands::set_default_app,
+            commands::open_terminal,
+            commands::mime_of,
+            commands::volumes_list,
+            commands::volume_mount,
+            commands::volume_unmount,
+            commands::volume_eject,
+            commands::search,
+            commands::documents,
         ])
         .setup(move |app, _api| {
             app.manage(Kernkraft::new(app.clone(), config));

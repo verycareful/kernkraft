@@ -3,7 +3,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::cell::RefCell;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -74,7 +73,7 @@ fn copy_files(f: &Fixture, files: &[&str]) -> Undoable {
         .collect();
     let report = copy(&sources, &f.dest, &never, &NoProgress).unwrap();
     assert_eq!(report.done.len(), files.len());
-    undoable_from_report(OpKind::Copy, &report, &[])
+    undoable_from_report(OpKind::Copy, &report)
 }
 
 /// Trashes each path as a trash operation would, reporting each item's
@@ -125,7 +124,7 @@ fn undo_move_restores_across_dirs() {
     let report = move_items(&[file.clone(), dir.clone()], &f.dest, &never, &NoProgress).unwrap();
     assert_eq!(report.done.len(), 2);
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Move, &report));
 
     journal.undo(&f.trash, &NoProgress).unwrap();
 
@@ -165,7 +164,7 @@ fn undo_trash_restores() {
     fs::create_dir(&d).unwrap();
     fs::write(d.join("inner"), "inner").unwrap();
     let report = trash_paths(&f.trash, &[a.clone(), d.clone()]);
-    let op = undoable_from_report(OpKind::Trash, &report, &[]);
+    let op = undoable_from_report(OpKind::Trash, &report);
     let Undoable::Trashed { items } = &op else {
         panic!("{op:?}")
     };
@@ -235,7 +234,7 @@ fn redo_after_undo_repeats() {
 
     // Trash: undo restores, redo trashes again, undo restores again.
     let report = trash_paths(&f.trash, std::slice::from_ref(&to));
-    journal.record(undoable_from_report(OpKind::Trash, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Trash, &report));
     journal.undo(&f.trash, &NoProgress).unwrap();
     assert!(to.exists());
     journal.redo(&f.trash, &NoProgress).unwrap();
@@ -308,7 +307,7 @@ fn undo_refused_when_edit_is_inside_copied_dir() {
     fs::write(tree.join("sub/f"), "one").unwrap();
     let report = copy(std::slice::from_ref(&tree), &f.dest, &never, &NoProgress).unwrap();
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Copy, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Copy, &report));
     let added = f.dest.join("tree/sub/new");
     fs::write(&added, "new").unwrap();
 
@@ -362,7 +361,7 @@ fn undo_trash_refused_when_original_taken() {
     fs::write(&b, "b").unwrap();
     let report = trash_paths(&f.trash, &[a.clone(), b.clone()]);
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Trash, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Trash, &report));
     fs::write(&b, "new b").unwrap();
 
     let err = journal.undo(&f.trash, &NoProgress).unwrap_err();
@@ -382,15 +381,12 @@ fn replace_is_irreversible() {
     let f = fixture();
     fs::write(f.src.join("a"), "new").unwrap();
     fs::write(f.dest.join("a"), "old").unwrap();
-    let replaced = RefCell::new(Vec::new());
-    let resolve = |_: &Path, existing: &Path| {
-        replaced.borrow_mut().push(existing.to_path_buf());
-        Conflict::Replace
-    };
+    let resolve = |_: &Path, _: &Path| Conflict::Replace;
     let report = copy(&[f.src.join("a")], &f.dest, &resolve, &NoProgress).unwrap();
     assert_eq!(report.done.len(), 1);
+    assert_eq!(report.replaced, [f.dest.join("a")]);
 
-    let op = undoable_from_report(OpKind::Copy, &report, &replaced.borrow());
+    let op = undoable_from_report(OpKind::Copy, &report);
     assert!(
         matches!(
             op,
@@ -428,15 +424,12 @@ fn merge_is_irreversible() {
     fs::write(f.src.join("d/new"), "new").unwrap();
     fs::create_dir(f.dest.join("d")).unwrap();
     fs::write(f.dest.join("d/old"), "old").unwrap();
-    let replaced = RefCell::new(Vec::new());
-    let resolve = |_: &Path, existing: &Path| {
-        replaced.borrow_mut().push(existing.to_path_buf());
-        Conflict::Replace
-    };
+    let resolve = |_: &Path, _: &Path| Conflict::Replace;
     let report = move_items(&[f.src.join("d")], &f.dest, &resolve, &NoProgress).unwrap();
     assert_eq!(report.done.len(), 1);
+    assert_eq!(report.replaced, [f.dest.join("d")]);
 
-    let op = undoable_from_report(OpKind::Move, &report, &replaced.borrow());
+    let op = undoable_from_report(OpKind::Move, &report);
 
     assert!(
         matches!(
@@ -486,7 +479,7 @@ fn cancelled_copy_journals_done_only() {
     assert!(report.cancelled);
     assert_eq!(report.done.len(), 1);
 
-    let op = undoable_from_report(OpKind::Copy, &report, &[]);
+    let op = undoable_from_report(OpKind::Copy, &report);
     match &op {
         Undoable::Copied { created } => {
             let paths: Vec<&PathBuf> = created.iter().map(|(p, _)| p).collect();
@@ -599,7 +592,7 @@ fn symlink_copy_undo_trashes_link_not_target() {
     std::os::unix::fs::symlink(&target, &link).unwrap();
     let report = copy(&[link], &f.dest, &never, &NoProgress).unwrap();
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Copy, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Copy, &report));
 
     journal.undo(&f.trash, &NoProgress).unwrap();
 
@@ -703,7 +696,7 @@ fn undo_trash_refused_when_entry_left_trash() {
     fs::write(&a, "a").unwrap();
     let report = trash_paths(&f.trash, std::slice::from_ref(&a));
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Trash, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Trash, &report));
     let item = f.trash.list().unwrap().items.remove(0);
     f.trash.purge(&item).unwrap();
 
@@ -724,7 +717,7 @@ fn undo_trash_refused_when_entry_is_another_item() {
     fs::write(&a, "first").unwrap();
     let report = trash_paths(&f.trash, std::slice::from_ref(&a));
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Trash, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Trash, &report));
     // The entry is emptied from the trash and a different file of another
     // folder takes its trash name.
     let item = f.trash.list().unwrap().items.remove(0);
@@ -759,7 +752,7 @@ fn unreadable_at_record_refuses_undo() {
     let report = copy(std::slice::from_ref(&tree), &f.dest, &never, &NoProgress).unwrap();
     let locked = f.dest.join("tree/locked");
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-    let op = undoable_from_report(OpKind::Copy, &report, &[]);
+    let op = undoable_from_report(OpKind::Copy, &report);
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     let mut journal = Journal::new();
     journal.record(op);
@@ -781,11 +774,7 @@ fn record_ignores_op_with_nothing_done() {
     journal.record(copy_files(&f, &["a"]));
     journal.undo(&f.trash, &NoProgress).unwrap();
 
-    journal.record(undoable_from_report(
-        OpKind::Copy,
-        &OpReport::default(),
-        &[],
-    ));
+    journal.record(undoable_from_report(OpKind::Copy, &OpReport::default()));
 
     assert!(journal.peek_undo().is_none());
     assert!(journal.peek_redo().is_some());
@@ -800,7 +789,7 @@ fn undo_move_refused_when_folder_gone() {
     fs::write(&file, "a").unwrap();
     let report = move_items(std::slice::from_ref(&file), &f.dest, &never, &NoProgress).unwrap();
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Move, &report));
     fs::remove_dir(&from_dir).unwrap();
 
     let err = journal.undo(&f.trash, &NoProgress).unwrap_err();
@@ -834,7 +823,7 @@ fn undo_move_back_across_devices() {
     let report = move_items(std::slice::from_ref(&tree), &far_dir, &never, &NoProgress).unwrap();
     assert!(report.failed.is_empty(), "{:?}", report.failed);
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Move, &report));
 
     journal.undo(&trash, &NoProgress).unwrap();
 
@@ -920,7 +909,7 @@ fn chained_undo_copy_trash() {
     let copied = f.dest.join("a");
     let prior = journal.prior_stamps(std::slice::from_ref(&copied));
     let report = trash_paths(&f.trash, std::slice::from_ref(&copied));
-    journal.record_after(undoable_from_report(OpKind::Trash, &report, &[]), prior);
+    journal.record_after(undoable_from_report(OpKind::Trash, &report), prior);
 
     journal.undo(&f.trash, &NoProgress).unwrap();
     assert_eq!(fs::read_to_string(&copied).unwrap(), "a");
@@ -937,7 +926,7 @@ fn chained_undo_move_rename() {
     fs::write(&a, "alpha").unwrap();
     let mut journal = Journal::new();
     let report = move_items(std::slice::from_ref(&a), &f.dest, &never, &NoProgress).unwrap();
-    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Move, &report));
     let moved = f.dest.join("a");
     let prior = journal.prior_stamps(std::slice::from_ref(&moved));
     let to = rename(&moved, "b").unwrap();
@@ -1069,11 +1058,7 @@ fn failed_replace_records_nothing() {
     assert!(report.replaced.is_empty());
     let mut journal = Journal::new();
 
-    journal.record(undoable_from_report(
-        OpKind::Copy,
-        &report,
-        &report.replaced,
-    ));
+    journal.record(undoable_from_report(OpKind::Copy, &report));
 
     assert!(journal.peek_undo().is_none());
 }
@@ -1089,7 +1074,7 @@ fn partial_undo_on_io_error() {
     let sources = [one.join("a"), two.join("b")];
     let report = move_items(&sources, &f.dest, &never, &NoProgress).unwrap();
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Move, &report));
     // The check passes (the folder exists, the name is free); the move
     // into a folder that cannot be written fails.
     fs::set_permissions(&two, fs::Permissions::from_mode(0o555)).unwrap();
@@ -1165,7 +1150,7 @@ fn undo_trash_refused_when_folder_gone() {
     fs::write(sub.join("a"), "a").unwrap();
     let report = trash_paths(&f.trash, &[sub.join("a")]);
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Trash, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Trash, &report));
     fs::remove_dir(&sub).unwrap();
 
     let err = journal.undo(&f.trash, &NoProgress).unwrap_err();
@@ -1185,7 +1170,7 @@ fn undo_move_refused_when_folder_is_symlink() {
     fs::write(sub.join("a"), "a").unwrap();
     let report = move_items(&[sub.join("a")], &f.dest, &never, &NoProgress).unwrap();
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Move, &report));
     let elsewhere = f.src.join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
     fs::remove_dir(&sub).unwrap();
@@ -1247,7 +1232,7 @@ fn undo_move_back_across_devices_detects_change() {
     let trash = Trash::with_home_trash(near.join("trash"));
     let report = move_items(std::slice::from_ref(&a), &far_dir, &never, &NoProgress).unwrap();
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Move, &report));
     let moved = far_dir.join("a");
     let progress = EditDuringCopy {
         target: moved.clone(),
@@ -1277,7 +1262,7 @@ fn undo_move_back_across_devices_reports_source_left() {
     let trash = Trash::with_home_trash(near.join("trash"));
     let report = move_items(std::slice::from_ref(&tree), &far_dir, &never, &NoProgress).unwrap();
     let mut journal = Journal::new();
-    journal.record(undoable_from_report(OpKind::Move, &report, &[]));
+    journal.record(undoable_from_report(OpKind::Move, &report));
     // A directory's stamp is its identity and its entries, so this does not
     // count as a change; it only stops the delete of `sub/f`.
     let locked = far_dir.join("tree/sub");
@@ -1315,7 +1300,7 @@ fn merged_prior_stamps_chain_every_item() {
         let one = move_items(std::slice::from_ref(&item), &elsewhere, &never, &NoProgress).unwrap();
         report.done.extend(one.done);
     }
-    journal.record_after(undoable_from_report(OpKind::Move, &report, &[]), prior);
+    journal.record_after(undoable_from_report(OpKind::Move, &report), prior);
 
     journal.undo(&f.trash, &NoProgress).unwrap();
     assert_eq!(names(&f.dest), ["a", "b"]);
@@ -1338,7 +1323,7 @@ fn replace_with_nothing_placed_is_still_irreversible() {
         replaced: vec![f.dest.join("a")],
         ..OpReport::default()
     };
-    let op = undoable_from_report(OpKind::Move, &report, &report.replaced);
+    let op = undoable_from_report(OpKind::Move, &report);
     assert!(matches!(
         op,
         Undoable::Irreversible {

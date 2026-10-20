@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
-//! A mock Tauri app with the plugin, a trash and a MIME database under one
-//! temp directory, and every plugin event captured in order.
+//! A mock Tauri app with the plugin, a trash, a MIME database and XDG base
+//! directories under one temp directory, and every plugin event captured in
+//! order.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 
@@ -11,10 +12,11 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use kernkraft_fs::Trash;
+use kernkraft_fs::{BaseDirs, Trash};
 use kernkraft_tauri::{
     Config, Kernkraft, KernkraftExt, OpDoneEvent, OpId, WirePath, EVENT_DIR_CHANGED,
-    EVENT_DIR_GONE, EVENT_OP_CONFLICT, EVENT_OP_DONE, EVENT_OP_PROGRESS,
+    EVENT_DIR_GONE, EVENT_OP_CONFLICT, EVENT_OP_DONE, EVENT_OP_PROGRESS, EVENT_SEARCH_HIT,
+    EVENT_THEME_CHANGED, EVENT_THUMB,
 };
 use serde_json::Value;
 use tauri::ipc::{CallbackFn, InvokeBody};
@@ -35,9 +37,22 @@ pub struct Event {
     pub at: Instant,
 }
 
+/// The MIME database every test app loads (Shared MIME-info Database 0.21,
+/// `globs2` is `weight:type:glob`, `subclasses` is `type parent`).
+pub const GLOBS2: &str = "50:text/plain:*.txt\n\
+    50:text/markdown:*.md\n\
+    50:application/x-shellscript:*.sh\n\
+    50:image/svg+xml:*.svg\n\
+    50:image/png:*.png\n\
+    50:application/pdf:*.pdf\n";
+pub const SUBCLASSES: &str = "application/x-shellscript text/plain\n";
+
 pub struct Env {
     pub base: PathBuf,
     pub trash_dir: PathBuf,
+    /// The XDG base directories the plugin was given; `home` is
+    /// `base/home`, and every other directory is under it.
+    pub xdg: BaseDirs,
     pub app: App<MockRuntime>,
     pub kk: Kernkraft<MockRuntime>,
     pub events: Receiver<Event>,
@@ -49,11 +64,25 @@ pub fn env() -> Env {
     let base = root.path().canonicalize().unwrap();
     let data = base.join("data");
     fs::create_dir_all(data.join("mime")).unwrap();
-    fs::write(data.join("mime/globs2"), "50:text/plain:*.txt\n").unwrap();
+    fs::write(data.join("mime/globs2"), GLOBS2).unwrap();
+    fs::write(data.join("mime/subclasses"), SUBCLASSES).unwrap();
     let trash_dir = base.join("trash");
+    let home = base.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let xdg = BaseDirs {
+        config: home.join(".config"),
+        cache: home.join(".cache"),
+        state: home.join(".local/state"),
+        data: data.clone(),
+        config_dirs: Vec::new(),
+        data_dirs: Vec::new(),
+        current_desktop: Vec::new(),
+        home,
+    };
     let config = Config {
         trash: Some(Trash::with_home_trash(trash_dir.clone())),
         mime_data_dirs: Some(vec![data]),
+        base_dirs: Some(xdg.clone()),
     };
     let app = mock_builder()
         .plugin(kernkraft_tauri::init_with(config))
@@ -66,6 +95,9 @@ pub fn env() -> Env {
         EVENT_OP_DONE,
         EVENT_DIR_CHANGED,
         EVENT_DIR_GONE,
+        EVENT_THUMB,
+        EVENT_THEME_CHANGED,
+        EVENT_SEARCH_HIT,
     ] {
         let tx = tx.clone();
         app.listen_any(name, move |e| {
@@ -81,6 +113,7 @@ pub fn env() -> Env {
     Env {
         base,
         trash_dir,
+        xdg,
         app,
         kk,
         events,
@@ -113,6 +146,16 @@ impl Env {
                 return (seen, done);
             }
             seen.push(e);
+        }
+    }
+
+    /// The next event named `name`; other events are dropped.
+    pub fn wait_event(&self, name: &str) -> Value {
+        loop {
+            let e = self.next_event();
+            if e.name == name {
+                return e.payload;
+            }
         }
     }
 

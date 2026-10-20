@@ -1297,3 +1297,35 @@ fn undo_move_back_across_devices_reports_source_left() {
     );
     assert_eq!(fs::read_to_string(tree.join("sub/f")).unwrap(), "data");
 }
+
+#[test]
+fn merged_prior_stamps_chain_every_item() {
+    // Two copied files are then moved one at a time, each with its prior
+    // stamp taken just before its own move; the stamps are merged into one
+    // record. Undoing the move carries both copies' stamps, so undoing the
+    // copy afterwards finds both unchanged.
+    let f = fixture();
+    let mut journal = Journal::new();
+    journal.record(copy_files(&f, &["a", "b"]));
+    let elsewhere = f.src.join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    let mut prior = kernkraft_fs::PriorStamps::default();
+    let mut report = OpReport::default();
+    for name in ["a", "b"] {
+        let item = f.dest.join(name);
+        prior.merge(journal.prior_stamps(std::slice::from_ref(&item)));
+        let one = move_items(std::slice::from_ref(&item), &elsewhere, &never, &NoProgress).unwrap();
+        report.done.extend(one.done);
+    }
+    journal.record_after(undoable_from_report(OpKind::Move, &report, &[]), prior);
+
+    journal.undo(&f.trash, &NoProgress).unwrap();
+    assert_eq!(names(&f.dest), ["a", "b"]);
+    journal.undo(&f.trash, &NoProgress).unwrap();
+
+    assert!(names(&f.dest).is_empty());
+    assert_eq!(
+        trashed_originals(&f.trash),
+        [f.dest.join("a"), f.dest.join("b")]
+    );
+}

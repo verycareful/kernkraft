@@ -30,7 +30,9 @@ pub use ops::{
     validate_name, Conflict, OpReport,
 };
 pub use progress::{NoProgress, Progress};
-pub use scan::{list_dir, scan, Entry, EntryKind, ScanOptions, ScanReport, DEFAULT_MAX_DEPTH};
+pub use scan::{
+    list_dir, measure, scan, Entry, EntryKind, Measure, ScanOptions, ScanReport, DEFAULT_MAX_DEPTH,
+};
 pub use trash::{
     choose_target, decode_trash_path, encode_trash_path, parse_trashinfo, Trash, TrashListing,
     TrashTarget, TrashedItem,

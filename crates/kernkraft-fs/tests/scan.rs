@@ -8,7 +8,7 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use kernkraft_fs::{list_dir, scan, Entry, EntryKind, NoProgress, Progress, ScanOptions};
+use kernkraft_fs::{list_dir, measure, scan, Entry, EntryKind, NoProgress, Progress, ScanOptions};
 
 fn all(_: &Entry) -> bool {
     true
@@ -245,4 +245,91 @@ fn fifo_is_kind_other() {
     let entries = list_dir(root.path(), false).unwrap();
     assert_eq!(entries[0].kind, EntryKind::Other);
     assert!(!entries[0].target_is_dir);
+}
+
+#[test]
+fn entry_of_describes_one_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join(".f");
+    fs::write(&file, "123").unwrap();
+    symlink("nowhere", dir.path().join("dangling")).unwrap();
+    let e = Entry::of(&file).unwrap();
+    assert_eq!((e.kind, e.len, e.hidden), (EntryKind::File, 3, true));
+    assert_eq!(e.name, ".f");
+    let link = Entry::of(&dir.path().join("dangling")).unwrap();
+    assert_eq!(link.kind, EntryKind::Symlink);
+    assert!(!link.target_is_dir);
+    assert!(matches!(
+        Entry::of(&dir.path().join("missing")),
+        Err(kernkraft_fs::FsError::NotFound { .. })
+    ));
+}
+
+#[test]
+fn measure_counts_files_dirs_and_bytes() {
+    let root = tempfile::tempdir().unwrap();
+    let top = root.path().join("top");
+    fs::create_dir_all(top.join("sub")).unwrap();
+    fs::write(top.join("a"), "12345").unwrap();
+    fs::write(top.join("sub/b"), "123").unwrap();
+    let single = root.path().join("single");
+    fs::write(&single, "1234567").unwrap();
+    let m = measure(&[top, single], &NoProgress);
+    // top and sub are directories; a, sub/b and single are files.
+    assert_eq!((m.files, m.dirs, m.bytes), (3, 2, 5 + 3 + 7));
+    assert!(m.unreadable.is_empty());
+    assert!(!m.cancelled);
+}
+
+#[test]
+fn measure_never_follows_symlinks() {
+    let root = tempfile::tempdir().unwrap();
+    let big = root.path().join("big");
+    fs::create_dir(&big).unwrap();
+    fs::write(big.join("data"), vec![0u8; 1000]).unwrap();
+    let top = root.path().join("top");
+    fs::create_dir(&top).unwrap();
+    symlink(&big, top.join("to-big")).unwrap();
+    symlink(&top, top.join("loop")).unwrap();
+    let m = measure(std::slice::from_ref(&top), &NoProgress);
+    // The two links count as entries, not as what they point to.
+    assert_eq!((m.files, m.dirs, m.bytes), (2, 1, 0));
+}
+
+#[test]
+fn measure_counts_hard_links_once() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("a"), "1234").unwrap();
+    fs::hard_link(root.path().join("a"), root.path().join("b")).unwrap();
+    let m = measure(&[root.path().to_path_buf()], &NoProgress);
+    assert_eq!((m.files, m.bytes), (2, 4));
+}
+
+#[test]
+fn measure_reports_unreadable() {
+    let root = tempfile::tempdir().unwrap();
+    let locked = root.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&locked).is_ok() {
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    let missing = root.path().join("missing");
+    let m = measure(&[root.path().to_path_buf(), missing.clone()], &NoProgress);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(m.unreadable, vec![locked, missing]);
+    assert_eq!(m.dirs, 2);
+}
+
+#[test]
+fn measure_stops_when_cancelled() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("a"), "").unwrap();
+    let m = measure(
+        &[root.path().to_path_buf()],
+        &CancelNow(AtomicBool::new(true)),
+    );
+    assert!(m.cancelled);
+    assert_eq!(m.files, 0);
 }

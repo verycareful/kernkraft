@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-redo"
+description = "Enables the redo command without any pre-configured scope."
+commands.allow = ["redo"]
+
+[[permission]]
+identifier = "deny-redo"
+description = "Denies the redo command without any pre-configured scope."
+commands.deny = ["redo"]

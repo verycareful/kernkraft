@@ -367,6 +367,17 @@ pub struct UndoOutcome {
 pub struct PriorStamps(Vec<(PathBuf, TreeStamp)>);
 
 impl PriorStamps {
+    /// Adds the stamps in `other` for paths not stamped here yet. An
+    /// operation that runs item by item takes each item's stamps just
+    /// before that item and merges them into one record.
+    pub fn merge(&mut self, other: PriorStamps) {
+        for (path, stamp) in other.0 {
+            if self.get(&path).is_none() {
+                self.0.push((path, stamp));
+            }
+        }
+    }
+
     fn get(&self, path: &Path) -> Option<&TreeStamp> {
         self.0.iter().find(|(p, _)| p == path).map(|(_, s)| s)
     }

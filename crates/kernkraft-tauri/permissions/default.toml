@@ -3,4 +3,21 @@
 
 [default]
 description = "Allows every kernkraft command"
-permissions = []
+permissions = [
+    "allow-list-dir",
+    "allow-create-dir",
+    "allow-create-file",
+    "allow-rename",
+    "allow-start-op",
+    "allow-answer-conflict",
+    "allow-cancel-op",
+    "allow-trash-list",
+    "allow-trash-restore",
+    "allow-trash-purge",
+    "allow-undo",
+    "allow-redo",
+    "allow-undo-state",
+    "allow-watch-dir",
+    "allow-unwatch-dir",
+    "allow-properties",
+]

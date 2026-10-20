@@ -48,6 +48,13 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// The entry for `path` itself, as [`list_dir`] would list it in its
+    /// directory. A symlink is described as itself, never followed.
+    pub fn of(path: &Path) -> Result<Entry, FsError> {
+        let meta = fs::symlink_metadata(path).map_err(|e| FsError::not_found_or_io(path, e))?;
+        Ok(Entry::new(path.to_path_buf(), &meta))
+    }
+
     fn new(path: PathBuf, meta: &Metadata) -> Entry {
         let name = path
             .file_name()
@@ -186,4 +193,85 @@ pub fn scan(
         stack.extend(subdirs.into_iter().rev());
     }
     report
+}
+
+/// Totals of [`measure`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Measure {
+    /// Every entry that is not a directory: regular files, symlinks and
+    /// special files.
+    pub files: u64,
+    pub dirs: u64,
+    /// Sum of the lengths of the regular files, each file with several hard
+    /// links counted once.
+    pub bytes: u64,
+    /// Paths that could not be read: a root that is missing, or a directory
+    /// whose entries could not be listed. Their contents are not counted.
+    pub unreadable: Vec<PathBuf>,
+    pub cancelled: bool,
+}
+
+/// Counts the files, directories and bytes in `paths` and everything under
+/// them, as a file manager's properties view shows them.
+///
+/// No symlink is followed, at the top or inside: a link counts as one file
+/// of no bytes, so a link to a large folder, or a link loop, adds nothing.
+/// A directory reached twice (through a bind mount) is walked once, keyed by
+/// `(device, inode)`, and so is a file with several hard links counted for
+/// its bytes once, as `du(1)` does. Roots are walked in order, each depth
+/// first. `progress` receives the count of entries seen (total unknown,
+/// reported as 0) with the directory being read, and is polled for
+/// cancellation before each directory.
+pub fn measure(paths: &[PathBuf], progress: &dyn Progress) -> Measure {
+    let mut m = Measure::default();
+    let mut dirs_seen: HashSet<(u64, u64)> = HashSet::new();
+    let mut linked_seen: HashSet<(u64, u64)> = HashSet::new();
+    let mut seen: u64 = 0;
+    for root in paths {
+        let mut stack = vec![root.clone()];
+        while let Some(path) = stack.pop() {
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(meta) => meta,
+                // An entry removed while the walk runs is not counted; only
+                // a root the caller named is reported missing.
+                Err(e) if e.kind() == ErrorKind::NotFound && &path != root => continue,
+                Err(_) => {
+                    m.unreadable.push(path);
+                    continue;
+                }
+            };
+            seen += 1;
+            if !meta.is_dir() {
+                m.files += 1;
+                let counted = meta.nlink() <= 1 || linked_seen.insert((meta.dev(), meta.ino()));
+                if meta.is_file() && counted {
+                    m.bytes += meta.len();
+                }
+                continue;
+            }
+            if !dirs_seen.insert((meta.dev(), meta.ino())) {
+                continue;
+            }
+            m.dirs += 1;
+            if progress.is_cancelled() {
+                m.cancelled = true;
+                return m;
+            }
+            progress.report(seen, 0, &path.to_string_lossy());
+            let children = fs::read_dir(&path).and_then(|entries| {
+                entries
+                    .map(|e| e.map(|e| e.path()))
+                    .collect::<std::io::Result<Vec<_>>>()
+            });
+            match children {
+                Ok(mut children) => {
+                    // Reversed so the first child by name is walked first.
+                    children.sort_by(|a, b| b.cmp(a));
+                    stack.extend(children);
+                }
+                Err(_) => m.unreadable.push(path),
+            }
+        }
+    }
+    m
 }

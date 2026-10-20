@@ -24,6 +24,8 @@ tauri.workspace = true
 serde.workspace = true
 base64.workspace = true
 thiserror.workspace = true
+inotify.workspace = true
+rustix.workspace = true
 
 [build-dependencies]
 tauri-plugin.workspace = true
@@ -31,6 +33,7 @@ tauri-plugin.workspace = true
 [dev-dependencies]
 tauri = { workspace = true, features = ["test"] }
 serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

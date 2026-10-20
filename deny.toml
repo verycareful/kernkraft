@@ -12,6 +12,9 @@
 # Linux is the only platform kernkraft ships for. tauri pulls reqwest (and
 # through it hyper, socket2 and tokio's `net`) and jni only for its Android and
 # iOS targets, so the graph is checked for the Linux targets.
+# kernkraft-jni (Android) will need an Android target here, and with it a
+# fresh look at what tauri and jni pull in for that target: revisit this list
+# when that crate is added.
 [graph]
 targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 all-features = true

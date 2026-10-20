@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-unwatch-dir"
+description = "Enables the unwatch_dir command without any pre-configured scope."
+commands.allow = ["unwatch_dir"]
+
+[[permission]]
+identifier = "deny-unwatch-dir"
+description = "Denies the unwatch_dir command without any pre-configured scope."
+commands.deny = ["unwatch_dir"]

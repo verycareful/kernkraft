@@ -164,3 +164,32 @@ fn text_save_refuses_to_replace_lossy_content() {
         .unwrap();
     assert!(copy.is_file());
 }
+
+#[test]
+fn text_save_refuses_a_write_protected_file() {
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let e = env();
+    let path = e.dir("t").join("ro.txt");
+    fs::write(&path, "keep\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+    let opened = e.kk.text_open(w(&path)).unwrap();
+    assert_eq!(opened.read_only.unwrap().kind, "NoWritePermission");
+    let err =
+        e.kk.text_save(
+            w(&path),
+            "lost\n".to_owned(),
+            "lf".to_owned(),
+            false,
+            Some(opened.stamp),
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, "ReadOnly");
+    assert_eq!(
+        serde_json::to_value(err.details.unwrap()).unwrap(),
+        serde_json::json!({"k": "ReadOnly", "reason": "NoWritePermission"})
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "keep\n");
+}

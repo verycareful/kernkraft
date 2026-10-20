@@ -150,19 +150,33 @@ fn read_regular(path: &Path) -> Result<(Vec<u8>, FileStamp), TextError> {
 /// since counts as changed). Without it, whatever is at `path` is replaced:
 /// Save As to a new path, or an overwrite the user chose.
 ///
-/// Either way, an existing file is read and decoded first (through the
-/// same handle-checked read as [`open`]), and one whose content decodes
-/// read-only for a content reason ([`ReadOnly::is_content`]: not UTF-8,
-/// UTF-16, mixed line endings) is refused with [`TextError::ReadOnly`]:
-/// the text the caller holds for it is a lossy copy, and writing it would
-/// replace the original bytes. With `expected`, the stamp of that read must
-/// match, and the write checks the stamp again, so a change between the
-/// read and the write is caught too. An existing file above
-/// [`OPEN_LIMIT`] cannot be checked and is refused with
-/// [`TextError::TooLargeToOpen`]; anything that is not a regular file is
-/// refused as in [`open`]. [`ReadOnly::TooLarge`] and
-/// [`ReadOnly::NoWritePermission`] are not checked here: the text of such a
-/// file is exact, and a write the user may not make fails on its own.
+/// Either way, an existing file at `path` (symlinks followed) is checked
+/// first, and nothing is written when it fails:
+///
+/// - Anything that is not a regular file is refused from its metadata, as
+///   in [`open`], before it is opened, so a save aimed at a device node
+///   never opens the device; then the same handle-checked read as [`open`]
+///   refuses one swapped in after that check, without blocking.
+/// - With `expected`, the stamp of that read must match. The write checks
+///   the stamp again, so a change between the read and the write is caught
+///   too.
+/// - Content that decodes read-only for a content reason
+///   ([`ReadOnly::is_content`]: not UTF-8, UTF-16, mixed line endings) is
+///   refused with [`TextError::ReadOnly`]: the text the caller holds for it
+///   is a lossy copy, and writing it would replace the original bytes.
+/// - A file the current user has no write permission for (`access(2)` with
+///   `W_OK`, the check [`open`] marks [`ReadOnly::NoWritePermission`] with)
+///   is refused with [`TextError::ReadOnly`] and that reason. The atomic
+///   write replaces the file by a rename in its folder, which a writable
+///   folder allows whatever the file's own mode, so without this check a
+///   write-protected file would be replaced.
+/// - A file above [`OPEN_LIMIT`] cannot be read to make these checks, so
+///   it is refused with [`TextError::TooLargeToOpen`], Save As over it
+///   included: replacing a file nothing has checked is what these rules
+///   exist to prevent.
+///
+/// [`ReadOnly::TooLarge`] alone is no reason to refuse: the text of such a
+/// file is exact. Save As to a path with nothing there skips every check.
 pub fn save(
     path: &Path,
     text: &str,
@@ -170,31 +184,54 @@ pub fn save(
     bom: bool,
     expected: Option<&FileStamp>,
 ) -> Result<FileStamp, TextError> {
-    match read_regular(path) {
-        Ok((bytes, stamp)) => {
-            if expected.is_some_and(|e| *e != stamp) {
-                return Err(FsError::ExternalModification {
-                    path: path.to_path_buf(),
-                }
-                .into());
+    match fs::metadata(path) {
+        Ok(meta) => {
+            if !meta.is_file() {
+                return Err(not_regular(path).into());
             }
-            if let Some(reason) = decode(&bytes).read_only.filter(ReadOnly::is_content) {
-                return Err(TextError::ReadOnly {
-                    path: path.to_path_buf(),
-                    reason,
-                });
-            }
+            check_existing(path, expected)?;
         }
         // Nothing there: a new file, or (with `expected`) one deleted
         // since, which the write reports as changed.
-        Err(TextError::Fs(FsError::NotFound { .. })) => {}
-        Err(e) => return Err(e),
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(source) => return Err(not_found_or_io(path, source).into()),
     }
     Ok(write_bytes_atomic(
         path,
         expected,
         &encode(text, ending, bom),
     )?)
+}
+
+/// The checks [`save`] makes on a regular file already at `path`.
+fn check_existing(path: &Path, expected: Option<&FileStamp>) -> Result<(), TextError> {
+    let (bytes, stamp) = match read_regular(path) {
+        Ok(read) => read,
+        // Removed since the metadata check: as if nothing was there.
+        Err(TextError::Fs(FsError::NotFound { .. })) => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if expected.is_some_and(|e| *e != stamp) {
+        return Err(FsError::ExternalModification {
+            path: path.to_path_buf(),
+        }
+        .into());
+    }
+    let reason = decode(&bytes)
+        .read_only
+        .filter(ReadOnly::is_content)
+        .or_else(|| {
+            access(path, Access::WRITE_OK)
+                .is_err()
+                .then_some(ReadOnly::NoWritePermission)
+        });
+    match reason {
+        Some(reason) => Err(TextError::ReadOnly {
+            path: path.to_path_buf(),
+            reason,
+        }),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

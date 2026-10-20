@@ -179,12 +179,16 @@ impl<R: Runtime> Kernkraft<R> {
     /// whatever is there: Save As to a new path, or an overwrite the user
     /// chose after being told the file changed. Returns the new stamp.
     ///
-    /// In both cases an existing file whose content decodes read-only (not
-    /// UTF-8, UTF-16, mixed line endings) is never replaced: the save fails
-    /// with `ReadOnly`, whose details name the reason, and the file keeps
-    /// its bytes. The text shown for such a file is a lossy copy, and a UI
-    /// slip must not write it back over the original. Save As to a path
-    /// with nothing there is not affected.
+    /// In both cases an existing file is never replaced when its content
+    /// decodes read-only (not UTF-8, UTF-16, mixed line endings: the text
+    /// shown is a lossy copy) or the user has no write permission for it:
+    /// the save fails with `ReadOnly`, whose details name the reason
+    /// (`NoWritePermission` for the latter), and the file keeps its bytes
+    /// and mode. Only Save As to another path saves such text. Anything at
+    /// `path` that is not a regular file is refused (`Io`) before it is
+    /// opened, and an existing file above `kernkraft_text::OPEN_LIMIT` is
+    /// refused (`TooLargeToOpen`) because it cannot be checked. Save As to a
+    /// path with nothing there is not affected.
     pub fn text_save(
         &self,
         path: WirePath,

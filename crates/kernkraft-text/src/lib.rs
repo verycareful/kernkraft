@@ -13,9 +13,10 @@
 //! line endings, too large to edit, not writable) is still opened, as a
 //! lossy display copy marked [`ReadOnly`]; the caller must not offer Save
 //! for it. [`save`] checks the file it would replace as well: content that
-//! decodes read-only (not UTF-8, UTF-16, mixed line endings) is never
-//! overwritten, so a slip in the caller cannot replace the original bytes
-//! with the lossy copy.
+//! decodes read-only (not UTF-8, UTF-16, mixed line endings) and files the
+//! user may not write are never overwritten, and neither is anything that
+//! is not a regular file, so a slip in the caller cannot replace the
+//! original bytes with the lossy copy, nor a protected file at all.
 
 mod decode;
 mod encode;

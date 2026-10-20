@@ -269,3 +269,89 @@ fn save_with_stamp_of_deleted_file_is_external_modification() {
     );
     assert!(!path.exists());
 }
+
+#[test]
+fn save_refuses_write_protected_file() {
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ro.txt");
+    fs::write(&path, "text\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+    let file = open(&path).unwrap();
+    // The folder is writable, so the atomic rename would succeed: the
+    // refusal has to come from save itself.
+    for expected in [Some(&file.stamp), None] {
+        let err = save(&path, "changed\n", LineEnding::Lf, false, expected).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                TextError::ReadOnly {
+                    reason: ReadOnly::NoWritePermission,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), "text\n");
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o444
+    );
+    // Save As to a new path in the same folder works.
+    save(
+        &dir.path().join("copy.txt"),
+        "changed\n",
+        LineEnding::Lf,
+        false,
+        None,
+    )
+    .unwrap();
+}
+
+fn invalid_input(err: &TextError) -> bool {
+    matches!(err, TextError::Fs(FsError::Io { source, .. }) if source.kind() == std::io::ErrorKind::InvalidInput)
+}
+
+#[test]
+fn save_refuses_a_device_node() {
+    let err = save(
+        std::path::Path::new("/dev/null"),
+        "x",
+        LineEnding::Lf,
+        false,
+        None,
+    )
+    .unwrap_err();
+    assert!(invalid_input(&err), "{err:?}");
+}
+
+#[test]
+fn save_refuses_a_fifo_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pipe");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &path,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread_path = path.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(save(&thread_path, "x", LineEnding::Lf, false, None));
+    });
+    let err = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("save blocked on a FIFO")
+        .unwrap_err();
+    assert!(invalid_input(&err), "{err:?}");
+    // Still the FIFO, not replaced by a regular file.
+    assert!(rustix::fs::stat(&path).is_ok_and(|s| {
+        rustix::fs::FileType::from_raw_mode(s.st_mode) == rustix::fs::FileType::Fifo
+    }));
+}

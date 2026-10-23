@@ -767,7 +767,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 3.0.9",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-bus"
-version = "0.1.1+0.31"
+version = "0.1.1+0.32"
 dependencies = [
  "thiserror 2.0.21",
  "zbus",
@@ -2229,7 +2229,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-fs"
-version = "0.1.1+0.31"
+version = "0.1.1+0.32"
 dependencies = [
  "chrono",
  "percent-encoding",
@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-pdf"
-version = "0.1.1+0.31"
+version = "0.1.1+0.32"
 dependencies = [
  "kernkraft-fs",
  "lopdf",
@@ -2251,7 +2251,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-tauri"
-version = "0.1.1+0.31"
+version = "0.1.1+0.32"
 dependencies = [
  "base64 0.22.1",
  "inotify",
@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-text"
-version = "0.1.1+0.31"
+version = "0.1.1+0.32"
 dependencies = [
  "kernkraft-fs",
  "rustix",
@@ -2283,7 +2283,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-theme"
-version = "0.1.1+0.31"
+version = "0.1.1+0.32"
 dependencies = [
  "inotify",
  "kernkraft-bus",
@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-thumb"
-version = "0.1.1+0.31"
+version = "0.1.1+0.32"
 dependencies = [
  "flate2",
  "image",
@@ -2314,7 +2314,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-volumes"
-version = "0.1.1+0.31"
+version = "0.1.1+0.32"
 dependencies = [
  "kernkraft-bus",
  "rustix",
@@ -2326,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-xdg-apps"
-version = "0.1.1+0.31"
+version = "0.1.1+0.32"
 dependencies = [
  "kernkraft-fs",
  "percent-encoding",
@@ -4203,9 +4203,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.54.0"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0c168a474b95bfecfe908a65d4bdffc523144b649a74c09c286afb35d53e0bc"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "bytes",
  "libc",

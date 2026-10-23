@@ -38,6 +38,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features --no-fail-fast
 
+      - name: Timing budgets (release build)
+        run: cargo test --release -p kernkraft-xdg-apps --test mime -- --ignored
+
       - name: Core crates never depend on the platform
         run: scripts/check-boundary.sh
 

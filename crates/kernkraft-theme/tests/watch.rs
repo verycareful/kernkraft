@@ -206,15 +206,30 @@ fn gather_reports_unreadable_sources() {
 }
 
 /// Needs a session bus; returns early without one. The portal itself is
-/// optional: `Ok(None)` is a valid answer.
+/// optional: `Ok(None)` is a valid answer, and so is a portal that is
+/// registered for activation but never answers (a headless session bus),
+/// which the bus timeout turns into a `Portal` error instead of a hang.
 #[test]
 fn live_bus_read_and_drop_ends_portal_thread() {
     let Ok(conn) = kernkraft_bus::session() else {
         eprintln!("no session bus: skipping");
         return;
     };
-    let portal = read_portal(&conn);
-    assert!(portal.is_ok(), "{portal:?}");
+    let start = Instant::now();
+    match read_portal(&conn) {
+        Ok(_) => {}
+        Err(ThemeError::Portal(m)) if m.contains("timed out") => {
+            eprintln!("portal registered but not answering: {m}");
+        }
+        Err(e) => panic!("{e:?}"),
+    }
+    // Two calls at most (ReadOne, then Read), each bounded by the bus
+    // timeout of 3 s, plus slack.
+    assert!(
+        start.elapsed() < Duration::from_secs(8),
+        "{:?}",
+        start.elapsed()
+    );
     let root = tempfile::tempdir().unwrap();
     let base = dirs(root.path());
     let (cb, _rx) = collector();

@@ -37,6 +37,7 @@ const CONTRAST_HIGH: u32 = 1;
 const ERR_SERVICE_UNKNOWN: &str = "org.freedesktop.DBus.Error.ServiceUnknown";
 const ERR_NAME_HAS_NO_OWNER: &str = "org.freedesktop.DBus.Error.NameHasNoOwner";
 const ERR_UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
+const ERR_UNKNOWN_INTERFACE: &str = "org.freedesktop.DBus.Error.UnknownInterface";
 const ERR_PORTAL_NOT_FOUND: &str = "org.freedesktop.portal.Error.NotFound";
 
 /// Maps a `color-scheme` value: 1 dark, 2 light, anything else (0, no
@@ -112,6 +113,18 @@ pub(crate) fn is_no_portal(e: &zbus::Error) -> bool {
     )
 }
 
+/// `true` when the portal object exists but offers no Settings interface:
+/// the reply names the interface as unknown, or `Read` (present in every
+/// version of the interface) is unknown too. Some peers (GDBus) answer a
+/// missing interface with `UnknownMethod`, so `legacy` tells the two apart.
+fn is_no_settings(e: &zbus::Error, legacy: bool) -> bool {
+    match error_name(e).as_deref() {
+        Some(ERR_UNKNOWN_INTERFACE) => true,
+        Some(ERR_UNKNOWN_METHOD) => legacy,
+        _ => false,
+    }
+}
+
 /// Outcome of asking for one key.
 enum Read<T> {
     NoPortal,
@@ -140,7 +153,7 @@ fn read_key<T>(
         );
         let msg = match reply {
             Ok(m) => m,
-            Err(e) if is_no_portal(&e) => return Ok(Read::NoPortal),
+            Err(e) if is_no_portal(&e) || is_no_settings(&e, *legacy) => return Ok(Read::NoPortal),
             Err(e) if !*legacy && error_name(&e).as_deref() == Some(ERR_UNKNOWN_METHOD) => {
                 *legacy = true;
                 continue;
@@ -165,7 +178,7 @@ fn wrong_type(key: &str) -> ThemeError {
 /// Reads `color-scheme`, `accent-color` and `contrast` from the portal.
 ///
 /// `Ok(None)` when no portal is on the bus (`ServiceUnknown` or
-/// `NameHasNoOwner`). A key the portal does not provide is left unset. Any
+/// `NameHasNoOwner`) or the portal offers no Settings interface. A key the portal does not provide is left unset. Any
 /// other D-Bus error, or a value of the wrong type, is an error. The calls
 /// block for the connection's method timeout, if it has one.
 pub fn read_portal(conn: &Connection) -> Result<Option<Portal>, ThemeError> {

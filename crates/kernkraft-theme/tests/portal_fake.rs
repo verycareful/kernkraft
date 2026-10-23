@@ -108,3 +108,17 @@ fn version_1_falls_back_to_read() {
     assert_eq!(p.accent, Some(Rgba::rgb(255, 0, 128)));
     assert!(p.high_contrast);
 }
+
+/// A portal frontend whose backends offer no Settings interface (the
+/// object exists, the interface does not): the same as no portal.
+struct NoSettings;
+
+#[zbus::interface(name = "org.freedesktop.portal.FileChooser")]
+impl NoSettings {
+    fn open_file(&self) {}
+}
+
+#[test]
+fn portal_without_settings_interface_is_no_portal() {
+    assert_eq!(read_portal(&connect(NoSettings)).unwrap(), None);
+}

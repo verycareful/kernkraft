@@ -19,7 +19,11 @@
 //!   of lower priority.
 //! - Section 4, "Default application": group `[Default Applications]`; the
 //!   first listed desktop file ID that is installed wins, file by file in
-//!   priority order.
+//!   priority order. When no file names a usable one, the most-preferred
+//!   association is the default: the first of [`AppRegistry::apps_for`]
+//!   (section 3 additions in priority order, then the entries registering
+//!   the type, as `mimeinfo.cache` records them, directory by directory in
+//!   `$XDG_DATA_HOME`, `$XDG_DATA_DIRS` order, without the removed ones).
 //!
 //! Desktop entries are read from `applications` below `$XDG_DATA_HOME` and
 //! each of `$XDG_DATA_DIRS` (Desktop Entry Specification 1.5, "Desktop File
@@ -106,6 +110,9 @@ pub(crate) fn parse_mimeapps(path: &Path, contents: &str) -> Result<MimeApps, Ap
 pub struct AppRegistry {
     /// Usable applications only: no `Hidden` entry is ever in here.
     entries: BTreeMap<String, DesktopEntry>,
+    /// For each ID in `entries`, the index of the `applications` directory
+    /// it was read from, `$XDG_DATA_HOME` first.
+    rank: HashMap<String, usize>,
     /// IDs of `Hidden=true` entries. They are not returned, but they hide
     /// every entry of the same ID in a lower-priority directory.
     shadowed: HashSet<String>,
@@ -127,15 +134,16 @@ impl AppRegistry {
     pub fn load(base: &BaseDirs) -> Result<AppRegistry, AppsError> {
         let mut registry = AppRegistry {
             entries: BTreeMap::new(),
+            rank: HashMap::new(),
             shadowed: HashSet::new(),
             lists: Vec::new(),
             skipped: Vec::new(),
         };
         let mut app_dirs = vec![base.data.join("applications")];
         app_dirs.extend(base.data_dirs.iter().map(|d| d.join("applications")));
-        for dir in &app_dirs {
+        for (rank, dir) in app_dirs.iter().enumerate() {
             let mut visited = HashSet::new();
-            registry.scan(dir, dir, &mut visited)?;
+            registry.scan(dir, dir, rank, &mut visited)?;
         }
         for dir in list_dirs(base, &app_dirs) {
             for name in list_names(base) {
@@ -157,6 +165,7 @@ impl AppRegistry {
         &mut self,
         root: &Path,
         dir: &Path,
+        rank: usize,
         visited: &mut HashSet<PathBuf>,
     ) -> Result<(), AppsError> {
         let listing = match fs::read_dir(dir) {
@@ -185,7 +194,7 @@ impl AppRegistry {
                 }
             };
             if meta.is_dir() {
-                self.scan(root, &path, visited)?;
+                self.scan(root, &path, rank, visited)?;
             } else if path.extension().is_some_and(|e| e == "desktop") {
                 let id = desktop_id(root, &path);
                 if self.entries.contains_key(&id) || self.shadowed.contains(&id) {
@@ -197,6 +206,7 @@ impl AppRegistry {
                             self.shadowed.insert(id);
                         }
                         Ok(entry) => {
+                            self.rank.insert(id.clone(), rank);
                             self.entries.insert(id, entry);
                         }
                         Err(AppsError::NotAnApplication { .. }) => {}
@@ -226,41 +236,58 @@ impl AppRegistry {
 
     /// Applications that can open `mime`, best first: the associations
     /// added in `mimeapps.list` files (higher priority file first), then
-    /// the entries whose `MimeType=` names the type (by ID). Removed
-    /// associations, `Hidden` and `NoDisplay` entries are left out. Then the
-    /// same for each parent type, nearest first; nothing appears twice.
+    /// the entries whose `MimeType=` names the type, directory by directory
+    /// in `$XDG_DATA_HOME`, `$XDG_DATA_DIRS` order and by ID within one
+    /// directory. Removed associations, `Hidden` and `NoDisplay` entries
+    /// are left out. Then the same for each parent type, nearest first;
+    /// nothing appears twice.
     pub fn apps_for(&self, mime: &str, db: &MimeDb) -> Vec<&DesktopEntry> {
         let mut out: Vec<&DesktopEntry> = Vec::new();
         let mut seen: HashSet<&str> = HashSet::new();
         for level in levels(mime, db) {
-            let mut removed: HashSet<&str> = HashSet::new();
-            for list in &self.lists {
-                for name in &level {
-                    for id in list.added.get(name).into_iter().flatten() {
-                        if !removed.contains(id.as_str()) {
-                            self.push_listed(id, &mut seen, &mut out);
-                        }
-                    }
-                }
-                for name in &level {
-                    removed.extend(
-                        list.removed
-                            .get(name)
-                            .into_iter()
-                            .flatten()
-                            .map(String::as_str),
-                    );
-                }
-            }
-            for entry in self.entries.values() {
-                if !removed.contains(entry.id.as_str())
-                    && entry.mime_types.iter().any(|m| level.contains(m))
-                {
-                    self.push_listed(&entry.id, &mut seen, &mut out);
-                }
-            }
+            self.associations(&level, &mut seen, &mut out);
         }
         out
+    }
+
+    /// Appends the associations of one level (the names one type goes by)
+    /// that are not in `seen`, best first.
+    fn associations<'a>(
+        &'a self,
+        level: &[String],
+        seen: &mut HashSet<&'a str>,
+        out: &mut Vec<&'a DesktopEntry>,
+    ) {
+        let mut removed: HashSet<&str> = HashSet::new();
+        for list in &self.lists {
+            for name in level {
+                for id in list.added.get(name).into_iter().flatten() {
+                    if !removed.contains(id.as_str()) {
+                        self.push_listed(id, seen, out);
+                    }
+                }
+            }
+            for name in level {
+                removed.extend(
+                    list.removed
+                        .get(name)
+                        .into_iter()
+                        .flatten()
+                        .map(String::as_str),
+                );
+            }
+        }
+        let mut registered: Vec<&DesktopEntry> = self
+            .entries
+            .values()
+            .filter(|e| !removed.contains(e.id.as_str()))
+            .filter(|e| e.mime_types.iter().any(|m| level.contains(m)))
+            .collect();
+        // Stable: within one directory the IDs stay in order.
+        registered.sort_by_key(|e| self.rank.get(&e.id).copied().unwrap_or(usize::MAX));
+        for entry in registered {
+            self.push_listed(&entry.id, seen, out);
+        }
     }
 
     fn push_listed<'a>(
@@ -276,11 +303,15 @@ impl AppRegistry {
         }
     }
 
-    /// The default application for `mime`: the first desktop file ID under
+    /// The default application for `mime`, level by level: the type, then
+    /// each parent type, nearest first. At each level, MIME Applications
+    /// Associations 1.0.1 section 4: the first desktop file ID under
     /// `[Default Applications]` that is installed and not `Hidden`, taking
-    /// the files in priority order. A type with no such ID falls through to
-    /// its parent types. There is no default when no file names one;
-    /// [`AppRegistry::apps_for`] is the list to offer then.
+    /// the files in priority order. When none is usable, the most-preferred
+    /// association of that level, which is the first entry of
+    /// [`AppRegistry::apps_for`] for it. The result is therefore either an
+    /// explicit default or the head of the list `apps_for` offers. There is
+    /// no default when neither exists at any level.
     pub fn default_for(&self, mime: &str, db: &MimeDb) -> Option<&DesktopEntry> {
         for level in levels(mime, db) {
             for list in &self.lists {
@@ -291,6 +322,11 @@ impl AppRegistry {
                         }
                     }
                 }
+            }
+            let mut out = Vec::new();
+            self.associations(&level, &mut HashSet::new(), &mut out);
+            if let Some(first) = out.first() {
+                return Some(first);
             }
         }
         None

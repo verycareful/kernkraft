@@ -118,8 +118,9 @@ impl<R: Runtime> Kernkraft<R> {
         })
     }
 
-    /// The default application for `path`'s type, if `mimeapps.list` names
-    /// an installed one for it or a parent type.
+    /// The default application for `path`'s type (see
+    /// `AppRegistry::default_for`): the one `mimeapps.list` names, else the
+    /// most-preferred association, which is the head of `apps_for`.
     pub fn app_default(&self, path: WirePath) -> Result<WireAppDefault, WireError> {
         let path = PathBuf::try_from(path)?;
         let db = self.mime()?;

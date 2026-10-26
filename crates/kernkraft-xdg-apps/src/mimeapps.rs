@@ -13,15 +13,17 @@
 //!   the plain one. The first file in this order has the highest priority.
 //! - Section 3, "Adding/removing associations": groups `[Added
 //!   Associations]` and `[Removed Associations]`, each line `mime=id;id;`.
-//!   The associations of a type are built directory by directory in the
-//!   section 2 order. For each directory: the `[Added Associations]` of its
-//!   `mimeapps.list` files, then the desktop files of that same directory
-//!   whose `MimeType=` lists the type, all minus the blacklist; then that
-//!   directory's `[Removed Associations]` join the blacklist, which blocks
-//!   the lower directories only. A desktop file in `$XDG_DATA_HOME` thereby
-//!   outranks an addition in `/usr/share/applications/mimeapps.list`, and a
-//!   removal there does not remove it. A configuration directory has no
-//!   desktop files of its own and contributes only its lists.
+//!   The associations of a type are built from the section 2 files in
+//!   order. For each `mimeapps.list`: its `[Added Associations]`, minus the
+//!   blacklist; its `[Removed Associations]` join the blacklist; then the
+//!   desktop files of that same directory whose `MimeType=` lists the type,
+//!   minus the blacklist; then all of that directory's desktop files join
+//!   the blacklist. A removal therefore applies to its own directory's
+//!   desktop files and to everything below, never to what an earlier
+//!   directory already added: a desktop file in `$XDG_DATA_HOME` outranks
+//!   an addition in `/usr/share/applications/mimeapps.list`, and a removal
+//!   there does not remove it. A configuration directory has no desktop
+//!   files of its own and contributes only its lists.
 //! - Section 4, "Default application": group `[Default Applications]`; the
 //!   first listed desktop file ID that is installed wins, file by file in
 //!   priority order. When no file names a usable one, the most-preferred
@@ -132,7 +134,7 @@ pub(crate) fn parse_mimeapps(path: &Path, contents: &str) -> Result<MimeApps, Ap
 enum Step {
     /// One `mimeapps.list` file. `desktop` is set on the last file of an
     /// applications directory: the desktop files of that directory (its
-    /// rank) are walked between the file's additions and its removals.
+    /// rank) are walked after the file's additions and removals.
     List {
         list: MimeApps,
         desktop: Option<usize>,
@@ -315,23 +317,20 @@ impl AppRegistry {
         out: &mut Vec<&'a DesktopEntry>,
         first_only: bool,
     ) {
+        // Entries of the directories passed so far. Unlike `removed`, which
+        // follows the type up to its parents, this holds for one level.
+        let mut passed: HashSet<&'a str> = HashSet::new();
         for step in &self.steps {
             match step {
                 Step::List { list, desktop } => {
                     for name in level {
                         for id in list.added.get(name).into_iter().flatten() {
-                            if !removed.contains(id.as_str()) {
+                            if !removed.contains(id.as_str()) && !passed.contains(id.as_str()) {
                                 self.push_listed(id, seen, out);
                                 if first_only && !out.is_empty() {
                                     return;
                                 }
                             }
-                        }
-                    }
-                    if let Some(rank) = desktop {
-                        self.push_registered(*rank, level, removed, seen, out);
-                        if first_only && !out.is_empty() {
-                            return;
                         }
                     }
                     for name in level {
@@ -343,9 +342,15 @@ impl AppRegistry {
                                 .map(String::as_str),
                         );
                     }
+                    if let Some(rank) = desktop {
+                        self.push_registered(*rank, level, removed, &mut passed, seen, out);
+                        if first_only && !out.is_empty() {
+                            return;
+                        }
+                    }
                 }
                 Step::Desktop(rank) => {
-                    self.push_registered(*rank, level, removed, seen, out);
+                    self.push_registered(*rank, level, removed, &mut passed, seen, out);
                     if first_only && !out.is_empty() {
                         return;
                     }
@@ -355,14 +360,14 @@ impl AppRegistry {
     }
 
     /// Appends the entries of applications directory `rank` whose
-    /// `MimeType=` lists a name of `level`, by ID, minus `removed`. An ID
-    /// read from this directory already hides every same-named file below
-    /// it, so nothing joins the blacklist for the directories after it.
+    /// `MimeType=` lists a name of `level`, by ID, minus `removed`; then
+    /// every entry of the directory joins `passed`.
     fn push_registered<'a>(
         &'a self,
         rank: usize,
         level: &[String],
         removed: &HashSet<&'a str>,
+        passed: &mut HashSet<&'a str>,
         seen: &mut HashSet<&'a str>,
         out: &mut Vec<&'a DesktopEntry>,
     ) {
@@ -374,6 +379,12 @@ impl AppRegistry {
                 self.push_listed(&entry.id, seen, out);
             }
         }
+        passed.extend(
+            self.entries
+                .values()
+                .filter(|e| self.rank.get(&e.id) == Some(&rank))
+                .map(|e| e.id.as_str()),
+        );
     }
 
     fn push_listed<'a>(

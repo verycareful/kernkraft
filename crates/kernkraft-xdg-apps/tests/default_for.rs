@@ -251,8 +251,9 @@ fn no_display_entry_is_chosen() {
 
 // Section 3 per directory: a desktop file in the user's data directory
 // outranks an addition in a lower directory's mimeapps.list, and a removal
-// in that lower list blocks the directories below it only, not the entry
-// above or beside it.
+// in that lower list cannot remove it, because it was added earlier. The
+// same list does remove a desktop file of its own directory, and one in a
+// directory below it.
 #[test]
 fn directory_desktop_file_beats_lower_added() {
     let t = Tree::new();
@@ -265,15 +266,24 @@ fn directory_desktop_file_beats_lower_added() {
         "[Added Associations]\nimage/png=eog.desktop;\n[Removed Associations]\nimage/png=myviewer.desktop;lower.desktop;same.desktop;\n",
     );
     let r = t.registry(None);
-    // myviewer: the user directory, ahead of eog added below it, and not
-    // removed by a list below it. eog: added by the sys list. same: a
-    // desktop file of the directory whose list removes it, which blocks
-    // lower directories only. lower: removed before its directory.
-    assert_eq!(
-        listed(&r, "image/png"),
-        ["myviewer.desktop", "eog.desktop", "same.desktop"]
-    );
+    assert_eq!(listed(&r, "image/png"), ["myviewer.desktop", "eog.desktop"]);
     assert_eq!(default_id(&r, "image/png").unwrap(), "myviewer.desktop");
+}
+
+// A Removed line in a directory's own mimeapps.list excludes that
+// directory's desktop file, but not a same-named addition made earlier.
+#[test]
+fn removed_line_applies_to_its_own_directory() {
+    let t = Tree::new();
+    t.app("data", "mine.desktop", &["image/png"]);
+    t.app("data", "other.desktop", &["image/png"]);
+    t.write(
+        "data/applications/mimeapps.list",
+        "[Removed Associations]\nimage/png=mine.desktop;\n",
+    );
+    let r = t.registry(None);
+    assert_eq!(listed(&r, "image/png"), ["other.desktop"]);
+    assert_eq!(default_id(&r, "image/png").unwrap(), "other.desktop");
 }
 
 // A configuration directory has no desktop files: its additions come before

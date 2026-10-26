@@ -81,12 +81,13 @@ fn listed(r: &AppRegistry, mime: &str) -> Vec<String> {
         .collect()
 }
 
-// Section 4 names no explicit default here, so the most-preferred
-// association is the default: `b.desktop` and `c.desktop` register the type
-// in the system directory, `z.desktop` in the user directory. The user
-// directory comes first in the data directory order, then by ID.
+// Nothing names an explicit default, so the most-preferred association is
+// the default: `b.desktop` and `c.desktop` register the type in the system
+// directory, `z.desktop` in the user directory, `a.desktop` in the second
+// system directory. Directories come in data directory order, the files of
+// one directory by ID.
 #[test]
-fn default_falls_back_to_mimeinfo_cache_order() {
+fn default_falls_back_to_desktop_file_registrations() {
     let t = Tree::new();
     t.app("sys/data", "c.desktop", &["image/png"]);
     t.app("sys/data", "b.desktop", &["image/png", "image/gif"]);
@@ -218,17 +219,129 @@ fn fallback_default_is_the_head_of_apps_for() {
     t.app("sys/data", "k.desktop", &["text/plain"]);
     let r = t.registry(None);
     let list = listed(&r, "text/plain");
-    assert_eq!(default_id(&r, "text/plain").unwrap(), list[0]);
+    // Same directory: by ID, so k before m.
+    assert_eq!(list, ["k.desktop", "m.desktop"]);
+    assert_eq!(default_id(&r, "text/plain").unwrap(), "k.desktop");
 }
 
-// A NoDisplay entry is not an association, so it is not a fallback default.
+// NoDisplay hides an entry from menus only. A custom command entry with
+// NoDisplay=true is an association, a fallback default and an explicit
+// default.
 #[test]
-fn no_display_entry_is_not_a_fallback() {
+fn no_display_entry_is_chosen() {
     let t = Tree::new();
     t.write(
-        "data/applications/hidden-ui.desktop",
+        "data/applications/userapp-x.desktop",
         "[Desktop Entry]\nType=Application\nName=x\nExec=true\nNoDisplay=true\nMimeType=image/png;\n",
     );
+    t.app("sys/data", "visible.desktop", &["image/png", "image/gif"]);
     let r = t.registry(None);
-    assert_eq!(default_id(&r, "image/png"), None);
+    assert_eq!(default_id(&r, "image/png").unwrap(), "userapp-x.desktop");
+    assert_eq!(
+        listed(&r, "image/png"),
+        ["userapp-x.desktop", "visible.desktop"]
+    );
+    t.write(
+        "config/mimeapps.list",
+        "[Default Applications]\nimage/gif=userapp-x.desktop\n",
+    );
+    let r = t.registry(None);
+    assert_eq!(default_id(&r, "image/gif").unwrap(), "userapp-x.desktop");
+}
+
+// Section 3 per directory: a desktop file in the user's data directory
+// outranks an addition in a lower directory's mimeapps.list, and a removal
+// in that lower list blocks the directories below it only, not the entry
+// above or beside it.
+#[test]
+fn directory_desktop_file_beats_lower_added() {
+    let t = Tree::new();
+    t.app("data", "myviewer.desktop", &["image/png"]);
+    t.app("sys/data", "eog.desktop", &[]);
+    t.app("sys/data", "same.desktop", &["image/png"]);
+    t.app("sys2/data", "lower.desktop", &["image/png"]);
+    t.write(
+        "sys/data/applications/mimeapps.list",
+        "[Added Associations]\nimage/png=eog.desktop;\n[Removed Associations]\nimage/png=myviewer.desktop;lower.desktop;same.desktop;\n",
+    );
+    let r = t.registry(None);
+    // myviewer: the user directory, ahead of eog added below it, and not
+    // removed by a list below it. eog: added by the sys list. same: a
+    // desktop file of the directory whose list removes it, which blocks
+    // lower directories only. lower: removed before its directory.
+    assert_eq!(
+        listed(&r, "image/png"),
+        ["myviewer.desktop", "eog.desktop", "same.desktop"]
+    );
+    assert_eq!(default_id(&r, "image/png").unwrap(), "myviewer.desktop");
+}
+
+// A configuration directory has no desktop files: its additions come before
+// every applications directory, its removals block all of them.
+#[test]
+fn config_dir_lists_keep_their_place() {
+    let t = Tree::new();
+    t.app("data", "reg.desktop", &["image/png"]);
+    t.app("data", "cfg.desktop", &[]);
+    t.app("data", "blocked.desktop", &["image/png"]);
+    t.write(
+        "sys/config/mimeapps.list",
+        "[Added Associations]\nimage/png=cfg.desktop;\n[Removed Associations]\nimage/png=blocked.desktop;\n",
+    );
+    let r = t.registry(None);
+    assert_eq!(listed(&r, "image/png"), ["cfg.desktop", "reg.desktop"]);
+}
+
+/// A shared-mime-info tree with `text/x-csrc` a subclass of `text/plain`.
+fn subclass_db(t: &Tree) -> MimeDb {
+    t.write("mime/subclasses", "text/x-csrc text/plain\n");
+    // MimeDb::load reads `<dir>/mime/subclasses`.
+    MimeDb::load(&[t.dir.path().to_path_buf()]).unwrap()
+}
+
+// An association of the child type beats an explicit default of the parent;
+// when the child has none, the parent's default applies.
+#[test]
+fn child_association_beats_parent_default() {
+    let t = Tree::new();
+    t.app("data", "cide.desktop", &["text/x-csrc"]);
+    t.app("data", "editor.desktop", &["text/plain"]);
+    t.write(
+        "config/mimeapps.list",
+        "[Default Applications]\ntext/plain=editor.desktop;\n",
+    );
+    let db = subclass_db(&t);
+    let r = t.registry(None);
+    assert_eq!(
+        r.default_for("text/x-csrc", &db).unwrap().id,
+        "cide.desktop"
+    );
+    // No child association: the parent's explicit default.
+    t.app("data", "cide.desktop", &["text/x-chdr"]);
+    let r = t.registry(None);
+    assert_eq!(
+        r.default_for("text/x-csrc", &db).unwrap().id,
+        "editor.desktop"
+    );
+}
+
+// The blacklist carries over to the parent (as gio does): gedit registers
+// text/plain, the child type removes it, so C sources do not default to it
+// while plain text still does.
+#[test]
+fn removal_for_the_child_holds_at_the_parent() {
+    let t = Tree::new();
+    t.app("data", "gedit.desktop", &["text/plain"]);
+    t.write(
+        "config/mimeapps.list",
+        "[Removed Associations]\ntext/x-csrc=gedit.desktop;\n",
+    );
+    let db = subclass_db(&t);
+    let r = t.registry(None);
+    assert!(r.default_for("text/x-csrc", &db).is_none());
+    assert!(r.apps_for("text/x-csrc", &db).is_empty());
+    assert_eq!(
+        r.default_for("text/plain", &db).unwrap().id,
+        "gedit.desktop"
+    );
 }

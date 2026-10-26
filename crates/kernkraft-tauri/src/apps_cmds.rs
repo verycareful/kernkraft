@@ -102,16 +102,19 @@ impl<R: Runtime> Kernkraft<R> {
     }
 
     /// Applications that open `path`, best first (see
-    /// `AppRegistry::apps_for`): `NoDisplay` and hidden entries are left out.
+    /// `AppRegistry::apps_for`). `NoDisplay` entries are left out of the
+    /// list, except the current default, so the default always shows.
     pub fn apps_for(&self, path: WirePath) -> Result<WireAppList, WireError> {
         let path = PathBuf::try_from(path)?;
         let db = self.mime()?;
         let registry = self.registry()?;
         let mime = db.guess(&path);
+        let default = registry.default_for(&mime, db).map(|e| e.id.as_str());
         Ok(WireAppList {
             apps: registry
                 .apps_for(&mime, db)
                 .into_iter()
+                .filter(|e| !e.no_display || Some(e.id.as_str()) == default)
                 .map(WireApp::from)
                 .collect(),
             problems: problems(&registry),

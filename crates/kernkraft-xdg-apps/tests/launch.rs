@@ -21,6 +21,7 @@ fn entry(exec: String) -> DesktopEntry {
         mime_types: Vec::new(),
         terminal: false,
         no_display: false,
+        try_exec: None,
         hidden: false,
         path: None,
         source: PathBuf::from("/stub.desktop"),

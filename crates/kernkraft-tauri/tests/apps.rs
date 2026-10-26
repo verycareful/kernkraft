@@ -281,6 +281,36 @@ fn apps_for_reports_skipped_entries() {
     assert!(mime.is_text);
 }
 
+// NoDisplay hides an application from the "Open with" list, but never the
+// current default: here `custom.desktop` is NoDisplay and is the default.
+#[test]
+fn apps_for_omits_no_display_except_the_default() {
+    stubs();
+    let e = env();
+    viewer(&e);
+    desktop(
+        &e,
+        "custom.desktop",
+        "[Desktop Entry]\nType=Application\nName=Custom\nExec=rec-open %f\nNoDisplay=true\nMimeType=text/plain;\n",
+    );
+    let doc = file(&e.dir("nd"), "a.txt", b"x");
+    let ids = |e: &Env| -> Vec<String> {
+        e.kk.apps_for(w(&doc))
+            .unwrap()
+            .apps
+            .into_iter()
+            .map(|a| a.id)
+            .collect()
+    };
+    // viewer is the default; custom is NoDisplay and not the default.
+    assert_eq!(ids(&e), ["viewer.desktop"]);
+    mimeapps(&e, "[Default Applications]\ntext/plain=custom.desktop\n");
+    assert_eq!(ids(&e), ["custom.desktop", "viewer.desktop"]);
+    let default = e.kk.app_default(w(&doc)).unwrap().app.unwrap();
+    assert!(default.no_display);
+    assert_eq!(default.id, "custom.desktop");
+}
+
 /// The complete records of stub `name` whose bytes contain `marker`, as
 /// raw lines, waiting until one is there. For arguments that are not UTF-8.
 fn raw_records(name: &str, marker: &[u8]) -> Vec<Vec<Vec<u8>>> {

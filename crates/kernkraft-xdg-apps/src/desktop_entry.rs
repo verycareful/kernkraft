@@ -40,7 +40,12 @@ pub struct DesktopEntry {
     pub mime_types: Vec<String>,
     /// `Terminal=true`: the program runs inside a terminal emulator.
     pub terminal: bool,
+    /// `NoDisplay=true`: left out of menus; the application still handles
+    /// its types.
     pub no_display: bool,
+    /// The `TryExec` key: a program that must exist for the entry to count
+    /// as installed.
+    pub try_exec: Option<String>,
     /// `Hidden=true`: the entry is treated as deleted.
     pub hidden: bool,
     /// The `Path` key: the working directory to start the program in.
@@ -124,6 +129,7 @@ pub fn parse_desktop_entry(
             mime_types: Vec::new(),
             terminal: false,
             no_display: false,
+            try_exec: None,
             hidden: true,
             path: None,
             source: source.to_path_buf(),
@@ -155,6 +161,7 @@ pub fn parse_desktop_entry(
         mime_types: get("MimeType").map(split_list).unwrap_or_default(),
         terminal: flag("Terminal")?,
         no_display: flag("NoDisplay")?,
+        try_exec: get("TryExec").map(unescape).filter(|t| !t.is_empty()),
         hidden: flag("Hidden")?,
         path: get("Path")
             .map(unescape)

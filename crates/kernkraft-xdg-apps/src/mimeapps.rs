@@ -13,17 +13,32 @@
 //!   the plain one. The first file in this order has the highest priority.
 //! - Section 3, "Adding/removing associations": groups `[Added
 //!   Associations]` and `[Removed Associations]`, each line `mime=id;id;`.
-//!   An application listed under `[Added Associations]` handles the type
-//!   even without a `MimeType=` registration; one under `[Removed
-//!   Associations]` does not, for registrations and for additions in files
-//!   of lower priority.
+//!   The associations of a type are built directory by directory in the
+//!   section 2 order. For each directory: the `[Added Associations]` of its
+//!   `mimeapps.list` files, then the desktop files of that same directory
+//!   whose `MimeType=` lists the type, all minus the blacklist; then that
+//!   directory's `[Removed Associations]` join the blacklist, which blocks
+//!   the lower directories only. A desktop file in `$XDG_DATA_HOME` thereby
+//!   outranks an addition in `/usr/share/applications/mimeapps.list`, and a
+//!   removal there does not remove it. A configuration directory has no
+//!   desktop files of its own and contributes only its lists.
 //! - Section 4, "Default application": group `[Default Applications]`; the
 //!   first listed desktop file ID that is installed wins, file by file in
 //!   priority order. When no file names a usable one, the most-preferred
-//!   association is the default: the first of [`AppRegistry::apps_for`]
-//!   (section 3 additions in priority order, then the entries registering
-//!   the type, as `mimeinfo.cache` records them, directory by directory in
-//!   `$XDG_DATA_HOME`, `$XDG_DATA_DIRS` order, without the removed ones).
+//!   association is the default: the first of [`AppRegistry::apps_for`].
+//!
+//! The specification gives no order among the desktop files of one
+//! directory; they are taken in desktop file ID order, which is also the
+//! order `update-desktop-database` writes `mimeinfo.cache` in practice. The
+//! registrations come from the desktop files' own `MimeType=`, not from
+//! `mimeinfo.cache`.
+//!
+//! An entry whose `TryExec` names a program that is not an executable file
+//! (a path as given, a bare name looked up on `PATH`) is not installed
+//! (Desktop Entry Specification 1.5, `TryExec`) and is neither an
+//! association nor a default. `NoDisplay` hides an entry from menus only
+//! (same specification); such an entry is still an association, so a
+//! custom command with `NoDisplay=true` can be the default.
 //!
 //! Desktop entries are read from `applications` below `$XDG_DATA_HOME` and
 //! each of `$XDG_DATA_DIRS` (Desktop Entry Specification 1.5, "Desktop File
@@ -33,11 +48,18 @@
 //! Types are tried in the order [`MimeDb::names`] gives (the type, its
 //! canonical form, its other aliases), then the same for each of
 //! [`MimeDb::ancestors`], so a `text/x-c++src` file reaches `text/plain`
-//! handlers.
+//! handlers (Shared MIME-info Database 0.21, "Subclassing"). Parents are not
+//! in the MIME Applications specification; the rule used is that of GLib's
+//! `gio`: the child type is answered first, an association of the child
+//! beats a `[Default Applications]` entry of a parent, and the blacklist
+//! carries over to the parents, so `text/x-csrc=gedit.desktop` under
+//! `[Removed Associations]` keeps `gedit` from being offered for C sources
+//! through `text/plain`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use kernkraft_fs::BaseDirs;
@@ -105,6 +127,21 @@ pub(crate) fn parse_mimeapps(path: &Path, contents: &str) -> Result<MimeApps, Ap
     Ok(out)
 }
 
+/// One stop in the section 3 walk over the search directories.
+#[derive(Debug)]
+enum Step {
+    /// One `mimeapps.list` file. `desktop` is set on the last file of an
+    /// applications directory: the desktop files of that directory (its
+    /// rank) are walked between the file's additions and its removals.
+    List {
+        list: MimeApps,
+        desktop: Option<usize>,
+    },
+    /// The desktop files of an applications directory that has no
+    /// `mimeapps.list`, by rank.
+    Desktop(usize),
+}
+
 /// Every installed application, and the association files that rank them.
 #[derive(Debug)]
 pub struct AppRegistry {
@@ -116,8 +153,9 @@ pub struct AppRegistry {
     /// IDs of `Hidden=true` entries. They are not returned, but they hide
     /// every entry of the same ID in a lower-priority directory.
     shadowed: HashSet<String>,
-    /// Association files in priority order, highest first.
-    lists: Vec<MimeApps>,
+    /// The association files and the applications directories in the section
+    /// 3 order, highest priority first.
+    steps: Vec<Step>,
     skipped: Vec<AppsError>,
 }
 
@@ -136,7 +174,7 @@ impl AppRegistry {
             entries: BTreeMap::new(),
             rank: HashMap::new(),
             shadowed: HashSet::new(),
-            lists: Vec::new(),
+            steps: Vec::new(),
             skipped: Vec::new(),
         };
         let mut app_dirs = vec![base.data.join("applications")];
@@ -145,16 +183,31 @@ impl AppRegistry {
             let mut visited = HashSet::new();
             registry.scan(dir, dir, rank, &mut visited)?;
         }
-        for dir in list_dirs(base, &app_dirs) {
+        let first_app_dir = 1 + base.config_dirs.len();
+        for (index, dir) in list_dirs(base, &app_dirs).into_iter().enumerate() {
+            let start = registry.steps.len();
             for name in list_names(base) {
                 let path = dir.join(name);
                 match fs::read_to_string(&path) {
                     Ok(text) => match parse_mimeapps(&path, &text) {
-                        Ok(list) => registry.lists.push(list),
+                        Ok(list) => registry.steps.push(Step::List {
+                            list,
+                            desktop: None,
+                        }),
                         Err(e) => registry.skipped.push(e),
                     },
                     Err(e) if e.kind() == ErrorKind::NotFound => {}
                     Err(e) => registry.skipped.push(AppsError::io(&path, e)),
+                }
+            }
+            if index >= first_app_dir {
+                let rank = index - first_app_dir;
+                let has_list = registry.steps.len() > start;
+                match registry.steps.last_mut() {
+                    Some(Step::List { desktop, .. }) if has_list => {
+                        *desktop = Some(rank);
+                    }
+                    _ => registry.steps.push(Step::Desktop(rank)),
                 }
             }
         }
@@ -234,59 +287,92 @@ impl AppRegistry {
         &self.skipped
     }
 
-    /// Applications that can open `mime`, best first: the associations
-    /// added in `mimeapps.list` files (higher priority file first), then
-    /// the entries whose `MimeType=` names the type, directory by directory
-    /// in `$XDG_DATA_HOME`, `$XDG_DATA_DIRS` order and by ID within one
-    /// directory. Removed associations, `Hidden` and `NoDisplay` entries
-    /// are left out. Then the same for each parent type, nearest first;
-    /// nothing appears twice.
+    /// Applications that can open `mime`, best first, built directory by
+    /// directory as the module documentation describes: additions, then the
+    /// directory's desktop files registering the type, minus the removed
+    /// ones. `Hidden` entries and entries whose `TryExec` program is missing
+    /// are left out; `NoDisplay` ones are kept (see the `no_display` field
+    /// for a menu). Then the same for each parent type, nearest first, with
+    /// the removals carried over; nothing appears twice.
     pub fn apps_for(&self, mime: &str, db: &MimeDb) -> Vec<&DesktopEntry> {
         let mut out: Vec<&DesktopEntry> = Vec::new();
         let mut seen: HashSet<&str> = HashSet::new();
+        let mut removed: HashSet<&str> = HashSet::new();
         for level in levels(mime, db) {
-            self.associations(&level, &mut seen, &mut out);
+            self.associations(&level, &mut removed, &mut seen, &mut out, false);
         }
         out
     }
 
     /// Appends the associations of one level (the names one type goes by)
-    /// that are not in `seen`, best first.
+    /// that are not in `seen`, best first, and adds the level's removals to
+    /// `removed`. With `first_only` it stops at the first one found.
     fn associations<'a>(
         &'a self,
         level: &[String],
+        removed: &mut HashSet<&'a str>,
         seen: &mut HashSet<&'a str>,
         out: &mut Vec<&'a DesktopEntry>,
+        first_only: bool,
     ) {
-        let mut removed: HashSet<&str> = HashSet::new();
-        for list in &self.lists {
-            for name in level {
-                for id in list.added.get(name).into_iter().flatten() {
-                    if !removed.contains(id.as_str()) {
-                        self.push_listed(id, seen, out);
+        for step in &self.steps {
+            match step {
+                Step::List { list, desktop } => {
+                    for name in level {
+                        for id in list.added.get(name).into_iter().flatten() {
+                            if !removed.contains(id.as_str()) {
+                                self.push_listed(id, seen, out);
+                                if first_only && !out.is_empty() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(rank) = desktop {
+                        self.push_registered(*rank, level, removed, seen, out);
+                        if first_only && !out.is_empty() {
+                            return;
+                        }
+                    }
+                    for name in level {
+                        removed.extend(
+                            list.removed
+                                .get(name)
+                                .into_iter()
+                                .flatten()
+                                .map(String::as_str),
+                        );
+                    }
+                }
+                Step::Desktop(rank) => {
+                    self.push_registered(*rank, level, removed, seen, out);
+                    if first_only && !out.is_empty() {
+                        return;
                     }
                 }
             }
-            for name in level {
-                removed.extend(
-                    list.removed
-                        .get(name)
-                        .into_iter()
-                        .flatten()
-                        .map(String::as_str),
-                );
-            }
         }
-        let mut registered: Vec<&DesktopEntry> = self
-            .entries
-            .values()
-            .filter(|e| !removed.contains(e.id.as_str()))
-            .filter(|e| e.mime_types.iter().any(|m| level.contains(m)))
-            .collect();
-        // Stable: within one directory the IDs stay in order.
-        registered.sort_by_key(|e| self.rank.get(&e.id).copied().unwrap_or(usize::MAX));
-        for entry in registered {
-            self.push_listed(&entry.id, seen, out);
+    }
+
+    /// Appends the entries of applications directory `rank` whose
+    /// `MimeType=` lists a name of `level`, by ID, minus `removed`. An ID
+    /// read from this directory already hides every same-named file below
+    /// it, so nothing joins the blacklist for the directories after it.
+    fn push_registered<'a>(
+        &'a self,
+        rank: usize,
+        level: &[String],
+        removed: &HashSet<&'a str>,
+        seen: &mut HashSet<&'a str>,
+        out: &mut Vec<&'a DesktopEntry>,
+    ) {
+        for entry in self.entries.values() {
+            if self.rank.get(&entry.id) == Some(&rank)
+                && !removed.contains(entry.id.as_str())
+                && entry.mime_types.iter().any(|m| level.contains(m))
+            {
+                self.push_listed(&entry.id, seen, out);
+            }
         }
     }
 
@@ -297,40 +383,70 @@ impl AppRegistry {
         out: &mut Vec<&'a DesktopEntry>,
     ) {
         if let Some(entry) = self.entries.get(id) {
-            if !entry.hidden && !entry.no_display && seen.insert(entry.id.as_str()) {
+            if self.installed(entry) && seen.insert(entry.id.as_str()) {
                 out.push(entry);
             }
         }
     }
 
+    /// Whether `entry` can be offered: not `Hidden`, and its `TryExec`
+    /// program, if it names one, is an executable file.
+    fn installed(&self, entry: &DesktopEntry) -> bool {
+        !entry.hidden
+            && entry
+                .try_exec
+                .as_deref()
+                .is_none_or(|t| program_exists(t, std::env::var_os("PATH").as_deref()))
+    }
+
     /// The default application for `mime`, level by level: the type, then
     /// each parent type, nearest first. At each level, MIME Applications
     /// Associations 1.0.1 section 4: the first desktop file ID under
-    /// `[Default Applications]` that is installed and not `Hidden`, taking
-    /// the files in priority order. When none is usable, the most-preferred
-    /// association of that level, which is the first entry of
-    /// [`AppRegistry::apps_for`] for it. The result is therefore either an
-    /// explicit default or the head of the list `apps_for` offers. There is
-    /// no default when neither exists at any level.
+    /// `[Default Applications]` that is installed, taking the files in
+    /// priority order. When none is usable, the most-preferred association
+    /// of that level, which is the first entry [`AppRegistry::apps_for`]
+    /// would give for it. The result is therefore either an explicit
+    /// default or the head of the list `apps_for` offers. There is no
+    /// default when neither exists at any level.
     pub fn default_for(&self, mime: &str, db: &MimeDb) -> Option<&DesktopEntry> {
+        let mut removed: HashSet<&str> = HashSet::new();
         for level in levels(mime, db) {
-            for list in &self.lists {
+            for step in &self.steps {
+                let Step::List { list, .. } = step else {
+                    continue;
+                };
                 for name in &level {
                     for id in list.defaults.get(name).into_iter().flatten() {
-                        if let Some(entry) = self.entries.get(id).filter(|e| !e.hidden) {
+                        if let Some(entry) = self.entries.get(id).filter(|e| self.installed(e)) {
                             return Some(entry);
                         }
                     }
                 }
             }
             let mut out = Vec::new();
-            self.associations(&level, &mut HashSet::new(), &mut out);
+            self.associations(&level, &mut removed, &mut HashSet::new(), &mut out, true);
             if let Some(first) = out.first() {
                 return Some(first);
             }
         }
         None
     }
+}
+
+/// `name` as a path when it has a separator, else the first executable
+/// file of that name in `path`.
+fn program_exists(name: &str, path: Option<&std::ffi::OsStr>) -> bool {
+    let is_exec = |p: &Path| {
+        fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    };
+    if name.contains('/') {
+        return is_exec(Path::new(name));
+    }
+    path.is_some_and(|p| {
+        std::env::split_paths(p)
+            .filter(|d| !d.as_os_str().is_empty())
+            .any(|d| is_exec(&d.join(name)))
+    })
 }
 
 /// `mime` and its parents, nearest first; each level holds the names that

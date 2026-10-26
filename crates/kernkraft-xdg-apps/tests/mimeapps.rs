@@ -87,7 +87,8 @@ fn desktop_specific_list_first() {
 // Relies on user mimeapps.list: Added `image/png=editor.desktop`, Removed
 // `image/png=unwanted.desktop`. unwanted.desktop is neither Hidden nor
 // NoDisplay and registers image/png, so only the Removed line excludes it;
-// gimp (user entry Hidden), hidden and nodisplay are excluded by their flags.
+// gimp (user entry Hidden) and hidden are excluded by Hidden=true; nodisplay
+// stays, as NoDisplay only keeps an entry out of menus.
 #[test]
 fn removed_association_excluded() {
     let r = registry(None);
@@ -95,7 +96,12 @@ fn removed_association_excluded() {
     // Added first, then registrations by ID.
     assert_eq!(
         ids(&apps),
-        ["editor.desktop", "mine.desktop", "viewer.desktop"]
+        [
+            "editor.desktop",
+            "mine.desktop",
+            "nodisplay.desktop",
+            "viewer.desktop"
+        ]
     );
 }
 

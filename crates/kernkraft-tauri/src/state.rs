@@ -3,7 +3,7 @@
 
 //! The plugin's state: the XDG base directories, the MIME database, the
 //! trash, the undo journal, the running operations, the folder watches, the
-//! thumbnail queue and the theme, shared by every command.
+//! thumbnail queue, the theme and the volume watcher, shared by every command.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,6 +17,7 @@ use crate::error::{PluginError, WireError};
 use crate::ops::Registry;
 use crate::theme_cmds::ThemeState;
 use crate::thumb_cmds::Thumbs;
+use crate::volumes_cmds::VolumesState;
 use crate::watch::DirWatch;
 
 /// Where the plugin finds the trash, the MIME database and the XDG
@@ -67,6 +68,7 @@ pub(crate) struct Inner<R: Runtime> {
     pub watches: Mutex<HashMap<String, DirWatch>>,
     pub thumbs: Thumbs,
     pub theme: Mutex<ThemeState>,
+    pub volumes: Mutex<VolumesState>,
 }
 
 impl<R: Runtime> Kernkraft<R> {
@@ -96,6 +98,7 @@ impl<R: Runtime> Kernkraft<R> {
             watches: Mutex::new(HashMap::new()),
             thumbs: Thumbs::default(),
             theme: Mutex::new(ThemeState::default()),
+            volumes: Mutex::new(VolumesState::default()),
         }))
     }
 
@@ -117,12 +120,13 @@ impl<R: Runtime> Kernkraft<R> {
     /// Cancels the operations, drops the folder watches and the queued
     /// thumbnails started from window `label`, or all of them for `None`.
     /// A worker blocked on a conflict prompt is released. For `None` (the
-    /// app exiting) the thumbnail workers and the theme watcher stop too.
+    /// app exiting) the thumbnail workers, the theme watcher and the volume watcher stop too.
     pub(crate) fn shutdown(&self, label: Option<&str>) {
         self.cancel_from(label);
         self.thumbs_shutdown(label);
         if label.is_none() {
             self.theme_shutdown();
+            self.volumes_shutdown();
         }
         let dropped: Vec<DirWatch> = {
             let mut watches = lock(&self.0.watches);

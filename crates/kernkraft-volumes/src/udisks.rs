@@ -41,11 +41,11 @@ use crate::{EjectRefusal, VolumesError};
 /// stuck caller.
 pub const ACTION_TIMEOUT: Duration = Duration::from_secs(600);
 
-const SERVICE: &str = "org.freedesktop.UDisks2";
-const ROOT: &str = "/org/freedesktop/UDisks2";
-const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
-const BLOCK: &str = "org.freedesktop.UDisks2.Block";
-const FILESYSTEM: &str = "org.freedesktop.UDisks2.Filesystem";
+pub(crate) const SERVICE: &str = "org.freedesktop.UDisks2";
+pub(crate) const ROOT: &str = "/org/freedesktop/UDisks2";
+pub(crate) const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
+pub(crate) const BLOCK: &str = "org.freedesktop.UDisks2.Block";
+pub(crate) const FILESYSTEM: &str = "org.freedesktop.UDisks2.Filesystem";
 const DRIVE: &str = "org.freedesktop.UDisks2.Drive";
 const SWAPSPACE: &str = "org.freedesktop.UDisks2.Swapspace";
 const ENCRYPTED: &str = "org.freedesktop.UDisks2.Encrypted";
@@ -82,7 +82,7 @@ pub struct Udisks {
     act: Connection,
 }
 
-fn bad(what: &str, reason: impl Into<String>) -> VolumesError {
+pub(crate) fn bad(what: &str, reason: impl Into<String>) -> VolumesError {
     VolumesError::Dbus {
         what: what.to_string(),
         reason: reason.into(),

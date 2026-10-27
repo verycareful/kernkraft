@@ -14,16 +14,64 @@
 //! dismissing it, which the command reports as `NotAuthorized`. Nor do they
 //! touch files the undo journal knows, so they have no reason to make undo
 //! wait. The UI shows the volume as busy until the promise settles.
+//!
+//! The list updates itself: the first [`Kernkraft::volumes_list`] starts a
+//! watcher (`kernkraft_volumes::watch`: mounts and unmounts from
+//! `/proc/self/mountinfo`, devices appearing and going away from UDisks2's
+//! signals) and every later change is sent as [`EVENT_VOLUMES_CHANGED`]. The
+//! watcher starts then and not at plugin setup, for the reason the theme
+//! watcher does: until the app asks for volumes nobody needs the updates,
+//! and starting it opens the system bus. It starts before the first listing,
+//! so a change between the two is not lost; the event means "list again".
+//!
+//! Events are debounced by `kernkraft_volumes::DEBOUNCE` (250 ms of quiet
+//! after the last change, at most 2 s from the first): plugging in a stick
+//! is a burst of UDisks signals and a mount event, and each listing is a
+//! round trip to UDisks, so a burst becomes one event and one listing.
+//!
+//! What the watcher could not set up (the system bus or UDisks2 missing, a
+//! refused subscription) is in the `problems` of the first
+//! [`Kernkraft::volumes_list`] only; the mount watch runs regardless. A
+//! failure to open mountinfo leaves no watcher, is reported in that call's
+//! `problems`, and is tried again by the next call. Errors the watcher meets
+//! later, and a panic in the event callback, are in the `problems` of the
+//! next event.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use kernkraft_volumes::{list, Device, ListProblem, Mount, Udisks};
+use kernkraft_volumes::{
+    list, watch, Device, ListProblem, Mount, OnChange, Udisks, VolumeWatcher, VolumesError,
+};
 use serde::{Deserialize, Serialize};
-use tauri::Runtime;
+use tauri::{Emitter, Runtime};
 
 use crate::error::{PluginError, WireError};
-use crate::state::Kernkraft;
+use crate::state::{lock, Kernkraft};
 use crate::wire::WirePath;
+
+pub const EVENT_VOLUMES_CHANGED: &str = "kernkraft://volumes-changed";
+
+/// The payload of [`EVENT_VOLUMES_CHANGED`]: the volumes may have changed,
+/// list them again. `problems` are errors of the watch itself since the last
+/// event, usually none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumesChanged {
+    pub problems: Vec<WireError>,
+}
+
+#[derive(Default)]
+pub(crate) struct VolumesState {
+    started: bool,
+    /// What starting the watcher could not follow, reported by the next
+    /// listing only.
+    once: Vec<WireError>,
+    watcher: Option<VolumeWatcher>,
+}
+
+/// What starts a watcher: `kernkraft_volumes::watch`, or a stand-in.
+type WatchFn<'a> =
+    dyn Fn(OnChange) -> Result<(VolumeWatcher, Vec<VolumesError>), VolumesError> + 'a;
 
 /// A mounted volume. `mount_point` is the exact path; the rest are display
 /// strings (see `kernkraft_volumes::Mount`).
@@ -92,8 +140,22 @@ impl<R: Runtime> Kernkraft<R> {
     /// the system bus being unavailable is a problem in the listing, with
     /// `unmounted` empty.
     pub fn volumes_list(&self) -> Result<WireVolumes, WireError> {
-        let listing = list()?;
-        let mut problems: Vec<WireError> = listing.problems.iter().map(problem).collect();
+        self.volumes_list_with(&watch)
+    }
+
+    /// [`Kernkraft::volumes_list`] starting its watcher through `start`.
+    fn volumes_list_with(&self, start: &WatchFn<'_>) -> Result<WireVolumes, WireError> {
+        let mut once = self.volumes_start(start);
+        let listing = match list() {
+            Ok(l) => l,
+            Err(e) => {
+                // Not reported yet: the next listing carries them.
+                lock(&self.0.volumes).once.splice(0..0, once);
+                return Err(e.into());
+            }
+        };
+        let mut problems: Vec<WireError> = std::mem::take(&mut once);
+        problems.extend(listing.problems.iter().map(problem));
         let unmounted = match Udisks::connect().and_then(|u| u.unmounted()) {
             Ok(devices) => devices,
             Err(e) => {
@@ -106,6 +168,41 @@ impl<R: Runtime> Kernkraft<R> {
             unmounted,
             problems,
         })
+    }
+
+    /// Starts the watcher, once, and returns the problems of starting it
+    /// that have not been reported yet.
+    fn volumes_start(&self, start: &WatchFn<'_>) -> Vec<WireError> {
+        let mut state = lock(&self.0.volumes);
+        if !state.started {
+            let weak = Arc::downgrade(&self.0);
+            let on_change: OnChange = Box::new(move |errors| {
+                if let Some(inner) = weak.upgrade() {
+                    let problems = errors.iter().map(WireError::from).collect();
+                    let _ = inner
+                        .app
+                        .emit(EVENT_VOLUMES_CHANGED, VolumesChanged { problems });
+                }
+            });
+            match start(on_change) {
+                Ok((watcher, problems)) => {
+                    state.started = true;
+                    state.watcher = Some(watcher);
+                    state.once = problems.iter().map(WireError::from).collect();
+                }
+                // No watcher; the next listing tries again, and this one
+                // says why there is none.
+                Err(e) => return vec![WireError::from(e)],
+            }
+        }
+        std::mem::take(&mut state.once)
+    }
+
+    /// Stops the watcher. Dropped outside the lock: the drop waits for the
+    /// watcher's worker, which may be inside a callback.
+    pub(crate) fn volumes_shutdown(&self) {
+        let watcher = lock(&self.0.volumes).watcher.take();
+        drop(watcher);
     }
 
     /// Mounts `device`, which must be one UDisks lists as unmounted now
@@ -135,5 +232,151 @@ impl<R: Runtime> Kernkraft<R> {
     pub fn volume_eject(&self, mount_point: WirePath) -> Result<(), WireError> {
         let mount_point = PathBuf::try_from(mount_point)?;
         Ok(Udisks::connect()?.eject(&mount_point)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::cell::Cell;
+    use std::fs::File;
+    use std::os::fd::OwnedFd;
+    use std::sync::mpsc;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use kernkraft_bus::BusError;
+    use kernkraft_volumes::watch_with;
+    use tauri::test::{mock_app, MockRuntime};
+    use tauri::Listener;
+
+    use super::*;
+    use crate::state::Config;
+
+    fn kk() -> (tauri::App<MockRuntime>, Kernkraft<MockRuntime>) {
+        let app = mock_app();
+        let kk = Kernkraft::new(app.handle().clone(), Config::default());
+        (app, kk)
+    }
+
+    /// A watcher on this process's mountinfo with no bus, as
+    /// `kernkraft_volumes::watch` returns on a machine without one, and the
+    /// callback it was given kept for the test to call. `problems` is what
+    /// starting it reports.
+    struct Stand {
+        calls: Cell<u32>,
+        cb: Mutex<Option<OnChange>>,
+        problems: fn() -> Vec<VolumesError>,
+    }
+
+    impl Stand {
+        fn new(problems: fn() -> Vec<VolumesError>) -> Stand {
+            Stand {
+                calls: Cell::new(0),
+                cb: Mutex::new(None),
+                problems,
+            }
+        }
+
+        fn start(&self, cb: OnChange) -> Result<(VolumeWatcher, Vec<VolumesError>), VolumesError> {
+            self.calls.set(self.calls.get() + 1);
+            *self.cb.lock().unwrap() = Some(cb);
+            let fd = OwnedFd::from(File::open("/proc/self/mountinfo").unwrap());
+            let absent = BusError::NoAddress("DBUS_SYSTEM_BUS_ADDRESS");
+            let (w, _) = watch_with(fd, Err(absent), Box::new(|_| {}))?;
+            Ok((w, (self.problems)()))
+        }
+
+        fn fire(&self, errors: Vec<VolumesError>) {
+            (self.cb.lock().unwrap().as_ref().expect("started"))(errors);
+        }
+    }
+
+    fn kinds(v: &WireVolumes) -> Vec<String> {
+        v.problems.iter().map(|p| p.kind.clone()).collect()
+    }
+
+    /// Nothing is watched until the first listing; the first listing starts
+    /// one watcher and reports what it could not follow; later listings
+    /// start nothing and do not repeat it.
+    #[test]
+    fn first_listing_starts_the_watcher_once() {
+        let (_app, kk) = kk();
+        let stand = Stand::new(|| vec![VolumesError::UdisksAbsent]);
+        assert!(lock(&kk.0.volumes).watcher.is_none());
+        let start = |cb| stand.start(cb);
+
+        let first = kk.volumes_list_with(&start).unwrap();
+        assert_eq!(stand.calls.get(), 1);
+        assert!(lock(&kk.0.volumes).watcher.is_some());
+        assert_eq!(
+            kinds(&first)
+                .iter()
+                .filter(|k| *k == "UdisksAbsent")
+                .count(),
+            1
+        );
+
+        let second = kk.volumes_list_with(&start).unwrap();
+        assert_eq!(stand.calls.get(), 1);
+        assert!(!kinds(&second).iter().any(|k| k == "UdisksAbsent"));
+    }
+
+    /// A watcher that fails to start is reported by that listing and tried
+    /// again by the next.
+    #[test]
+    fn failed_start_is_reported_and_retried() {
+        let (_app, kk) = kk();
+        let calls = Cell::new(0);
+        let start = |_cb| {
+            calls.set(calls.get() + 1);
+            Err(VolumesError::Dbus {
+                what: "mountinfo".into(),
+                reason: "gone".into(),
+            })
+        };
+        for n in 1..=2 {
+            let v = kk.volumes_list_with(&start).unwrap();
+            assert_eq!(calls.get(), n);
+            assert!(kinds(&v).iter().any(|k| k == "Dbus"), "{:?}", v.problems);
+            assert!(lock(&kk.0.volumes).watcher.is_none());
+        }
+    }
+
+    /// The watcher's callback becomes the event, with its errors as
+    /// problems.
+    #[test]
+    fn callback_emits_the_event() {
+        let (app, kk) = kk();
+        let (tx, rx) = mpsc::channel();
+        app.listen(EVENT_VOLUMES_CHANGED, move |e| {
+            let _ = tx.send(e.payload().to_owned());
+        });
+        let stand = Stand::new(Vec::new);
+        kk.volumes_list_with(&|cb| stand.start(cb)).unwrap();
+
+        stand.fire(Vec::new());
+        let p: VolumesChanged =
+            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+        assert!(p.problems.is_empty());
+
+        stand.fire(vec![VolumesError::CallbackPanic("x".into())]);
+        let p: VolumesChanged =
+            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+        assert_eq!(p.problems.len(), 1);
+        assert_eq!(p.problems[0].kind, "CallbackPanic");
+    }
+
+    /// Exiting the app stops the watcher; a window closing does not.
+    #[test]
+    fn app_exit_stops_the_watcher() {
+        let (_app, kk) = kk();
+        let stand = Stand::new(Vec::new);
+        kk.volumes_list_with(&|cb| stand.start(cb)).unwrap();
+        kk.shutdown(Some("main"));
+        assert!(lock(&kk.0.volumes).watcher.is_some());
+        kk.shutdown(None);
+        assert!(lock(&kk.0.volumes).watcher.is_none());
     }
 }

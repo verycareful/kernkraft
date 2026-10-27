@@ -31,8 +31,12 @@ jobs:
   release:
     name: publish release
     runs-on: ubuntu-24.04
+    # Every step is a few seconds of shell or one API call; 5 minutes each is
+    # the floor, 10 for the job.
+    timeout-minutes: 10
     steps:
       - name: Resolve the tag
+        timeout-minutes: 5
         id: tag
         env:
           INPUT_TAG: ${{ inputs.tag }}
@@ -44,11 +48,13 @@ jobs:
           fi
 
       - uses: actions/checkout@v5
+        timeout-minutes: 5
         with:
           ref: ${{ steps.tag.outputs.value }}
 
       # The tag must name the tree it points at: VERSION holds the full label.
       - name: Check the tag matches the tree
+        timeout-minutes: 5
         env:
           TAG: ${{ steps.tag.outputs.value }}
         run: |
@@ -63,6 +69,7 @@ jobs:
       # Fails when the section is missing or empty, so a release page is never
       # published with nothing on it.
       - name: Extract release notes from CHANGELOG.md
+        timeout-minutes: 5
         env:
           TAG: ${{ steps.tag.outputs.value }}
         run: |
@@ -73,6 +80,7 @@ jobs:
 
       # gh ships on the runner, so no third-party action is needed.
       - name: Publish
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.value }}

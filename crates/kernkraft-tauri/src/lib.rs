@@ -13,7 +13,9 @@
 //! and report through events (`kernkraft://op-progress`, `op-conflict`,
 //! `op-done`, and `search-hit` for the walks; see the `ops` items); folder
 //! watches report `kernkraft://dir-changed` and `dir-gone`, thumbnails
-//! `kernkraft://thumb`, and theme changes `kernkraft://theme-changed`.
+//! `kernkraft://thumb`, theme changes `kernkraft://theme-changed`, and
+//! volume changes (a mount, an unmount, a device appearing or going away)
+//! `kernkraft://volumes-changed`.
 //! The same operations are methods of [`Kernkraft`], reached from Rust with
 //! [`KernkraftExt::kernkraft`].
 //!
@@ -50,7 +52,7 @@ pub use text_cmds::{WireReadOnly, WireStamp, WireText};
 pub use theme_cmds::{WireTheme, EVENT_THEME_CHANGED};
 pub use thumb_cmds::{ThumbEvent, EVENT_THUMB};
 pub use trash_cmds::{WireTrashListing, WireTrashedItem};
-pub use volumes_cmds::{WireMount, WireVolumes};
+pub use volumes_cmds::{VolumesChanged, WireMount, WireVolumes, EVENT_VOLUMES_CHANGED};
 pub use watch::{DirEvent, DEBOUNCE_MS, EVENT_DIR_CHANGED, EVENT_DIR_GONE};
 pub use wire::{WirePath, WirePathError};
 

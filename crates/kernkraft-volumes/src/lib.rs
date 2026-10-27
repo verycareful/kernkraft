@@ -9,6 +9,9 @@
 //! - [`Udisks`] mounts, unmounts and ejects through the UDisks2 D-Bus API
 //!   (<https://storaged.org/doc/udisks2-api/latest/>) on the system bus,
 //!   which `kernkraft-bus` opens over its Unix socket.
+//! - [`watch`] calls back when the set of volumes may have changed: a mount
+//!   or unmount (`/proc/self/mountinfo`) or a device appearing or going away
+//!   (UDisks2 signals).
 //!
 //! Mount points cross this API as `PathBuf` holding the exact bytes; names
 //! shown to people (`device`, `label`) are `String`s and may have had
@@ -19,6 +22,7 @@
 mod error;
 mod mountinfo;
 mod udisks;
+mod watch;
 
 pub use error::{EjectRefusal, VolumesError};
 pub use mountinfo::{
@@ -26,3 +30,4 @@ pub use mountinfo::{
     user_mounts, ListProblem, Listing, Mount, MountInfoLine,
 };
 pub use udisks::{Device, Udisks, ACTION_TIMEOUT};
+pub use watch::{watch, watch_with, OnChange, VolumeWatcher, DEBOUNCE, DROP_WAIT};

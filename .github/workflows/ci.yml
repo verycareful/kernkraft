@@ -16,33 +16,71 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Each step limit is at least four times that step's time in run
+    # 40281452851 (the last run that reached every step: checkout 0 s, system
+    # libraries 28 s, toolchain 8 s, format 0 s, clippy 128 s, test 191 s,
+    # release timing 7 s, boundary 0 s, deny 23 s) and at least 5 minutes, so
+    # a hang costs minutes. The release timing step has a wider limit: an
+    # earlier run spent about 9 minutes in it when the release build was cold.
+    # The job limit is about three times the sum of the measured steps.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 5
 
       - name: System libraries for MuPDF and Tauri
+        timeout-minutes: 10
         run: |
           sudo apt-get update
           sudo apt-get install -y libfontconfig1-dev libfreetype-dev libclang-dev \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 
       - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 5
         with:
           components: rustfmt, clippy
 
       - name: Format
+        timeout-minutes: 5
         run: cargo fmt --all --check
 
       - name: Clippy
+        timeout-minutes: 10
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # The volume watcher test mounts a tmpfs inside a user and mount
+      # namespace it creates with unshare(1). The runner's AppArmor policy
+      # restricts unprivileged user namespaces where it has the key; this lifts that
+      # for the job.
+      - name: Allow unprivileged user namespaces
+        timeout-minutes: 5
+        run: |
+          key=kernel.apparmor_restrict_unprivileged_userns
+          # A kernel without the key has no such restriction.
+          if sysctl -n "$key" >/dev/null 2>&1; then
+            sudo sysctl -w "$key=0"
+          fi
+
       - name: Test
+        timeout-minutes: 15
         run: cargo test --workspace --all-features --no-fail-fast
 
       - name: Timing budgets (release build)
+        timeout-minutes: 30
         run: cargo test --release -p kernkraft-xdg-apps --test mime -- --ignored
 
       - name: Core crates never depend on the platform
+        timeout-minutes: 5
         run: scripts/check-boundary.sh
 
+      - name: Source file headers
+        timeout-minutes: 5
+        run: scripts/check-headers.sh
+
+      - name: Header check tests
+        timeout-minutes: 5
+        run: python3 -I scripts/test_check_headers.py
+
       - name: cargo-deny
+        timeout-minutes: 10
         uses: EmbarkStudios/cargo-deny-action@v2

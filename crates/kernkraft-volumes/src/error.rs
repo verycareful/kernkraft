@@ -81,6 +81,16 @@ pub enum VolumesError {
     /// shape.
     #[error("UDisks {what}: {reason}")]
     Dbus { what: String, reason: String },
+    /// The system bus has no UDisks2 service and none that starts on
+    /// demand, so devices appearing or going away are not followed. Mounts
+    /// and unmounts still are.
+    #[error(
+        "UDisks2 is not on the system bus, so devices appearing or going away are not followed"
+    )]
+    UdisksAbsent,
+    /// The change callback panicked. The watcher keeps running.
+    #[error("the volume change callback panicked: {0}")]
+    CallbackPanic(String),
 }
 
 /// Why an eject was refused.

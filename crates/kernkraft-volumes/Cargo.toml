@@ -20,6 +20,8 @@ kernkraft-bus.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# The p2p feature lets tests run a fake bus daemon over a socket pair.
+zbus = { workspace = true, features = ["p2p"] }
 
 [lints]
 workspace = true

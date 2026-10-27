@@ -4,10 +4,10 @@
 // Included by build.rs, which generates one `allow-<name>` and one
 // `deny-<name>` permission per entry, and by lib.rs, which registers the
 // handlers. `permissions/default.toml` grants every one as
-// `kernkraft:default`.
+// `kernkraft-tauri:default`.
 
 /// Every command the plugin exposes, as invoked from JavaScript
-/// (`plugin:kernkraft|<name>`).
+/// (`plugin:kernkraft-tauri|<name>`).
 pub const COMMANDS: &[&str] = &[
     "list_dir",
     "create_dir",

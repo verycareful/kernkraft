@@ -3,9 +3,9 @@
 
 //! Tauri 2 plugin that exposes kernkraft to a webview.
 //!
-//! The plugin is named `kernkraft`; its commands ([`COMMANDS`]) are invoked
-//! from JavaScript as `plugin:kernkraft|<command>` and are granted by the
-//! permission set `kernkraft:default`. Paths cross the IPC boundary as
+//! The plugin is named `kernkraft-tauri`; its commands ([`COMMANDS`]) are invoked
+//! from JavaScript as `plugin:kernkraft-tauri|<command>` and are granted by the
+//! permission set `kernkraft-tauri:default`. Paths cross the IPC boundary as
 //! [`WirePath`], which is lossless for names that are not UTF-8, and every
 //! failure as [`WireError`], whose `kind` is the name of the error variant.
 //!
@@ -57,16 +57,18 @@ pub use wire::{WirePath, WirePathError};
 use tauri::plugin::TauriPlugin;
 use tauri::{Manager, RunEvent, Runtime, WindowEvent};
 
-/// Name the plugin registers under, and the prefix of its permissions.
-pub const PLUGIN_NAME: &str = "kernkraft";
+/// Name the plugin registers under and the prefix of its permissions. It is
+/// the package name: the plugin build files the ACL under that name, and
+/// Tauri looks a command's plugin up by its runtime name.
+pub const PLUGIN_NAME: &str = "kernkraft-tauri";
 
-/// The `kernkraft` plugin with the user's own trash and MIME database, to
+/// The `kernkraft-tauri` plugin with the user's own trash and MIME database, to
 /// be passed to `tauri::Builder::plugin`.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     init_with(Config::default())
 }
 
-/// The `kernkraft` plugin with the trash and MIME database `config` names.
+/// The `kernkraft-tauri` plugin with the trash and MIME database `config` names.
 pub fn init_with<R: Runtime>(config: Config) -> TauriPlugin<R> {
     tauri::plugin::Builder::new(PLUGIN_NAME)
         .invoke_handler(tauri::generate_handler![

@@ -33,6 +33,7 @@ tauri-plugin.workspace = true
 [dev-dependencies]
 tauri = { workspace = true, features = ["test"] }
 serde_json.workspace = true
+toml = "1"
 tempfile.workspace = true
 
 [lints]

@@ -1,21 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
-//! The volume watcher against the real kernel (a mount in a private mount
-//! namespace) and against a fake bus daemon on a socket pair.
+//! The mountinfo half of the volume watcher against the real kernel (a mount
+//! in a private mount namespace). The UDisks2 half is in `udisks_bus.rs`.
 //!
 //! The mount test cannot mount in this process without root. It starts a
 //! child in new user and mount namespaces with `unshare(1)` and watches the
 //! child's `/proc/<pid>/mountinfo`, which is the same kind of descriptor
 //! `watch` polls for the process itself. The kernel then makes the
 //! descriptor ready exactly as it does for a real mount.
+//!
+//! Where unprivileged user namespaces are not allowed (the CI runner's
+//! AppArmor policy), the environment variable `KERN_TEST_SUDO_MOUNTNS=1`
+//! makes the test run `sudo -n unshare --mount --propagation private` instead.
+//! Only the shell that mounts and unmounts the tmpfs is root; the test and the
+//! watcher stay the invoking user, and the root shell's `/proc/<pid>/mountinfo`
+//! is world-readable. A refused `unshare` or `sudo` fails the test; nothing
+//! falls back to the other form.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::OwnedFd;
-use std::os::unix::net::UnixStream;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::Mutex;
@@ -23,8 +30,9 @@ use std::time::{Duration, Instant};
 
 use kernkraft_bus::BusError;
 use kernkraft_volumes::{watch, watch_with, OnChange, VolumesError, DEBOUNCE, DROP_WAIT};
-use zbus::blocking::connection::Builder;
-use zbus::blocking::Connection;
+
+/// Set (to `1`) on CI to make the mount namespace with `sudo`.
+const SUDO_ENV: &str = "KERN_TEST_SUDO_MOUNTNS";
 
 fn collector() -> (OnChange, mpsc::Receiver<Vec<VolumesError>>) {
     let (tx, rx) = mpsc::channel();
@@ -45,6 +53,9 @@ fn own_mountinfo() -> OwnedFd {
 /// tmpfs when told to, announcing each step on its stdout.
 struct Sandbox {
     child: Child,
+    /// The shell that mounts: the child itself, or under `sudo` the root
+    /// shell it started.
+    shell_pid: u32,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     _dir: tempfile::TempDir,
@@ -53,35 +64,44 @@ struct Sandbox {
 impl Sandbox {
     fn start() -> Sandbox {
         let dir = tempfile::tempdir().unwrap();
-        let script = r#"echo ready; read go; mount -t tmpfs tmpfs "$1" || exit 3; echo mounted; read go; umount "$1" || exit 4; echo unmounted; read go"#;
-        let mut child = Command::new("unshare")
-            .args([
-                "--user",
-                "--map-root-user",
-                "--mount",
-                "sh",
-                "-c",
-                script,
-                "sh",
-            ])
+        // Every read ends the script on end of input, so a dropped sandbox
+        // ends the shell (and with it the namespace and its mounts).
+        let script = r#"echo "ready $$"; read go || exit 0; mount -t tmpfs tmpfs "$1" || exit 3; echo mounted; read go || exit 0; umount "$1" || exit 4; echo unmounted; read go || exit 0"#;
+        let sudo = std::env::var(SUDO_ENV).as_deref() == Ok("1");
+        let mut cmd = if sudo {
+            let mut c = Command::new("sudo");
+            c.args(["-n", "unshare", "--mount", "--propagation", "private"]);
+            c
+        } else {
+            let mut c = Command::new("unshare");
+            c.args(["--user", "--map-root-user", "--mount"]);
+            c
+        };
+        let mut child = cmd
+            .args(["sh", "-c", script, "sh"])
             .arg(dir.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .expect("unshare(1) from util-linux is needed for this test");
+            .expect("unshare(1) from util-linux (and sudo with KERN_TEST_SUDO_MOUNTNS=1) is needed for this test");
         let stdin = child.stdin.take().unwrap();
         let mut stdout = BufReader::new(child.stdout.take().unwrap());
         let mut line = String::new();
         stdout.read_line(&mut line).unwrap();
-        assert_eq!(
-            line.trim(),
-            "ready",
-            "the child could not create user and mount namespaces; \
-             unprivileged user namespaces must be allowed"
-        );
+        let shell_pid = line
+            .trim()
+            .strip_prefix("ready ")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or_else(|| {
+                panic!(
+                    "the child did not start (got {line:?}); it needs unprivileged user \
+                     namespaces, or sudo -n with {SUDO_ENV}=1"
+                )
+            });
         Sandbox {
             child,
+            shell_pid,
             stdin,
             stdout,
             _dir: dir,
@@ -89,7 +109,7 @@ impl Sandbox {
     }
 
     fn mountinfo(&self) -> OwnedFd {
-        OwnedFd::from(File::open(format!("/proc/{}/mountinfo", self.child.id())).unwrap())
+        OwnedFd::from(File::open(format!("/proc/{}/mountinfo", self.shell_pid)).unwrap())
     }
 
     /// Lets the child do its next step and waits for its announcement.
@@ -165,107 +185,16 @@ fn quiet_descriptor_and_prompt_drop() {
 fn live_watch_starts_and_stops() {
     let (cb, _rx) = collector();
     let (watcher, problems) = watch(cb).unwrap();
-    // Any problem is one of the documented absences or a refused
-    // subscription, never an I/O failure of the mount half.
+    // At most the system bus or UDisks2 being absent. A refused subscription
+    // or an I/O failure of the mount half is a defect, not an environment.
+    assert!(problems.len() <= 1, "{problems:?}");
     for p in &problems {
         assert!(
-            matches!(
-                p,
-                VolumesError::Bus(_) | VolumesError::UdisksAbsent | VolumesError::Dbus { .. }
-            ),
+            matches!(p, VolumesError::Bus(_) | VolumesError::UdisksAbsent),
             "{p:?}"
         );
     }
     let t = Instant::now();
     drop(watcher);
     assert!(t.elapsed() < DROP_WAIT / 2);
-}
-
-/// What UDisks' side of the bus daemon answers the watcher's lookups with.
-struct FakeBus {
-    owned: bool,
-    activatable: Vec<String>,
-}
-
-#[zbus::interface(name = "org.freedesktop.DBus")]
-impl FakeBus {
-    fn name_has_owner(&self, name: &str) -> bool {
-        assert_eq!(name, "org.freedesktop.UDisks2");
-        self.owned
-    }
-
-    fn list_activatable_names(&self) -> Vec<String> {
-        self.activatable.clone()
-    }
-
-    fn add_match(&self, _rule: &str) {}
-}
-
-fn fake_bus(bus: FakeBus) -> Connection {
-    let (a, b) = UnixStream::pair().unwrap();
-    let guid = zbus::Guid::generate();
-    let server = std::thread::spawn(move || {
-        Builder::async_io_unix_stream(a)
-            .p2p()
-            .server(guid)
-            .unwrap()
-            .serve_at("/org/freedesktop/DBus", bus)
-            .unwrap()
-            .build()
-            .unwrap()
-    });
-    let client = Builder::async_io_unix_stream(b).p2p().build().unwrap();
-    // Keep the server connection alive for the test's duration.
-    std::mem::forget(server.join().unwrap());
-    client
-}
-
-/// A bus without UDisks2, running or activatable, is reported once and the
-/// mount watch is up.
-#[test]
-fn absent_udisks_is_reported_once() {
-    let (cb, _rx) = collector();
-    let bus = fake_bus(FakeBus {
-        owned: false,
-        activatable: vec!["org.freedesktop.other".into()],
-    });
-    let (watcher, problems) = watch_with(own_mountinfo(), Ok(bus), cb).unwrap();
-    assert!(
-        matches!(problems[..], [VolumesError::UdisksAbsent]),
-        "{problems:?}"
-    );
-    drop(watcher);
-}
-
-/// A bus that is not there at all is reported once, as the bus error.
-#[test]
-fn absent_bus_is_reported_once() {
-    let (cb, _rx) = collector();
-    let (watcher, problems) = watch_with(own_mountinfo(), Err(absent_bus()), cb).unwrap();
-    match &problems[..] {
-        [VolumesError::Bus(e)] => assert!(e.is_absent()),
-        other => panic!("{other:?}"),
-    }
-    drop(watcher);
-}
-
-/// UDisks2 on the bus (here only activatable) is subscribed to without a
-/// problem, and dropping the watcher ends the signal reader.
-#[test]
-fn present_udisks_subscribes_and_drops() {
-    for (owned, activatable) in [
-        (true, vec![]),
-        (false, vec!["org.freedesktop.UDisks2".to_string()]),
-    ] {
-        let (cb, _rx) = collector();
-        let bus = fake_bus(FakeBus { owned, activatable });
-        let (watcher, problems) = watch_with(own_mountinfo(), Ok(bus), cb).unwrap();
-        assert!(problems.is_empty(), "{problems:?}");
-        let t = Instant::now();
-        drop(watcher);
-        assert!(
-            t.elapsed() < DROP_WAIT / 2,
-            "drop waited for the signal reader"
-        );
-    }
 }

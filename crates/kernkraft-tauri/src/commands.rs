@@ -19,7 +19,7 @@
 //! strings into `{ kind: "Ipc", message }`.
 
 use kernkraft_theme::{Follow, UserChoice};
-use kernkraft_volumes::Device;
+use kernkraft_volumes::{Device, MountKey};
 use tauri::{AppHandle, Runtime, Window};
 
 use crate::apps_cmds::{WireAppDefault, WireAppList, WireMime};
@@ -352,19 +352,21 @@ pub(crate) async fn volume_mount<R: Runtime>(
 #[tauri::command]
 pub(crate) async fn volume_unmount<R: Runtime>(
     app: AppHandle<R>,
-    mount_point: WirePath,
+    mount_point: Option<WirePath>,
+    key: Option<MountKey>,
 ) -> Result<(), WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.volume_unmount(mount_point)).await
+    blocking(move || kk.volume_unmount(mount_point, key)).await
 }
 
 #[tauri::command]
 pub(crate) async fn volume_eject<R: Runtime>(
     app: AppHandle<R>,
-    mount_point: WirePath,
+    mount_point: Option<WirePath>,
+    key: Option<MountKey>,
 ) -> Result<(), WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.volume_eject(mount_point)).await
+    blocking(move || kk.volume_eject(mount_point, key)).await
 }
 
 #[tauri::command]

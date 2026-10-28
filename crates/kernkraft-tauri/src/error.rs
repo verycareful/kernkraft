@@ -374,6 +374,7 @@ impl From<&VolumesError> for WireError {
             VolumesError::Udisks { .. } => ("Udisks", None),
             VolumesError::Dbus { .. } => ("Dbus", None),
             VolumesError::UdisksAbsent => ("UdisksAbsent", None),
+            VolumesError::IdentityMismatch { .. } => ("IdentityMismatch", None),
             VolumesError::CallbackPanic(_) => ("CallbackPanic", None),
         };
         let wire = WireError::new(kind, e.to_string(), path.map(|p| p.as_path()));

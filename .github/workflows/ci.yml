@@ -22,17 +22,20 @@ jobs:
     # release timing 7 s, boundary 0 s, deny 23 s) and at least 5 minutes, so
     # a hang costs minutes. The release timing step has a wider limit: an
     # earlier run spent about 9 minutes in it when the release build was cold.
-    # The job limit is about three times the sum of the measured steps.
+    # The measured steps add up to about 6.5 minutes, but a cold run took 43
+    # minutes 51 seconds (d4b0ef4), so the job limit is 60 minutes, above that
+    # run and not derived from the warm one.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         timeout-minutes: 5
 
+      # dbus-daemon: the volume watcher tests start a private one.
       - name: System libraries for MuPDF and Tauri
         timeout-minutes: 10
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfontconfig1-dev libfreetype-dev libclang-dev \
+          sudo apt-get install -y dbus-daemon libfontconfig1-dev libfreetype-dev libclang-dev \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 
       - uses: dtolnay/rust-toolchain@stable
@@ -48,21 +51,16 @@ jobs:
         timeout-minutes: 10
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      # The volume watcher test mounts a tmpfs inside a user and mount
-      # namespace it creates with unshare(1). The runner's AppArmor policy
-      # restricts unprivileged user namespaces where it has the key; this lifts that
-      # for the job.
-      - name: Allow unprivileged user namespaces
-        timeout-minutes: 5
-        run: |
-          key=kernel.apparmor_restrict_unprivileged_userns
-          # A kernel without the key has no such restriction.
-          if sysctl -n "$key" >/dev/null 2>&1; then
-            sudo sysctl -w "$key=0"
-          fi
-
+      # The volume watcher's mount test needs a mount namespace of its own to
+      # mount and unmount a tmpfs in. The runner's AppArmor policy refuses
+      # unprivileged user namespaces, so with this variable the test runs
+      # `sudo -n unshare --mount --propagation private` for that one shell:
+      # sudo is used only to create that mount namespace, and cargo, the
+      # test and the watcher stay the runner user.
       - name: Test
         timeout-minutes: 15
+        env:
+          KERN_TEST_SUDO_MOUNTNS: "1"
         run: cargo test --workspace --all-features --no-fail-fast
 
       - name: Timing budgets (release build)

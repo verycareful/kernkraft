@@ -27,7 +27,8 @@ mod watch;
 pub use error::{EjectRefusal, VolumesError};
 pub use mountinfo::{
     decode_udev_name, list, parse_mountinfo, parse_mountinfo_report, parse_mountinfo_strict,
-    user_mounts, ListProblem, Listing, Mount, MountInfoLine,
+    resolve_mount, resolve_mount_in, user_mounts, ListProblem, Listing, Mount, MountInfoLine,
+    MountKey,
 };
-pub use udisks::{Device, Udisks, ACTION_TIMEOUT};
+pub use udisks::{find_listed, Device, Udisks, ACTION_TIMEOUT};
 pub use watch::{watch, watch_with, OnChange, VolumeWatcher, DEBOUNCE, DROP_WAIT};

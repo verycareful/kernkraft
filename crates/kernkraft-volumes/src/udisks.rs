@@ -72,6 +72,48 @@ pub struct Device {
     /// `Block.HintSystem`: UDisks thinks this is a fixed system disk, not
     /// removable media. Listed all the same; the caller decides what to show.
     pub system: bool,
+    /// `Block.IdUUID`, the filesystem UUID, empty when it has none. Shared by
+    /// clones of a filesystem.
+    pub uuid: String,
+    /// `Block.DeviceNumber` as `major:minor`. Unique among the block devices
+    /// present now; the kernel reuses it once the device is gone.
+    pub major: u32,
+    pub minor: u32,
+}
+
+impl Device {
+    /// Whether `other` is the same filesystem on the same device: the UUID
+    /// and device number together. The object path is not part of it: it
+    /// follows the device node name, which a re-plug can change.
+    fn same_device(&self, other: &Device) -> bool {
+        (&self.uuid, self.major, self.minor) == (&other.uuid, other.major, other.minor)
+    }
+}
+
+/// The device in `listed` that `wanted` stands for: the one at its object
+/// path if that is still the same device, else the one that is the same
+/// device elsewhere, else `None` (it is not listed as unmounted any more). A
+/// different device at its object path is
+/// [`VolumesError::IdentityMismatch`].
+pub fn find_listed(listed: Vec<Device>, wanted: &Device) -> Result<Option<Device>, VolumesError> {
+    if let Some(at_path) = listed.iter().find(|d| d.object_path == wanted.object_path) {
+        if at_path.same_device(wanted) {
+            return Ok(Some(at_path.clone()));
+        }
+        return Err(VolumesError::IdentityMismatch {
+            reason: format!(
+                "{} is now device {}:{} with UUID {:?}, not {}:{} with UUID {:?}",
+                wanted.object_path,
+                at_path.major,
+                at_path.minor,
+                at_path.uuid,
+                wanted.major,
+                wanted.minor,
+                wanted.uuid
+            ),
+        });
+    }
+    Ok(listed.into_iter().find(|d| d.same_device(wanted)))
 }
 
 /// A connection to UDisks2.
@@ -197,6 +239,9 @@ fn unmounted_devices(objects: &Objects) -> Result<Vec<Device>, VolumesError> {
             fs_type: get_string(ifaces, BLOCK, "IdType")?,
             size: get_u64(ifaces, BLOCK, "Size")?,
             system: get_bool(ifaces, BLOCK, "HintSystem")?,
+            uuid: get_string(ifaces, BLOCK, "IdUUID")?,
+            major: rustix::fs::major(get_u64(ifaces, BLOCK, "DeviceNumber")?),
+            minor: rustix::fs::minor(get_u64(ifaces, BLOCK, "DeviceNumber")?),
         });
     }
     out.sort_by(|a, b| {
@@ -744,6 +789,100 @@ mod tests {
             ),
             (key("/o/sdc1"), fs_object("/dev/sdc1", true, &[], "/")),
         ])
+    }
+
+    fn with_identity(
+        mut o: HashMap<String, Props>,
+        uuid: &str,
+        major: u32,
+        minor: u32,
+    ) -> HashMap<String, Props> {
+        // dev_t as UDisks reports `Block.DeviceNumber` (glibc encoding).
+        let dev_t = (u64::from(major & 0xfff) << 8)
+            | u64::from(minor & 0xff)
+            | (u64::from(minor & !0xff) << 12)
+            | (u64::from(major & !0xfff) << 32);
+        let block = o.get_mut(BLOCK).expect("block");
+        block.insert("IdUUID".to_string(), val(uuid.to_string()));
+        block.insert("DeviceNumber".to_string(), val(dev_t));
+        o
+    }
+
+    fn device(object_path: &str, uuid: &str, major: u32, minor: u32) -> Device {
+        Device {
+            object_path: object_path.to_string(),
+            device: String::new(),
+            label: String::new(),
+            fs_type: String::new(),
+            size: 0,
+            system: false,
+            uuid: uuid.to_string(),
+            major,
+            minor,
+        }
+    }
+
+    #[test]
+    fn unmounted_carries_uuid_and_device_number() {
+        let mut o = Objects::new();
+        o.insert(
+            OwnedObjectPath::try_from("/o/sdb2").expect("path"),
+            with_identity(
+                fs_object("/dev/sdb2", false, &[], "/o/drive"),
+                "1234-ABCD",
+                8,
+                18,
+            ),
+        );
+        // Minor above 255 and major above 4095 use the extended glibc fields.
+        o.insert(
+            OwnedObjectPath::try_from("/o/nvme").expect("path"),
+            with_identity(
+                fs_object("/dev/nvme1n1p1", false, &[], "/"),
+                "u-2",
+                259,
+                300,
+            ),
+        );
+        let mut devs = unmounted_devices(&o).expect("ok");
+        devs.sort_by(|a, b| a.object_path.cmp(&b.object_path));
+        assert_eq!(
+            (devs[0].uuid.as_str(), devs[0].major, devs[0].minor),
+            ("u-2", 259, 300)
+        );
+        assert_eq!(
+            (devs[1].uuid.as_str(), devs[1].major, devs[1].minor),
+            ("1234-ABCD", 8, 18)
+        );
+    }
+
+    #[test]
+    fn listed_device_is_matched_by_path_then_checked_by_identity() {
+        let listed = vec![
+            device("/o/sdb1", "U1", 8, 17),
+            device("/o/sdc1", "U2", 8, 33),
+        ];
+        // Same path, same identity.
+        let got = find_listed(listed.clone(), &device("/o/sdb1", "U1", 8, 17)).expect("ok");
+        assert_eq!(got.expect("found").object_path, "/o/sdb1");
+        // Same path, another disk now: refused.
+        for wanted in [
+            device("/o/sdb1", "OTHER", 8, 17),
+            device("/o/sdb1", "U1", 8, 99),
+        ] {
+            assert!(matches!(
+                find_listed(listed.clone(), &wanted),
+                Err(VolumesError::IdentityMismatch { .. })
+            ));
+        }
+        // The path is gone but the identity is listed under another path
+        // (the device node was renamed): that device.
+        let got = find_listed(listed.clone(), &device("/o/sdx9", "U2", 8, 33)).expect("ok");
+        assert_eq!(got.expect("found").object_path, "/o/sdc1");
+        // Neither: not listed.
+        assert!(find_listed(listed, &device("/o/sdx9", "U9", 9, 9))
+            .expect("ok")
+            .is_none());
     }
 
     #[test]

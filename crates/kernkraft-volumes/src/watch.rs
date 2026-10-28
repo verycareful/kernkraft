@@ -13,7 +13,9 @@
 //!   `InterfacesRemoved` at `/org/freedesktop/UDisks2`, and the `Block` and
 //!   `Filesystem` interfaces. D-Bus Specification, "Standard Interfaces":
 //!   `org.freedesktop.DBus.Properties.PropertiesChanged`; "Message Bus
-//!   Messages": `NameHasOwner`, `ListActivatableNames`.
+//!   Messages": `GetNameOwner`, `ListActivatableNames`, `AddMatch`, and the
+//!   `NameOwnerChanged` signal ("Message Bus Signals"), whose sender is the
+//!   bus itself.
 //!
 //! Mounts and unmounts come from mountinfo alone. UDisks adds what mountinfo
 //! cannot show: a device appearing or going away, a filesystem created on
@@ -24,12 +26,19 @@
 //!
 //! The system bus is reached over its Unix socket through `kernkraft-bus`.
 //! When it or UDisks2 is missing the mountinfo half still runs, and the
-//! absence is returned by [`watch`] as a problem, once.
+//! absence is returned by [`watch`] as a problem, once. The subscription is
+//! made whether or not UDisks2 is on the bus: its `NameOwnerChanged` is
+//! watched, so UDisks2 starting later is a change, and UDisks2 leaving is a
+//! change that carries [`VolumesError::UdisksAbsent`] (once per departure).
+//! UDisks2's signals are accepted only from the unique name that owns
+//! `org.freedesktop.UDisks2` at that moment, so a client that sends the same
+//! signal straight to this connection is ignored.
 //!
 //! Threads:
 //! - the mount reader sleeps in `poll(2)` on the mountinfo descriptor and a
 //!   stop eventfd;
-//! - the signal reader reads UDisks' signals from the bus connection;
+//! - the signal reader reads the bus connection's messages (UDisks2's
+//!   signals and `NameOwnerChanged`) in the order the bus sent them;
 //! - the worker debounces both and calls back.
 //!
 //! Dropping a [`VolumeWatcher`] writes the eventfd, stops the worker, closes
@@ -64,14 +73,17 @@ use crate::VolumesError;
 
 const MOUNTINFO: &str = "/proc/self/mountinfo";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+const DBUS_NAME: &str = "org.freedesktop.DBus";
+const DBUS_PATH: &str = "/org/freedesktop/DBus";
 
 /// Quiet time after the last change before one callback runs. Plugging in a
 /// stick makes UDisks announce the drive, its block device, each partition
 /// and each filesystem in turn, and a mount adds a kernel mountinfo event of
 /// its own a moment later; a listing is a `GetManagedObjects` round trip.
 /// Waiting for the burst to end gives one listing per burst instead of one
-/// per signal. 250 ms is longer than the gaps inside such a burst seen on
-/// real hardware and short enough that a list update still feels immediate.
+/// per signal. 250 ms is a choice, not a measurement: long enough to span
+/// the gaps between those signals as the bus delivers them back to back,
+/// short enough that the list still updates without a visible delay.
 pub const DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// A burst that never goes quiet is flushed after this long, so a source
@@ -224,22 +236,24 @@ pub fn watch_with(
     let mut problems = Vec::new();
 
     let mut conn = None;
-    let mut iter = None;
+    let mut subscription = None;
     match system {
         Err(e) => problems.push(VolumesError::Bus(e)),
         Ok(c) => match subscribe(&c) {
-            Ok(Some(i)) => {
-                iter = Some(i);
+            Ok(sub) => {
+                if !sub.on_bus {
+                    problems.push(VolumesError::UdisksAbsent);
+                }
+                subscription = Some(sub);
                 conn = Some(c);
             }
-            Ok(None) => problems.push(VolumesError::UdisksAbsent),
             Err(e) => problems.push(e),
         },
     }
 
-    let signals = iter.map(|iter| {
+    let signals = subscription.map(|sub| {
         let (stx, sstop) = (tx.clone(), stop.clone());
-        spawn_joinable(move || signal_loop(iter, &sstop, &stx))
+        spawn_joinable(move || signal_loop(sub.iter, sub.owner, &sstop, &stx))
     });
     let mounts = {
         let (mtx, mfd, mstop_fd, mstop) = (tx.clone(), mountinfo, stop_fd.clone(), stop.clone());
@@ -261,41 +275,67 @@ pub fn watch_with(
     ))
 }
 
-/// Whether UDisks2 is on the bus now (it owns its name) or can be started
-/// there (it is activatable).
-fn udisks_on_bus(owned: bool, activatable: &[String]) -> bool {
-    owned || activatable.iter().any(|n| n == SERVICE)
+/// Whether UDisks2 is on the bus now (some connection owns its name) or can
+/// be started there (it is activatable).
+fn udisks_on_bus(owner: Option<&str>, activatable: &[String]) -> bool {
+    owner.is_some() || activatable.iter().any(|n| n == SERVICE)
 }
 
-/// Subscribes to UDisks2's signals. `None` when UDisks2 is not on the bus.
-fn subscribe(conn: &Connection) -> Result<Option<MessageIterator>, VolumesError> {
-    let what = "bus name lookup";
+/// What [`subscribe`] set up.
+struct Subscription {
+    iter: MessageIterator,
+    /// The unique name that owns UDisks2's name right now.
+    owner: Option<String>,
+    /// UDisks2 is running or activatable.
+    on_bus: bool,
+}
+
+/// Subscribes to UDisks2's signals and to changes of who owns its name,
+/// whether or not it is on the bus yet. The matches go to the bus daemon,
+/// not to UDisks2, so they hold across UDisks2 stopping and starting.
+fn subscribe(conn: &Connection) -> Result<Subscription, VolumesError> {
+    let what = "bus subscription";
     let dbus = DBusProxy::new(conn).map_err(|e| bad(what, e.to_string()))?;
+    // Opened before the rules are added so nothing the bus sends after them
+    // is missed.
+    let iter = MessageIterator::from(conn.clone());
+    let rule_err = |e: zbus::Error| bad("match rule", e.to_string());
+    let owner_changed = MatchRule::builder()
+        .msg_type(MessageType::Signal)
+        .sender(DBUS_NAME)
+        .and_then(|b| b.interface(DBUS_NAME))
+        .and_then(|b| b.member("NameOwnerChanged"))
+        .and_then(|b| b.path(DBUS_PATH))
+        .and_then(|b| b.arg(0, SERVICE))
+        .map(|b| b.build())
+        .map_err(rule_err)?;
+    let udisks = MatchRule::builder()
+        .msg_type(MessageType::Signal)
+        .sender(SERVICE)
+        .map(|b| b.build())
+        .map_err(rule_err)?;
+    for rule in [owner_changed, udisks] {
+        dbus.add_match_rule(rule)
+            .map_err(|e| bad("AddMatch", e.to_string()))?;
+    }
     let name = BusName::try_from(SERVICE).map_err(|e| bad(what, e.to_string()))?;
-    let owned = dbus
-        .name_has_owner(name)
-        .map_err(|e| bad("NameHasOwner", e.to_string()))?;
+    let owner = match dbus.get_name_owner(name) {
+        Ok(o) => Some(o.to_string()),
+        Err(zbus::fdo::Error::NameHasNoOwner(_)) => None,
+        Err(e) => return Err(bad("GetNameOwner", e.to_string())),
+    };
     let activatable: Vec<String> = dbus
         .list_activatable_names()
         .map_err(|e| bad("ListActivatableNames", e.to_string()))?
         .into_iter()
         .map(|n| n.to_string())
         .collect();
-    if !udisks_on_bus(owned, &activatable) {
-        return Ok(None);
-    }
-    // The match goes to the bus daemon, not to UDisks, so it holds across
-    // UDisks starting and stopping. Every UDisks signal arrives and
-    // `changes_devices` picks the ones that matter: one rule and one reader
-    // instead of one per interface.
-    let rule = MatchRule::builder()
-        .msg_type(MessageType::Signal)
-        .sender(SERVICE)
-        .map(|b| b.build())
-        .map_err(|e| bad("match rule", e.to_string()))?;
-    MessageIterator::for_match_rule(rule, conn, None)
-        .map(Some)
-        .map_err(|e| bad("subscribe", e.to_string()))
+    let on_bus = udisks_on_bus(owner.as_deref(), &activatable);
+    Ok(Subscription {
+        iter,
+        owner,
+        on_bus,
+    })
 }
 
 /// Sleeps until the mountinfo descriptor reports a change or the stop
@@ -327,9 +367,9 @@ fn mount_loop(mountinfo: &OwnedFd, stop_fd: &OwnedFd, stop: &AtomicBool, tx: &Se
             continue;
         }
         if !(ev - (PollFlags::PRI | PollFlags::ERR)).is_empty() {
-            let _ = tx.send(Msg::Error(bad(
-                "mountinfo poll",
-                format!("unexpected poll flags {ev:?}"),
+            let _ = tx.send(Msg::Error(VolumesError::io(
+                std::path::Path::new(MOUNTINFO),
+                std::io::Error::other(format!("unexpected poll flags {ev:?}")),
             )));
             return;
         }
@@ -339,18 +379,57 @@ fn mount_loop(mountinfo: &OwnedFd, stop_fd: &OwnedFd, stop: &AtomicBool, tx: &Se
     }
 }
 
-/// Whether `msg` is a UDisks signal that changes what [`list`](crate::list)
-/// and [`Udisks::unmounted`](crate::Udisks::unmounted) return. A signal
-/// whose body does not have the documented shape is an error, not
-/// ignored.
-fn changes_devices(msg: &Message) -> Result<bool, VolumesError> {
+/// What one message from the bus means for the volume list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Ignore,
+    /// The list of devices may have changed.
+    Change,
+    /// UDisks2 left the bus.
+    Left,
+}
+
+/// Reads `msg`, a message the bus connection received, and keeps `owner`,
+/// the unique name that owns UDisks2's name, up to date.
+///
+/// `NameOwnerChanged` counts only from the bus itself. A UDisks2 signal
+/// counts only from the current owner, and only when it changes what
+/// [`list`](crate::list) and [`Udisks::unmounted`](crate::Udisks::unmounted)
+/// return. A body of the documented signal that does not have the documented
+/// shape is an error, not ignored.
+fn classify(msg: &Message, owner: &mut Option<String>) -> Result<Outcome, VolumesError> {
     let header = msg.header();
+    if header.message_type() != MessageType::Signal {
+        return Ok(Outcome::Ignore);
+    }
     let (Some(iface), Some(member)) = (header.interface(), header.member()) else {
-        return Ok(false);
+        return Ok(Outcome::Ignore);
     };
+    let sender = header.sender().map(|s| s.as_str());
     let body = msg.body();
+    if (iface.as_str(), member.as_str()) == (DBUS_NAME, "NameOwnerChanged") {
+        if sender != Some(DBUS_NAME) {
+            return Ok(Outcome::Ignore);
+        }
+        let (name, _old, new) = body
+            .deserialize::<(String, String, String)>()
+            .map_err(|e| bad("NameOwnerChanged", e.to_string()))?;
+        if name != SERVICE {
+            return Ok(Outcome::Ignore);
+        }
+        return Ok(if new.is_empty() {
+            *owner = None;
+            Outcome::Left
+        } else {
+            *owner = Some(new);
+            Outcome::Change
+        });
+    }
+    if sender.is_none() || sender != owner.as_deref() {
+        return Ok(Outcome::Ignore);
+    }
     let relevant = |name: &str| name == BLOCK || name == FILESYSTEM;
-    match (iface.as_str(), member.as_str()) {
+    let changes = match (iface.as_str(), member.as_str()) {
         (OBJECT_MANAGER, "InterfacesAdded")
             if header.path().is_some_and(|p| p.as_str() == ROOT) =>
         {
@@ -360,7 +439,7 @@ fn changes_devices(msg: &Message) -> Result<bool, VolumesError> {
                     HashMap<String, HashMap<String, OwnedValue>>,
                 )>()
                 .map_err(|e| bad("InterfacesAdded", e.to_string()))?;
-            Ok(ifaces.keys().any(|k| relevant(k)))
+            ifaces.keys().any(|k| relevant(k))
         }
         (OBJECT_MANAGER, "InterfacesRemoved")
             if header.path().is_some_and(|p| p.as_str() == ROOT) =>
@@ -368,7 +447,7 @@ fn changes_devices(msg: &Message) -> Result<bool, VolumesError> {
             let (_, ifaces) = body
                 .deserialize::<(OwnedObjectPath, Vec<String>)>()
                 .map_err(|e| bad("InterfacesRemoved", e.to_string()))?;
-            Ok(ifaces.iter().any(|k| relevant(k)))
+            ifaces.iter().any(|k| relevant(k))
         }
         (PROPERTIES, "PropertiesChanged") => {
             let (name, changed, invalidated) = body
@@ -377,28 +456,35 @@ fn changes_devices(msg: &Message) -> Result<bool, VolumesError> {
             let props = match name.as_str() {
                 BLOCK => BLOCK_PROPS,
                 FILESYSTEM => FILESYSTEM_PROPS,
-                _ => return Ok(false),
+                _ => return Ok(Outcome::Ignore),
             };
-            Ok(changed
+            changed
                 .keys()
                 .chain(invalidated.iter())
-                .any(|k| props.contains(&k.as_str())))
+                .any(|k| props.contains(&k.as_str()))
         }
-        _ => Ok(false),
-    }
+        _ => false,
+    };
+    Ok(if changes {
+        Outcome::Change
+    } else {
+        Outcome::Ignore
+    })
 }
 
-/// Reads UDisks' signals until the iterator ends (the connection was
-/// closed) or fails.
-fn signal_loop<I>(iter: I, stop: &AtomicBool, tx: &Sender<Msg>)
+/// Reads the bus connection's messages until the iterator ends (the
+/// connection was closed) or fails. `owner` is who owns UDisks2's name when
+/// the loop starts.
+fn signal_loop<I>(iter: I, mut owner: Option<String>, stop: &AtomicBool, tx: &Sender<Msg>)
 where
     I: IntoIterator<Item = zbus::Result<Message>>,
 {
     for msg in iter {
         let sent = match msg {
-            Ok(m) => match changes_devices(&m) {
-                Ok(true) => tx.send(Msg::Change),
-                Ok(false) => Ok(()),
+            Ok(m) => match classify(&m, &mut owner) {
+                Ok(Outcome::Change) => tx.send(Msg::Change),
+                Ok(Outcome::Left) => tx.send(Msg::Error(VolumesError::UdisksAbsent)),
+                Ok(Outcome::Ignore) => Ok(()),
                 Err(e) => tx.send(Msg::Error(e)),
             },
             Err(e) => {
@@ -481,14 +567,95 @@ mod tests {
 
     use super::*;
 
-    fn signal<B>(path: &str, iface: &str, member: &str, body: &B) -> Message
+    const OWNER: &str = ":1.7";
+
+    fn signal_from<B>(sender: &str, path: &str, iface: &str, member: &str, body: &B) -> Message
     where
         B: serde::Serialize + zbus::zvariant::DynamicType,
     {
         Message::signal(path, iface, member)
             .unwrap()
+            .sender(sender)
+            .unwrap()
             .build(body)
             .unwrap()
+    }
+
+    /// A signal from UDisks2's current owner.
+    fn signal<B>(path: &str, iface: &str, member: &str, body: &B) -> Message
+    where
+        B: serde::Serialize + zbus::zvariant::DynamicType,
+    {
+        signal_from(OWNER, path, iface, member, body)
+    }
+
+    /// `changes_devices` for a UDisks2 that is owned by [`OWNER`].
+    fn changes_devices(msg: &Message) -> Result<bool, VolumesError> {
+        let mut owner = Some(OWNER.to_string());
+        Ok(classify(msg, &mut owner)? == Outcome::Change)
+    }
+
+    fn owner_changed(sender: &str, name: &str, old: &str, new: &str) -> Message {
+        signal_from(
+            sender,
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "NameOwnerChanged",
+            &(name, old, new),
+        )
+    }
+
+    #[test]
+    fn unicast_or_foreign_sender_is_ignored() {
+        let msg = signal_from(
+            ":1.99",
+            ROOT,
+            OBJECT_MANAGER,
+            "InterfacesRemoved",
+            &(ObjectPath::try_from(SDB1).unwrap(), vec![BLOCK.to_string()]),
+        );
+        let mut owner = Some(OWNER.to_string());
+        assert_eq!(classify(&msg, &mut owner).unwrap(), Outcome::Ignore);
+        // With no owner at all, nobody is UDisks2.
+        let mut none = None;
+        assert_eq!(
+            classify(&added(SDB1, &[BLOCK]), &mut none).unwrap(),
+            Outcome::Ignore
+        );
+        // Even a malformed body from a foreign sender is not an error.
+        let junk = signal_from(":1.99", ROOT, OBJECT_MANAGER, "InterfacesAdded", &1u32);
+        assert_eq!(classify(&junk, &mut owner).unwrap(), Outcome::Ignore);
+    }
+
+    #[test]
+    fn name_owner_changes_track_the_owner() {
+        let bus = "org.freedesktop.DBus";
+        let mut owner = None;
+        // Arrival.
+        let m = owner_changed(bus, SERVICE, "", ":1.5");
+        assert_eq!(classify(&m, &mut owner).unwrap(), Outcome::Change);
+        assert_eq!(owner.as_deref(), Some(":1.5"));
+        // Replacement by another process.
+        let m = owner_changed(bus, SERVICE, ":1.5", ":1.6");
+        assert_eq!(classify(&m, &mut owner).unwrap(), Outcome::Change);
+        assert_eq!(owner.as_deref(), Some(":1.6"));
+        // Departure.
+        let m = owner_changed(bus, SERVICE, ":1.6", "");
+        assert_eq!(classify(&m, &mut owner).unwrap(), Outcome::Left);
+        assert_eq!(owner, None);
+        // Other names, and the same signal from a client posing as the bus,
+        // change nothing.
+        let m = owner_changed(bus, "org.example.Other", "", ":1.8");
+        assert_eq!(classify(&m, &mut owner).unwrap(), Outcome::Ignore);
+        let m = owner_changed(":1.99", SERVICE, "", ":1.99");
+        assert_eq!(classify(&m, &mut owner).unwrap(), Outcome::Ignore);
+        assert_eq!(owner, None);
+        // A malformed body is an error.
+        let m = signal_from(bus, "/org/freedesktop/DBus", bus, "NameOwnerChanged", &1u32);
+        assert!(matches!(
+            classify(&m, &mut owner),
+            Err(VolumesError::Dbus { .. })
+        ));
     }
 
     fn added(path: &str, ifaces: &[&str]) -> Message {
@@ -618,7 +785,7 @@ mod tests {
             Err(zbus::Error::Failure("boom".into())),
             Ok(added(SDB1, &[BLOCK])),
         ];
-        signal_loop(items, &AtomicBool::new(false), &tx);
+        signal_loop(items, Some(OWNER.to_string()), &AtomicBool::new(false), &tx);
         drop(tx);
         let got: Vec<Msg> = rx.iter().collect();
         // The job is ignored; the block counts; the malformed body is an
@@ -637,16 +804,54 @@ mod tests {
     fn signal_loop_after_stop_is_quiet() {
         let (tx, rx) = mpsc::channel();
         let items: Vec<zbus::Result<Message>> = vec![Err(zbus::Error::Failure("closed".into()))];
-        signal_loop(items, &AtomicBool::new(true), &tx);
+        signal_loop(items, None, &AtomicBool::new(true), &tx);
         drop(tx);
         assert_eq!(rx.iter().count(), 0);
     }
 
     #[test]
     fn udisks_presence() {
-        assert!(udisks_on_bus(true, &[]));
-        assert!(udisks_on_bus(false, &["a.b".into(), SERVICE.into()]));
-        assert!(!udisks_on_bus(false, &["a.b".into()]));
+        assert!(udisks_on_bus(Some(":1.5"), &[]));
+        assert!(udisks_on_bus(None, &["a.b".into(), SERVICE.into()]));
+        assert!(!udisks_on_bus(None, &["a.b".into()]));
+    }
+
+    /// A departure is delivered as a change that carries the absence.
+    #[test]
+    fn signal_loop_reports_departure() {
+        let (tx, rx) = mpsc::channel();
+        let items: Vec<zbus::Result<Message>> = vec![Ok(owner_changed(
+            "org.freedesktop.DBus",
+            SERVICE,
+            OWNER,
+            "",
+        ))];
+        signal_loop(items, Some(OWNER.to_string()), &AtomicBool::new(false), &tx);
+        drop(tx);
+        let got: Vec<Msg> = rx.iter().collect();
+        assert!(matches!(got[0], Msg::Error(VolumesError::UdisksAbsent)));
+        assert_eq!(got.len(), 1);
+    }
+
+    /// A poll flag nothing here asked for is an I/O error naming the file,
+    /// and ends the reader.
+    #[test]
+    fn unexpected_poll_flags_are_io_errors() {
+        // A closed write end of a pipe polls as POLLERR, which is expected;
+        // a read end whose writer closed polls as POLLHUP, which is not.
+        let (r, w) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(w);
+        let r = OwnedFd::from(r);
+        let stop_fd = eventfd(0, EventfdFlags::CLOEXEC).unwrap();
+        let (tx, rx) = mpsc::channel();
+        mount_loop(&r, &stop_fd, &AtomicBool::new(false), &tx);
+        drop(tx);
+        match rx.iter().next() {
+            Some(Msg::Error(VolumesError::Io { path, .. })) => {
+                assert_eq!(path, std::path::Path::new(MOUNTINFO));
+            }
+            other => panic!("{:?}", other.is_some()),
+        }
     }
 
     /// A burst of changes inside the quiet time is one callback.

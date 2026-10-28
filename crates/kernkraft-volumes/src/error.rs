@@ -26,6 +26,12 @@ pub enum VolumesError {
     NoUser { uid: u32 },
     #[error("system bus: {0}")]
     Bus(#[from] BusError),
+    /// The volume is not the one that was listed: its mount ID or device
+    /// number no longer belongs to it, or it is mounted somewhere else now
+    /// (the device was swapped or remounted since the listing). Nothing was
+    /// done.
+    #[error("not the volume that was listed: {reason}")]
+    IdentityMismatch { reason: String },
     /// UDisks refused to unmount because something still uses the volume.
     /// `message` is UDisks' own text (it usually names the holding process).
     #[error("{} is busy: {message}", mount_point.display())]

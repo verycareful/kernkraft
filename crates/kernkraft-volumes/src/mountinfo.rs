@@ -20,6 +20,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 use crate::VolumesError;
+use serde::{Deserialize, Serialize};
 
 const MOUNTINFO: &str = "/proc/self/mountinfo";
 const BY_LABEL: &str = "/dev/disk/by-label";
@@ -77,6 +78,16 @@ pub struct MountInfoLine {
 /// `device`, `fs_type` and `label` are display strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mount {
+    /// Mountinfo field 1, the mount ID: unique among the mounts of the
+    /// mount namespace while the mount exists, and reused after it is
+    /// unmounted. With `major` and `minor` it identifies one mounted
+    /// filesystem instance (see [`MountKey`]).
+    pub mount_id: u32,
+    /// Mountinfo field 3, `major:minor` of the filesystem's device
+    /// (`st_dev` of its files). Several mounts of one filesystem (a bind
+    /// mount, btrfs subvolumes) share it; the mount ID tells them apart.
+    pub major: u32,
+    pub minor: u32,
     pub mount_point: PathBuf,
     pub device: String,
     pub fs_type: String,
@@ -86,6 +97,80 @@ pub struct Mount {
     pub removable: bool,
     /// `ro` in the mount options or the superblock options.
     pub read_only: bool,
+}
+
+/// What names one mounted filesystem instance: the mount ID and device
+/// number from its mountinfo line. The mount ID alone is reused once a mount
+/// is gone and the device number alone is shared by bind mounts; a different
+/// disk mounted at the same place gets a different pair in practice, which is
+/// what [`resolve_mount`] checks. Neither value survives a reboot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MountKey {
+    pub mount_id: u32,
+    pub major: u32,
+    pub minor: u32,
+}
+
+impl Mount {
+    pub fn key(&self) -> MountKey {
+        MountKey {
+            mount_id: self.mount_id,
+            major: self.major,
+            minor: self.minor,
+        }
+    }
+}
+
+/// The mount point to act on, from the mount point the caller knows, the
+/// identity it was listed with, or both: [`resolve_mount_in`] on the current
+/// `/proc/self/mountinfo`.
+pub fn resolve_mount(
+    mount_point: Option<&Path>,
+    key: Option<MountKey>,
+) -> Result<PathBuf, VolumesError> {
+    let lines = parse_mountinfo_strict(read_mountinfo()?)?;
+    resolve_mount_in(&lines, mount_point, key)
+}
+
+/// The pure half of [`resolve_mount`].
+///
+/// With a `key`, the mount with that ID must exist, be on that device, and
+/// be at `mount_point` when one is given; the result is where it is now.
+/// Anything else is [`VolumesError::IdentityMismatch`], because the volume
+/// the caller listed is gone or replaced. With only a `mount_point`, that
+/// path is returned as it is: it is the caller's word and is checked by what
+/// acts on it. With neither, there is nothing to resolve.
+pub fn resolve_mount_in(
+    lines: &[MountInfoLine],
+    mount_point: Option<&Path>,
+    key: Option<MountKey>,
+) -> Result<PathBuf, VolumesError> {
+    let mismatch = |reason: String| VolumesError::IdentityMismatch { reason };
+    let Some(key) = key else {
+        return mount_point
+            .map(Path::to_path_buf)
+            .ok_or_else(|| mismatch("neither a mount point nor an identity was given".into()));
+    };
+    let line = lines
+        .iter()
+        .rev()
+        .find(|l| l.mount_id == key.mount_id)
+        .ok_or_else(|| mismatch(format!("mount ID {} no longer exists", key.mount_id)))?;
+    if (line.major, line.minor) != (key.major, key.minor) {
+        return Err(mismatch(format!(
+            "mount ID {} is now device {}:{}, not {}:{}",
+            key.mount_id, line.major, line.minor, key.major, key.minor
+        )));
+    }
+    if let Some(mp) = mount_point.filter(|mp| *mp != line.mount_point) {
+        return Err(mismatch(format!(
+            "mount ID {} is at {}, not {}",
+            key.mount_id,
+            line.mount_point.display(),
+            mp.display()
+        )));
+    }
+    Ok(line.mount_point.clone())
 }
 
 /// Decodes the `\ooo` octal escapes of one mountinfo field. A backslash not
@@ -359,6 +444,9 @@ pub fn user_mounts(
             is_writable(p)
         })
         .map(|l| Mount {
+            mount_id: l.mount_id,
+            major: l.major,
+            minor: l.minor,
             mount_point: l.mount_point.clone(),
             device: l.source.clone(),
             fs_type: l.fs_type.clone(),

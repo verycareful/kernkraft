@@ -36,12 +36,18 @@
 //! `problems`, and is tried again by the next call. Errors the watcher meets
 //! later, and a panic in the event callback, are in the `problems` of the
 //! next event.
+//!
+//! A consumer listens for the event before its first `volumes_list`, and
+//! keeps what the first listing reported on screen for as long as it applies:
+//! those startup problems come back once and never again, while later events
+//! carry only what happened since the previous one.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use kernkraft_volumes::{
-    list, watch, Device, ListProblem, Mount, OnChange, Udisks, VolumeWatcher, VolumesError,
+    find_listed, list, resolve_mount, watch, Device, ListProblem, Mount, MountKey, OnChange,
+    Udisks, VolumeWatcher, VolumesError,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Runtime};
@@ -74,10 +80,15 @@ type WatchFn<'a> =
     dyn Fn(OnChange) -> Result<(VolumeWatcher, Vec<VolumesError>), VolumesError> + 'a;
 
 /// A mounted volume. `mount_point` is the exact path; the rest are display
-/// strings (see `kernkraft_volumes::Mount`).
+/// strings (see `kernkraft_volumes::Mount`). `key` is its identity: the
+/// mount ID is unique among the current mounts and reused once one is
+/// unmounted, so pass it back with the volume's commands (`volume_unmount`,
+/// `volume_eject`) to be refused, with `IdentityMismatch`, when the device
+/// was swapped since the listing. Keys do not survive a reboot.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireMount {
     pub mount_point: WirePath,
+    pub key: MountKey,
     pub device: String,
     pub fs_type: String,
     pub label: String,
@@ -89,6 +100,7 @@ impl From<&Mount> for WireMount {
     fn from(m: &Mount) -> WireMount {
         WireMount {
             mount_point: WirePath::from(&m.mount_point),
+            key: m.key(),
             device: m.device.clone(),
             fs_type: m.fs_type.clone(),
             label: m.label.clone(),
@@ -188,7 +200,7 @@ impl<R: Runtime> Kernkraft<R> {
                 Ok((watcher, problems)) => {
                     state.started = true;
                     state.watcher = Some(watcher);
-                    state.once = problems.iter().map(WireError::from).collect();
+                    state.once.extend(problems.iter().map(WireError::from));
                 }
                 // No watcher; the next listing tries again, and this one
                 // says why there is none.
@@ -206,32 +218,55 @@ impl<R: Runtime> Kernkraft<R> {
     }
 
     /// Mounts `device`, which must be one UDisks lists as unmounted now
-    /// (matched by its object path; the webview's copy is not trusted), and
-    /// returns where UDisks mounted it. `UnknownDevice` otherwise.
+    /// (the webview's copy is not trusted), and returns where UDisks
+    /// mounted it. It is matched by object path and must be the same device
+    /// there (UUID and device number): a different disk at that path is
+    /// `IdentityMismatch`; the same device under another path is found by its
+    /// identity. `UnknownDevice` when it is not listed.
     pub fn volume_mount(&self, device: Device) -> Result<WirePath, WireError> {
         let udisks = Udisks::connect()?;
-        let listed = udisks
-            .unmounted()?
-            .into_iter()
-            .find(|d| d.object_path == device.object_path)
+        let listed = find_listed(udisks.unmounted()?, &device)?
             .ok_or_else(|| PluginError::UnknownDevice(device.object_path.clone()))?;
         Ok(WirePath::from(&udisks.mount(&listed)?))
     }
 
-    /// Unmounts the filesystem at `mount_point`. `Busy` (with UDisks'
-    /// message) while something uses it.
-    pub fn volume_unmount(&self, mount_point: WirePath) -> Result<(), WireError> {
-        let mount_point = PathBuf::try_from(mount_point)?;
+    /// Unmounts the filesystem named by `mount_point`, `key` or both (see
+    /// `kernkraft_volumes::resolve_mount`: with a `key` that no longer
+    /// matches, `IdentityMismatch` and nothing is unmounted). `Busy` (with
+    /// UDisks' message) while something uses it.
+    pub fn volume_unmount(
+        &self,
+        mount_point: Option<WirePath>,
+        key: Option<MountKey>,
+    ) -> Result<(), WireError> {
+        let mount_point = self.volume_target(mount_point, key)?;
         Ok(Udisks::connect()?.unmount(&mount_point)?)
     }
 
-    /// Unmounts every volume on the drive of `mount_point` and ejects or
-    /// powers off the drive (see `kernkraft_volumes::Udisks::eject` for
-    /// what is refused). A failure after something was unmounted is
+    /// Unmounts every volume on the drive of the volume named by
+    /// `mount_point`, `key` or both (as [`Kernkraft::volume_unmount`]) and
+    /// ejects or powers off the drive (see `kernkraft_volumes::Udisks::eject`
+    /// for what is refused). A failure after something was unmounted is
     /// `EjectIncomplete`, whose details list what was.
-    pub fn volume_eject(&self, mount_point: WirePath) -> Result<(), WireError> {
-        let mount_point = PathBuf::try_from(mount_point)?;
+    pub fn volume_eject(
+        &self,
+        mount_point: Option<WirePath>,
+        key: Option<MountKey>,
+    ) -> Result<(), WireError> {
+        let mount_point = self.volume_target(mount_point, key)?;
         Ok(Udisks::connect()?.eject(&mount_point)?)
+    }
+
+    /// The mount point a command acts on. Checked against the mounts as they
+    /// are now, before UDisks is asked anything; a mount that changes
+    /// between this check and UDisks' action is not caught.
+    fn volume_target(
+        &self,
+        mount_point: Option<WirePath>,
+        key: Option<MountKey>,
+    ) -> Result<PathBuf, WireError> {
+        let mount_point = mount_point.map(PathBuf::try_from).transpose()?;
+        Ok(resolve_mount(mount_point.as_deref(), key)?)
     }
 }
 
@@ -247,7 +282,7 @@ mod tests {
     use std::time::Duration;
 
     use kernkraft_bus::BusError;
-    use kernkraft_volumes::watch_with;
+    use kernkraft_volumes::{watch_with, MountKey};
     use tauri::test::{mock_app, MockRuntime};
     use tauri::Listener;
 
@@ -331,15 +366,15 @@ mod tests {
         let calls = Cell::new(0);
         let start = |_cb| {
             calls.set(calls.get() + 1);
-            Err(VolumesError::Dbus {
-                what: "mountinfo".into(),
-                reason: "gone".into(),
+            Err(VolumesError::Io {
+                path: PathBuf::from("/proc/self/mountinfo"),
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
             })
         };
         for n in 1..=2 {
             let v = kk.volumes_list_with(&start).unwrap();
             assert_eq!(calls.get(), n);
-            assert!(kinds(&v).iter().any(|k| k == "Dbus"), "{:?}", v.problems);
+            assert!(kinds(&v).iter().any(|k| k == "Io"), "{:?}", v.problems);
             assert!(lock(&kk.0.volumes).watcher.is_none());
         }
     }
@@ -366,6 +401,43 @@ mod tests {
             serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
         assert_eq!(p.problems.len(), 1);
         assert_eq!(p.problems[0].kind, "CallbackPanic");
+    }
+
+    /// A listed mount carries the identity the commands accept.
+    #[test]
+    fn wire_mount_carries_its_identity() {
+        let m = Mount {
+            mount_id: 25,
+            major: 8,
+            minor: 17,
+            mount_point: PathBuf::from("/run/media/u/S"),
+            device: "/dev/sdb1".into(),
+            fs_type: "exfat".into(),
+            label: "S".into(),
+            removable: true,
+            read_only: false,
+        };
+        let w = WireMount::from(&m);
+        assert_eq!(
+            w.key,
+            MountKey {
+                mount_id: 25,
+                major: 8,
+                minor: 17
+            }
+        );
+    }
+
+    /// Startup problems that arrive while earlier ones are unreported are
+    /// added to them, not substituted.
+    #[test]
+    fn unreported_startup_problems_accumulate() {
+        let (_app, kk) = kk();
+        lock(&kk.0.volumes).once = vec![WireError::from(VolumesError::UdisksAbsent)];
+        let stand = Stand::new(|| vec![VolumesError::CallbackPanic("p".into())]);
+        let once = kk.volumes_start(&|cb| stand.start(cb));
+        let kinds: Vec<_> = once.iter().map(|p| p.kind.as_str()).collect();
+        assert_eq!(kinds, ["UdisksAbsent", "CallbackPanic"]);
     }
 
     /// Exiting the app stops the watcher; a window closing does not.

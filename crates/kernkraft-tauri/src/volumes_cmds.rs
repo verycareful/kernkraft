@@ -46,7 +46,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use kernkraft_volumes::{
-    find_listed, list, resolve_mount, watch, Device, ListProblem, Mount, MountKey, OnChange,
+    find_listed, list, verify_mount, watch, Device, DiskId, Identity, ListProblem, Mount, OnChange,
     Udisks, VolumeWatcher, VolumesError,
 };
 use serde::{Deserialize, Serialize};
@@ -80,15 +80,20 @@ type WatchFn<'a> =
     dyn Fn(OnChange) -> Result<(VolumeWatcher, Vec<VolumesError>), VolumesError> + 'a;
 
 /// A mounted volume. `mount_point` is the exact path; the rest are display
-/// strings (see `kernkraft_volumes::Mount`). `key` is its identity: the
-/// mount ID is unique among the current mounts and reused once one is
-/// unmounted, so pass it back with the volume's commands (`volume_unmount`,
-/// `volume_eject`) to be refused, with `IdentityMismatch`, when the device
-/// was swapped since the listing. Keys do not survive a reboot.
+/// strings (see `kernkraft_volumes::Mount`). `identity` says which disk it is
+/// on: `{state: "known", major, minor, diskseq}` to pass back as `disk` to
+/// `volume_unmount` and `volume_eject`, which refuse with `IdentityMismatch`
+/// when the disk was swapped since the listing, or `{state: "unknown",
+/// reason}` for a volume that has none (those two commands cannot be used on
+/// it). `major:minor` is unique among the block devices present now and
+/// reused at once when one is unplugged; `diskseq` is unique per disk object
+/// until reboot and shared by a disk's partitions. A stick reformatted in
+/// place, or a card swapped in a reader that reports no media change, keeps
+/// both.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireMount {
     pub mount_point: WirePath,
-    pub key: MountKey,
+    pub identity: Identity,
     pub device: String,
     pub fs_type: String,
     pub label: String,
@@ -100,7 +105,7 @@ impl From<&Mount> for WireMount {
     fn from(m: &Mount) -> WireMount {
         WireMount {
             mount_point: WirePath::from(&m.mount_point),
-            key: m.key(),
+            identity: m.identity.clone(),
             device: m.device.clone(),
             fs_type: m.fs_type.clone(),
             label: m.label.clone(),
@@ -219,54 +224,42 @@ impl<R: Runtime> Kernkraft<R> {
 
     /// Mounts `device`, which must be one UDisks lists as unmounted now
     /// (the webview's copy is not trusted), and returns where UDisks
-    /// mounted it. It is matched by object path and must be the same device
-    /// there (UUID and device number): a different disk at that path is
-    /// `IdentityMismatch`; the same device under another path is found by its
-    /// identity. `UnknownDevice` when it is not listed.
+    /// mounted it. `device.identity` must be known (`IdentityUnknown`
+    /// otherwise). The device is matched by object path and must be the same
+    /// disk there (device number and disk sequence number, read again now):
+    /// a different disk at that path is `IdentityMismatch`; the same disk
+    /// under another path is found by its identity. `UnknownDevice` when it
+    /// is not listed.
     pub fn volume_mount(&self, device: Device) -> Result<WirePath, WireError> {
+        device.identity.known()?;
         let udisks = Udisks::connect()?;
         let listed = find_listed(udisks.unmounted()?, &device)?
             .ok_or_else(|| PluginError::UnknownDevice(device.object_path.clone()))?;
         Ok(WirePath::from(&udisks.mount(&listed)?))
     }
 
-    /// Unmounts the filesystem named by `mount_point`, `key` or both (see
-    /// `kernkraft_volumes::resolve_mount`: with a `key` that no longer
-    /// matches, `IdentityMismatch` and nothing is unmounted). `Busy` (with
+    /// Unmounts the filesystem at `mount_point`, which must still be on the
+    /// disk `disk` names (the identity it was listed with): the mount must be
+    /// there on that block device and the disk's sequence number is read
+    /// again now. `IdentityMismatch` if not, `NoDiskSeq` if the sequence
+    /// number cannot be read; nothing is unmounted. The check and UDisks'
+    /// action are two steps; a swap between them is not caught. `Busy` (with
     /// UDisks' message) while something uses it.
-    pub fn volume_unmount(
-        &self,
-        mount_point: Option<WirePath>,
-        key: Option<MountKey>,
-    ) -> Result<(), WireError> {
-        let mount_point = self.volume_target(mount_point, key)?;
+    pub fn volume_unmount(&self, mount_point: WirePath, disk: DiskId) -> Result<(), WireError> {
+        let mount_point = PathBuf::try_from(mount_point)?;
+        verify_mount(&mount_point, &disk)?;
         Ok(Udisks::connect()?.unmount(&mount_point)?)
     }
 
-    /// Unmounts every volume on the drive of the volume named by
-    /// `mount_point`, `key` or both (as [`Kernkraft::volume_unmount`]) and
+    /// Unmounts every volume on the drive of the volume at `mount_point` and
     /// ejects or powers off the drive (see `kernkraft_volumes::Udisks::eject`
-    /// for what is refused). A failure after something was unmounted is
-    /// `EjectIncomplete`, whose details list what was.
-    pub fn volume_eject(
-        &self,
-        mount_point: Option<WirePath>,
-        key: Option<MountKey>,
-    ) -> Result<(), WireError> {
-        let mount_point = self.volume_target(mount_point, key)?;
+    /// for what is refused), after the same identity check as
+    /// [`Kernkraft::volume_unmount`]. A failure after something was unmounted
+    /// is `EjectIncomplete`, whose details list what was.
+    pub fn volume_eject(&self, mount_point: WirePath, disk: DiskId) -> Result<(), WireError> {
+        let mount_point = PathBuf::try_from(mount_point)?;
+        verify_mount(&mount_point, &disk)?;
         Ok(Udisks::connect()?.eject(&mount_point)?)
-    }
-
-    /// The mount point a command acts on. Checked against the mounts as they
-    /// are now, before UDisks is asked anything; a mount that changes
-    /// between this check and UDisks' action is not caught.
-    fn volume_target(
-        &self,
-        mount_point: Option<WirePath>,
-        key: Option<MountKey>,
-    ) -> Result<PathBuf, WireError> {
-        let mount_point = mount_point.map(PathBuf::try_from).transpose()?;
-        Ok(resolve_mount(mount_point.as_deref(), key)?)
     }
 }
 
@@ -282,7 +275,7 @@ mod tests {
     use std::time::Duration;
 
     use kernkraft_bus::BusError;
-    use kernkraft_volumes::{watch_with, MountKey};
+    use kernkraft_volumes::{watch_with, DiskId};
     use tauri::test::{mock_app, MockRuntime};
     use tauri::Listener;
 
@@ -403,13 +396,18 @@ mod tests {
         assert_eq!(p.problems[0].kind, "CallbackPanic");
     }
 
-    /// A listed mount carries the identity the commands accept.
+    /// A listed mount carries its identity, known or with the reason it has
+    /// none.
     #[test]
     fn wire_mount_carries_its_identity() {
-        let m = Mount {
-            mount_id: 25,
+        let mut m = Mount {
             major: 8,
             minor: 17,
+            identity: Identity::Known(DiskId {
+                major: 8,
+                minor: 17,
+                diskseq: 9,
+            }),
             mount_point: PathBuf::from("/run/media/u/S"),
             device: "/dev/sdb1".into(),
             fs_type: "exfat".into(),
@@ -417,15 +415,13 @@ mod tests {
             removable: true,
             read_only: false,
         };
-        let w = WireMount::from(&m);
-        assert_eq!(
-            w.key,
-            MountKey {
-                mount_id: 25,
-                major: 8,
-                minor: 17
-            }
-        );
+        assert_eq!(WireMount::from(&m).identity, m.identity);
+        m.identity = Identity::Unknown {
+            reason: "no diskseq".into(),
+        };
+        let json = serde_json::to_value(WireMount::from(&m)).unwrap();
+        assert_eq!(json["identity"]["state"], "unknown");
+        assert_eq!(json["identity"]["reason"], "no diskseq");
     }
 
     /// Startup problems that arrive while earlier ones are unreported are

@@ -4,10 +4,13 @@
 //! The UDisks2 half of the volume watcher against a private `dbus-daemon`,
 //! reached through `kernkraft_bus::system()` exactly as in production: the
 //! daemon listens on an abstract Unix socket (a path under the repository
-//! would exceed the 107-byte `sun_path` limit) and the test points
-//! `DBUS_SYSTEM_BUS_ADDRESS` at it while it opens each connection. A test
-//! takes the name `org.freedesktop.UDisks2` on that bus and emits the
-//! signals UDisks2 documents.
+//! would exceed the 107-byte `sun_path` limit) and `DBUS_SYSTEM_BUS_ADDRESS`
+//! points at it. That variable is the one address source the production path
+//! reads, and setting it is only safe while no other thread can read the
+//! environment, so this file has a single test: it sets the variable first
+//! thing, before it spawns a thread of its own, and restores it last. The
+//! test takes the name `org.freedesktop.UDisks2` on the bus and emits the
+//! signals UDisks2 documents, in turn for each scenario.
 //!
 //! `dbus-daemon` must be installed; a missing binary fails the test.
 
@@ -18,7 +21,6 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::os::fd::OwnedFd;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
@@ -35,10 +37,27 @@ const JOB: &str = "org.freedesktop.UDisks2.Job";
 const SDB1: &str = "/org/freedesktop/UDisks2/block_devices/sdb1";
 const WAIT: Duration = Duration::from_secs(10);
 
-/// Opening a connection reads the process environment while the test sets
-/// it; one lock keeps the tests of this file from racing on it.
-static ENV: Mutex<()> = Mutex::new(());
-static COUNTER: AtomicU32 = AtomicU32::new(0);
+/// Sets `DBUS_SYSTEM_BUS_ADDRESS` and puts it back when dropped.
+struct EnvGuard {
+    saved: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set(address: &str) -> EnvGuard {
+        let saved = std::env::var_os("DBUS_SYSTEM_BUS_ADDRESS");
+        std::env::set_var("DBUS_SYSTEM_BUS_ADDRESS", address);
+        EnvGuard { saved }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match self.saved.take() {
+            Some(v) => std::env::set_var("DBUS_SYSTEM_BUS_ADDRESS", v),
+            None => std::env::remove_var("DBUS_SYSTEM_BUS_ADDRESS"),
+        }
+    }
+}
 
 struct Daemon {
     child: Child,
@@ -49,11 +68,7 @@ struct Daemon {
 impl Daemon {
     fn start() -> Daemon {
         let dir = tempfile::tempdir().unwrap();
-        let name = format!(
-            "kernkraft-volumes-test-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::SeqCst)
-        );
+        let name = format!("kernkraft-volumes-test-{}", std::process::id());
         let config = dir.path().join("bus.conf");
         std::fs::write(
             &config,
@@ -94,10 +109,9 @@ impl Daemon {
         }
     }
 
-    /// A connection to this daemon through `kernkraft_bus::system()`.
+    /// A connection to this daemon through `kernkraft_bus::system()`; the
+    /// environment must point at it (see [`EnvGuard`]).
     fn connect(&self) -> Result<Connection, kernkraft_bus::BusError> {
-        let _guard = ENV.lock().unwrap();
-        std::env::set_var("DBUS_SYSTEM_BUS_ADDRESS", &self.address);
         kernkraft_bus::system()
     }
 }
@@ -171,14 +185,24 @@ fn expect_quiet(rx: &mpsc::Receiver<Vec<VolumesError>>, what: &str) {
     }
 }
 
+/// One daemon, one environment setting, the scenarios in turn. Each ends
+/// with every name released, so the next starts from a bus UDisks2 is not on.
+#[test]
+fn private_bus() {
+    // Declared first, so it is dropped last: after the daemon and every
+    // connection are gone.
+    let daemon = Daemon::start();
+    let _env = EnvGuard::set(&daemon.address);
+    udisks_signals_call_back(&daemon);
+    udisks_arrival_departure_and_return(&daemon);
+}
+
 /// UDisks2 present from the start: its Block and Filesystem signals call
 /// back, its other signals and anyone else's do not.
-#[test]
-fn udisks_signals_call_back() {
-    let daemon = Daemon::start();
+fn udisks_signals_call_back(daemon: &Daemon) {
     let udisks = daemon.connect().unwrap();
     udisks.request_name(SERVICE).unwrap();
-    let (watcher, problems, rx, handle) = start_watch(&daemon);
+    let (watcher, problems, rx, handle) = start_watch(daemon);
     assert!(problems.is_empty(), "{problems:?}");
 
     added(&udisks, None, SDB1, BLOCK);
@@ -219,14 +243,13 @@ fn udisks_signals_call_back() {
     expect_quiet(&rx, "a unicast from another sender");
 
     drop(watcher);
+    udisks.release_name(SERVICE).unwrap();
 }
 
 /// UDisks2 absent at the start is reported once; arriving later, leaving and
 /// coming back are followed.
-#[test]
-fn udisks_arrival_departure_and_return() {
-    let daemon = Daemon::start();
-    let (watcher, problems, rx, _handle) = start_watch(&daemon);
+fn udisks_arrival_departure_and_return(daemon: &Daemon) {
+    let (watcher, problems, rx, _handle) = start_watch(daemon);
     assert!(
         matches!(problems[..], [VolumesError::UdisksAbsent]),
         "{problems:?}"

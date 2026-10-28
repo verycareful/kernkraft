@@ -26,12 +26,26 @@ pub enum VolumesError {
     NoUser { uid: u32 },
     #[error("system bus: {0}")]
     Bus(#[from] BusError),
-    /// The volume is not the one that was listed: its mount ID or device
-    /// number no longer belongs to it, or it is mounted somewhere else now
-    /// (the device was swapped or remounted since the listing). Nothing was
-    /// done.
+    /// The volume is not the one that was listed: its device now has
+    /// another disk sequence number, another device number, or nothing is
+    /// mounted at the path (the disk was swapped or remounted since the
+    /// listing). Nothing was done.
     #[error("not the volume that was listed: {reason}")]
     IdentityMismatch { reason: String },
+    /// The disk sequence number of block device `major:minor` cannot be
+    /// read, so the volume on it has no identity to check. `reason` says why
+    /// (a kernel older than 5.15, a mount that is on no block device, an
+    /// unreadable file).
+    #[error("no disk sequence number for device {major}:{minor}: {reason}")]
+    NoDiskSeq {
+        major: u32,
+        minor: u32,
+        reason: String,
+    },
+    /// The caller passed a volume whose listing already said it has no
+    /// identity.
+    #[error("the volume has no identity: {reason}")]
+    IdentityUnknown { reason: String },
     /// UDisks refused to unmount because something still uses the volume.
     /// `message` is UDisks' own text (it usually names the holding process).
     #[error("{} is busy: {message}", mount_point.display())]

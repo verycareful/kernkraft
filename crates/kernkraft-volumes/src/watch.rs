@@ -227,10 +227,7 @@ pub fn watch_with(
     system: Result<Connection, BusError>,
     on_change: OnChange,
 ) -> Result<(VolumeWatcher, Vec<VolumesError>), VolumesError> {
-    let stop_fd =
-        Arc::new(eventfd(0, EventfdFlags::CLOEXEC).map_err(|e| {
-            VolumesError::io(std::path::Path::new("eventfd"), std::io::Error::from(e))
-        })?);
+    let stop_fd = Arc::new(eventfd(0, EventfdFlags::CLOEXEC).map_err(wake_fd_error)?);
     let (tx, rx) = mpsc::channel::<Msg>();
     let stop = Arc::new(AtomicBool::new(false));
     let mut problems = Vec::new();
@@ -273,6 +270,15 @@ pub fn watch_with(
         },
         problems,
     ))
+}
+
+/// The wake-up descriptor could not be made. The watch that fails is the
+/// mount watch, so the error names mountinfo, with the cause in its text.
+fn wake_fd_error(e: Errno) -> VolumesError {
+    VolumesError::io(
+        std::path::Path::new(MOUNTINFO),
+        std::io::Error::other(format!("creating the wake-up descriptor: {e}")),
+    )
 }
 
 /// Whether UDisks2 is on the bus now (some connection owns its name) or can
@@ -807,6 +813,17 @@ mod tests {
         signal_loop(items, None, &AtomicBool::new(true), &tx);
         drop(tx);
         assert_eq!(rx.iter().count(), 0);
+    }
+
+    #[test]
+    fn wake_descriptor_failure_names_mountinfo_not_a_made_up_path() {
+        match wake_fd_error(Errno::MFILE) {
+            VolumesError::Io { path, source } => {
+                assert_eq!(path, std::path::Path::new(MOUNTINFO));
+                assert!(source.to_string().contains("wake-up descriptor"));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

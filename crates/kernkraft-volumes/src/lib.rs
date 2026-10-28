@@ -20,15 +20,19 @@
 //! has no serde impls and an adapter converts its path.
 
 mod error;
+mod identity;
 mod mountinfo;
 mod udisks;
 mod watch;
 
 pub use error::{EjectRefusal, VolumesError};
+pub use identity::{
+    disk_id, disk_id_in, verify_disk_in, verify_mount, verify_mount_in, DiskId, Identity,
+    SYS_DEV_BLOCK,
+};
 pub use mountinfo::{
     decode_udev_name, list, parse_mountinfo, parse_mountinfo_report, parse_mountinfo_strict,
-    resolve_mount, resolve_mount_in, user_mounts, ListProblem, Listing, Mount, MountInfoLine,
-    MountKey,
+    user_mounts, ListProblem, Listing, Mount, MountInfoLine,
 };
 pub use udisks::{find_listed, Device, Udisks, ACTION_TIMEOUT};
 pub use watch::{watch, watch_with, OnChange, VolumeWatcher, DEBOUNCE, DROP_WAIT};

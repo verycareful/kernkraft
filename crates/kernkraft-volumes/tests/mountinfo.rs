@@ -12,8 +12,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use kernkraft_volumes::{
-    decode_udev_name, parse_mountinfo, parse_mountinfo_report, parse_mountinfo_strict,
-    resolve_mount_in, user_mounts, ListProblem, Mount, MountKey, VolumesError,
+    decode_udev_name, parse_mountinfo, parse_mountinfo_report, parse_mountinfo_strict, user_mounts,
+    ListProblem, Mount, VolumesError,
 };
 
 const USER: &str = "sricharan";
@@ -289,79 +289,5 @@ fn report_lists_skipped_lines() {
     assert!(matches!(
         problems[1],
         ListProblem::MalformedLine { line: 3, .. }
-    ));
-}
-
-#[test]
-fn mount_identity_is_the_mountinfo_ids() {
-    let m = mounts(&sample());
-    let stick = m
-        .iter()
-        .find(|m| m.mount_point.ends_with("USB STICK"))
-        .unwrap();
-    // "25 20 8:17": mount ID 25, device 8:17.
-    assert_eq!(
-        stick.key(),
-        MountKey {
-            mount_id: 25,
-            major: 8,
-            minor: 17
-        }
-    );
-    let data = m.iter().find(|m| m.mount_point.ends_with("data")).unwrap();
-    assert_eq!(
-        (data.mount_id, data.major, data.minor),
-        (26, 8, 33),
-        "fields are public"
-    );
-}
-
-fn key(mount_id: u32, major: u32, minor: u32) -> MountKey {
-    MountKey {
-        mount_id,
-        major,
-        minor,
-    }
-}
-
-#[test]
-fn identity_resolves_to_the_mount_point() {
-    let lines = parse_mountinfo(&sample());
-    let stick = Path::new("/run/media/sricharan/USB STICK");
-    // Identity alone, and identity with its own mount point.
-    assert_eq!(
-        resolve_mount_in(&lines, None, Some(key(25, 8, 17))).unwrap(),
-        stick
-    );
-    assert_eq!(
-        resolve_mount_in(&lines, Some(stick), Some(key(25, 8, 17))).unwrap(),
-        stick
-    );
-    // The path alone is taken as it is.
-    assert_eq!(resolve_mount_in(&lines, Some(stick), None).unwrap(), stick);
-}
-
-#[test]
-fn swapped_device_is_refused() {
-    let lines = parse_mountinfo(&sample());
-    let stick = Path::new("/run/media/sricharan/USB STICK");
-    for (mp, k) in [
-        // The ID is gone.
-        (None, key(99, 8, 17)),
-        // The ID now belongs to another device.
-        (None, key(25, 8, 18)),
-        // The ID is a different mount than the path says.
-        (Some(Path::new("/mnt/data")), key(25, 8, 17)),
-        (Some(stick), key(26, 8, 33)),
-    ] {
-        match resolve_mount_in(&lines, mp, Some(k)) {
-            Err(VolumesError::IdentityMismatch { .. }) => {}
-            other => panic!("{mp:?} {k:?}: {other:?}"),
-        }
-    }
-    // Neither a path nor an identity.
-    assert!(matches!(
-        resolve_mount_in(&lines, None, None),
-        Err(VolumesError::IdentityMismatch { .. })
     ));
 }

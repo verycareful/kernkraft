@@ -19,8 +19,8 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
+use crate::identity::{mount_disk_id, Identity, SYS_DEV_BLOCK};
 use crate::VolumesError;
-use serde::{Deserialize, Serialize};
 
 const MOUNTINFO: &str = "/proc/self/mountinfo";
 const BY_LABEL: &str = "/dev/disk/by-label";
@@ -78,16 +78,15 @@ pub struct MountInfoLine {
 /// `device`, `fs_type` and `label` are display strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mount {
-    /// Mountinfo field 1, the mount ID: unique among the mounts of the
-    /// mount namespace while the mount exists, and reused after it is
-    /// unmounted. With `major` and `minor` it identifies one mounted
-    /// filesystem instance (see [`MountKey`]).
-    pub mount_id: u32,
     /// Mountinfo field 3, `major:minor` of the filesystem's device
-    /// (`st_dev` of its files). Several mounts of one filesystem (a bind
-    /// mount, btrfs subvolumes) share it; the mount ID tells them apart.
+    /// (`st_dev` of its files), which is anonymous (major 0) for some
+    /// filesystems such as btrfs; [`Mount::identity`] has the block device.
     pub major: u32,
     pub minor: u32,
+    /// Which disk this volume is on, read when it was listed. The pure
+    /// [`user_mounts`] does not read sysfs and leaves it `Unknown`; [`list`]
+    /// fills it in. See [`DiskId`] for what it is unique over.
+    pub identity: Identity,
     pub mount_point: PathBuf,
     pub device: String,
     pub fs_type: String,
@@ -97,80 +96,6 @@ pub struct Mount {
     pub removable: bool,
     /// `ro` in the mount options or the superblock options.
     pub read_only: bool,
-}
-
-/// What names one mounted filesystem instance: the mount ID and device
-/// number from its mountinfo line. The mount ID alone is reused once a mount
-/// is gone and the device number alone is shared by bind mounts; a different
-/// disk mounted at the same place gets a different pair in practice, which is
-/// what [`resolve_mount`] checks. Neither value survives a reboot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MountKey {
-    pub mount_id: u32,
-    pub major: u32,
-    pub minor: u32,
-}
-
-impl Mount {
-    pub fn key(&self) -> MountKey {
-        MountKey {
-            mount_id: self.mount_id,
-            major: self.major,
-            minor: self.minor,
-        }
-    }
-}
-
-/// The mount point to act on, from the mount point the caller knows, the
-/// identity it was listed with, or both: [`resolve_mount_in`] on the current
-/// `/proc/self/mountinfo`.
-pub fn resolve_mount(
-    mount_point: Option<&Path>,
-    key: Option<MountKey>,
-) -> Result<PathBuf, VolumesError> {
-    let lines = parse_mountinfo_strict(read_mountinfo()?)?;
-    resolve_mount_in(&lines, mount_point, key)
-}
-
-/// The pure half of [`resolve_mount`].
-///
-/// With a `key`, the mount with that ID must exist, be on that device, and
-/// be at `mount_point` when one is given; the result is where it is now.
-/// Anything else is [`VolumesError::IdentityMismatch`], because the volume
-/// the caller listed is gone or replaced. With only a `mount_point`, that
-/// path is returned as it is: it is the caller's word and is checked by what
-/// acts on it. With neither, there is nothing to resolve.
-pub fn resolve_mount_in(
-    lines: &[MountInfoLine],
-    mount_point: Option<&Path>,
-    key: Option<MountKey>,
-) -> Result<PathBuf, VolumesError> {
-    let mismatch = |reason: String| VolumesError::IdentityMismatch { reason };
-    let Some(key) = key else {
-        return mount_point
-            .map(Path::to_path_buf)
-            .ok_or_else(|| mismatch("neither a mount point nor an identity was given".into()));
-    };
-    let line = lines
-        .iter()
-        .rev()
-        .find(|l| l.mount_id == key.mount_id)
-        .ok_or_else(|| mismatch(format!("mount ID {} no longer exists", key.mount_id)))?;
-    if (line.major, line.minor) != (key.major, key.minor) {
-        return Err(mismatch(format!(
-            "mount ID {} is now device {}:{}, not {}:{}",
-            key.mount_id, line.major, line.minor, key.major, key.minor
-        )));
-    }
-    if let Some(mp) = mount_point.filter(|mp| *mp != line.mount_point) {
-        return Err(mismatch(format!(
-            "mount ID {} is at {}, not {}",
-            key.mount_id,
-            line.mount_point.display(),
-            mp.display()
-        )));
-    }
-    Ok(line.mount_point.clone())
 }
 
 /// Decodes the `\ooo` octal escapes of one mountinfo field. A backslash not
@@ -444,9 +369,11 @@ pub fn user_mounts(
             is_writable(p)
         })
         .map(|l| Mount {
-            mount_id: l.mount_id,
             major: l.major,
             minor: l.minor,
+            identity: Identity::Unknown {
+                reason: "not looked up".to_string(),
+            },
             mount_point: l.mount_point.clone(),
             device: l.source.clone(),
             fs_type: l.fs_type.clone(),
@@ -586,11 +513,24 @@ fn assemble(
     user: Option<&str>,
     is_writable: &dyn Fn(&Path) -> bool,
     labels: &dyn Fn() -> Result<HashMap<PathBuf, String>, VolumesError>,
+    sys_dev_block: &Path,
     mut problems: Vec<ListProblem>,
 ) -> Listing {
     let (lines, malformed) = parse_mountinfo_report(contents);
     problems.extend(malformed);
     let mut mounts = user_mounts(&lines, uid, user.unwrap_or(""), is_writable);
+    for m in &mut mounts {
+        // The line the mount came from: the last one at its path.
+        let id = lines
+            .iter()
+            .rev()
+            .find(|l| l.mount_point == m.mount_point)
+            .map(|l| mount_disk_id(sys_dev_block, l));
+        if let Some(id) = id {
+            // A mount without one says why in its own `identity`.
+            m.identity = Identity::from_result(id);
+        }
+    }
     if mounts.iter().any(|m| m.device.starts_with("/dev/")) {
         match labels() {
             Ok(labels) => {
@@ -632,6 +572,7 @@ pub fn list() -> Result<Listing, VolumesError> {
         user.as_deref(),
         &writable,
         &labels,
+        Path::new(SYS_DEV_BLOCK),
         problems,
     ))
 }
@@ -649,7 +590,54 @@ mod tests {
         user: Option<&str>,
         labels: &dyn Fn() -> Result<HashMap<PathBuf, String>, VolumesError>,
     ) -> Listing {
-        assemble(TEXT, 1000, user, &|_| false, labels, Vec::new())
+        assemble(
+            TEXT,
+            1000,
+            user,
+            &|_| false,
+            labels,
+            Path::new("/nonexistent"),
+            Vec::new(),
+        )
+    }
+
+    /// `list` gives each mount the identity of its disk, or the reason it has
+    /// none.
+    #[test]
+    fn listing_fills_in_identities() {
+        let root = tempfile::tempdir().unwrap();
+        let disk = root.path().join("devices/sdb");
+        let part = disk.join("sdb1");
+        std::fs::create_dir_all(&part).unwrap();
+        std::fs::write(disk.join("diskseq"), "9\n").unwrap();
+        std::fs::write(part.join("partition"), "1\n").unwrap();
+        let block = root.path().join("dev/block");
+        std::fs::create_dir_all(&block).unwrap();
+        std::os::unix::fs::symlink(&part, block.join("8:17")).unwrap();
+
+        let labels = || Ok(HashMap::new());
+        let with = assemble(
+            TEXT,
+            1000,
+            Some("me"),
+            &|_| false,
+            &labels,
+            &block,
+            Vec::new(),
+        );
+        assert_eq!(
+            with.mounts[0].identity,
+            Identity::Known(crate::DiskId {
+                major: 8,
+                minor: 17,
+                diskseq: 9
+            })
+        );
+        let without = run(Some("me"), &|| Ok(HashMap::new()));
+        match &without.mounts[0].identity {
+            Identity::Unknown { reason } => assert!(reason.contains("8:17"), "{reason}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

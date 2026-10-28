@@ -774,7 +774,7 @@ fn ipc_volumes_list() {
             [
                 "device",
                 "fs_type",
-                "key",
+                "identity",
                 "label",
                 "mount_point",
                 "read_only",
@@ -786,13 +786,21 @@ fn ipc_volumes_list() {
 
 #[test]
 fn ipc_volume_mount() {
-    // A device the listing does not hold is refused before UDisks is
+    // A device without an identity is refused before UDisks is asked
+    // anything; one the listing does not hold is refused before UDisks is
     // asked to mount anything.
     let (_e, v) = setup();
-    let forged = json!({"object_path": "/org/freedesktop/UDisks2/block_devices/kernkraft_test_none",
+    let device = |identity: serde_json::Value| {
+        json!({"object_path": "/org/freedesktop/UDisks2/block_devices/kernkraft_test_none",
         "device": "/dev/none", "label": "", "fs_type": "ext4", "size": 0, "system": false,
-        "uuid": "", "major": 0, "minor": 0});
-    let err = invoke(&v, "volume_mount", json!({"device": forged})).unwrap_err();
+        "uuid": "", "identity": identity})
+    };
+    let unknown = device(json!({"state": "unknown", "reason": "test"}));
+    let err = invoke(&v, "volume_mount", json!({"device": unknown})).unwrap_err();
+    assert_eq!(err["kind"], "IdentityUnknown", "{err}");
+
+    let known = device(json!({"state": "known", "major": 8, "minor": 17, "diskseq": 1}));
+    let err = invoke(&v, "volume_mount", json!({"device": known})).unwrap_err();
     let kind = err["kind"].as_str().unwrap();
     assert!(
         kind == "UnknownDevice" || NO_UDISKS.contains(&kind),
@@ -800,40 +808,29 @@ fn ipc_volume_mount() {
     );
 }
 
+/// A volume is named by the identity it was listed with, and the identity
+/// is required. One that does not match what is mounted at the path (here a
+/// folder nothing is mounted on) is refused before UDisks is asked anything,
+/// for unmount and eject alike; a call without it is refused as malformed.
 #[test]
-fn ipc_volume_unmount() {
-    // A temp folder is no mount point UDisks manages; nothing is unmounted.
+fn ipc_volume_identity_is_required_and_checked_first() {
     let (e, v) = setup();
-    let err = invoke(&v, "volume_unmount", json!({"mountPoint": wp(&e.dir("m"))})).unwrap_err();
-    let kind = err["kind"].as_str().unwrap();
-    assert!(kind == "NotMounted" || NO_UDISKS.contains(&kind), "{err}");
-}
-
-/// A volume is named by the identity it was listed with. One that no longer
-/// exists (here a mount ID no process has) is refused before UDisks is
-/// asked anything, for unmount and eject alike, with or without a path.
-#[test]
-fn ipc_volume_identity_is_checked_first() {
-    let (e, v) = setup();
-    let gone = json!({"mount_id": u32::MAX, "major": 0, "minor": 0});
+    let mount_point = wp(&e.dir("m"));
+    let disk = json!({"major": 0, "minor": 0, "diskseq": 1});
     for command in ["volume_unmount", "volume_eject"] {
-        for args in [
-            json!({"key": gone}),
-            json!({"key": gone, "mountPoint": wp(&e.dir("m"))}),
-            json!({}),
-        ] {
+        let err = invoke(
+            &v,
+            command,
+            json!({"mountPoint": mount_point, "disk": disk}),
+        )
+        .unwrap_err();
+        assert_eq!(err["kind"], "IdentityMismatch", "{command}: {err}");
+        for args in [json!({"mountPoint": mount_point}), json!({"disk": disk})] {
             let err = invoke(&v, command, args.clone()).unwrap_err();
-            assert_eq!(err["kind"], "IdentityMismatch", "{command} {args}: {err}");
+            assert_ne!(err["kind"], "IdentityMismatch", "{command} {args}: {err}");
+            assert_ne!(err["kind"], "NotMounted", "{command} {args}: {err}");
         }
     }
-}
-
-#[test]
-fn ipc_volume_eject() {
-    let (e, v) = setup();
-    let err = invoke(&v, "volume_eject", json!({"mountPoint": wp(&e.dir("m"))})).unwrap_err();
-    let kind = err["kind"].as_str().unwrap();
-    assert!(kind == "NotMounted" || NO_UDISKS.contains(&kind), "{err}");
 }
 
 #[test]

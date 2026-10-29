@@ -6,6 +6,18 @@
 //! see proc_pid_mountinfo in proc(5)); two folders of the test directory are
 //! on one; and a bind mount shares the device number of the folder it was
 //! made from but is another mount, which rename(2) refuses to cross (EXDEV).
+//! rename(2) decides by the folders the item leaves and enters, so the
+//! answers are judged by the source's parent folder.
+//!
+//! One test, `btrfs_subvolume_files_and_roots`, is local only: a btrfs
+//! subvolume is the case where the parent folder and the source itself have
+//! different device numbers, and it needs the test directory on btrfs and
+//! `btrfs subvolume create` (btrfs-progs, no privilege needed). It is
+//! `#[ignore]`d so that `cargo test` on a machine without btrfs (CI runs on
+//! ext4) does not run it; run it where the test directory (`TMPDIR`) is on
+//! btrfs with `cargo test -p kernkraft-fs --test same_filesystem -- --ignored
+//! btrfs_subvolume_files_and_roots`. Run anywhere else it fails, saying why;
+//! it never skips quietly.
 //!
 //! The bind mount needs a mount namespace of its own. This process cannot
 //! make one (unshare(2) with `CLONE_NEWUSER` refuses a process with more than
@@ -114,8 +126,8 @@ fn each_source_is_judged_alone() {
     );
 }
 
-/// A symlink moves as itself, so the filesystem that counts is the one the
-/// link is on, not the one it points into.
+/// A symlink moves as itself, so the filesystem that counts is the one its
+/// folder is on, not the one it points into.
 #[test]
 fn a_symlink_source_is_the_link_not_its_target() {
     let t = tree();
@@ -202,6 +214,23 @@ fn a_destination_below_a_file_is_an_io_error_with_its_path() {
             assert_eq!(source.kind(), ErrorKind::NotADirectory);
         }
         other => panic!("{other:?}"),
+    }
+}
+
+/// A path with no name in a folder, such as the root or one ending in `..`,
+/// cannot be moved into anything.
+#[test]
+fn a_path_without_a_name_is_an_invalid_name() {
+    let t = tree();
+    let dest = folder(&t.dir, "dest");
+    let up = folder(&t.dir, "sub").join("..");
+    let answers = same_filesystem(&[PathBuf::from("/"), up], &dest);
+    assert_eq!(answers.len(), 2);
+    for answer in &answers {
+        assert!(
+            matches!(answer, Err(FsError::InvalidName { .. })),
+            "{answer:?}"
+        );
     }
 }
 
@@ -335,4 +364,92 @@ fn in_namespace(src: &Path, same_dir: &Path, bound: &Path) {
     assert_eq!(same(&same_filesystem(&[inside], bound)), [Some(true)]);
     // And the rename the answer promised works.
     fs::rename(&to_same, same_dir.join("to-same")).unwrap();
+
+    // rename(2) decides by the folders the item leaves and enters, so the
+    // bind mount's own root is judged by the folder it sits in, which is in
+    // the one mount with `same_dir`. (rename(2) does not move a mount point
+    // at all, EBUSY and not EXDEV; the answer is about EXDEV.)
+    assert_eq!(
+        same(&same_filesystem(&[bound.to_path_buf()], same_dir)),
+        [Some(true)]
+    );
+    let busy = fs::rename(bound, same_dir.join("moved")).unwrap_err();
+    assert_eq!(busy.kind(), ErrorKind::ResourceBusy, "{busy}");
+}
+
+/// `BTRFS_SUPER_MAGIC`, the `f_type` of a btrfs filesystem (statfs(2)).
+const BTRFS_SUPER_MAGIC: i64 = 0x9123_683e;
+
+/// btrfs gives every subvolume a device number of its own and refuses to
+/// rename an entry from one subvolume into another with EXDEV, but lets the
+/// root of a subvolume move between folders (`btrfs_rename`). The folder the
+/// item is in decides, so a file inside a subvolume cannot go to a folder of
+/// the subvolume's parent while the subvolume's root can go from its parent
+/// to a folder of it.
+///
+/// Local only (see the file header). The kernel is asked as well as
+/// `same_filesystem`: the premise is checked with rename(2) itself.
+#[test]
+#[ignore = "local only: needs the test directory on btrfs and btrfs-progs; CI (ext4) does not run it"]
+fn btrfs_subvolume_files_and_roots() {
+    let t = tree();
+    let kind = rustix::fs::statfs(&t.dir).unwrap().f_type;
+    assert_eq!(
+        kind,
+        BTRFS_SUPER_MAGIC,
+        "this test checks btrfs subvolumes and needs the test directory on btrfs: {} is on a \
+         filesystem of type {kind:#x}, not btrfs ({BTRFS_SUPER_MAGIC:#x}). Point TMPDIR at a \
+         folder on btrfs; it is local only and CI (ext4) does not run it",
+        t.dir.display()
+    );
+    let parent = folder(&t.dir, "parent");
+    let other = folder(&parent, "other");
+    let sub = parent.join("sub");
+    let made = Command::new("btrfs")
+        .args(["subvolume", "create"])
+        .arg(&sub)
+        .output()
+        .expect("this test needs `btrfs` (btrfs-progs) to make a subvolume");
+    assert!(
+        made.status.success(),
+        "btrfs subvolume create {} failed ({}): {}",
+        sub.display(),
+        made.status,
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let inside = file(&sub, "inside");
+    // The premise: the subvolume has a device number of its own, within the
+    // one mount.
+    assert_ne!(
+        fs::metadata(&sub).unwrap().dev(),
+        fs::metadata(&parent).unwrap().dev()
+    );
+
+    // A file inside the subvolume to a folder of its parent: rename(2)
+    // refuses, and so the answer is "different".
+    let refused = fs::rename(&inside, parent.join("inside")).unwrap_err();
+    assert_eq!(refused.kind(), ErrorKind::CrossesDevices, "{refused}");
+    assert_eq!(
+        same(&same_filesystem(std::slice::from_ref(&inside), &other)),
+        [Some(false)]
+    );
+    // And the other way: a file of the parent into the subvolume.
+    let plain = file(&parent, "plain");
+    assert_eq!(
+        same(&same_filesystem(std::slice::from_ref(&plain), &sub)),
+        [Some(false)]
+    );
+
+    // The subvolume's root within its parent: one folder to another of the
+    // same subvolume, so "same", and rename(2) does it.
+    assert_eq!(
+        same(&same_filesystem(std::slice::from_ref(&sub), &other)),
+        [Some(true)]
+    );
+    fs::rename(&sub, other.join("sub")).unwrap();
+
+    // An empty subvolume can be removed like a folder, so the test directory
+    // goes away with it.
+    fs::remove_file(other.join("sub/inside")).unwrap();
+    fs::remove_dir(other.join("sub")).unwrap();
 }

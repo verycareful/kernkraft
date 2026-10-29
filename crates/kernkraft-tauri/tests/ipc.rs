@@ -805,6 +805,16 @@ fn ipc_same_filesystem() {
     }
     assert_eq!(answers[1]["error"]["path"], wp(&missing));
 
+    // A path with no name in a folder is a failed answer of its own.
+    let reply = invoke(
+        &v,
+        "same_filesystem",
+        json!({"sources": [wp(std::path::Path::new("/"))], "dest": wp(&dest)}),
+    )
+    .unwrap();
+    assert_eq!(reply[0]["state"], "failed", "{reply}");
+    assert_eq!(reply[0]["error"]["kind"], "InvalidName", "{reply}");
+
     // A destination that is not there fails every answer, naming it.
     let gone = e.base.join("gone");
     let reply = invoke(

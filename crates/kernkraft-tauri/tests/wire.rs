@@ -583,6 +583,11 @@ fn plugin_error_kind_names() {
             "Watch",
             true,
         ),
+        (
+            PluginError::ProblemsNotShown { count: 3, kept: 64 },
+            "ProblemsNotShown",
+            false,
+        ),
         (PluginError::Internal("x".into()), "Internal", false),
     ];
     check(cases, WireError::from);

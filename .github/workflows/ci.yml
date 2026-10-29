@@ -51,12 +51,17 @@ jobs:
         timeout-minutes: 10
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      # The volume watcher's mount test needs a mount namespace of its own to
-      # mount and unmount a tmpfs in. The runner's AppArmor policy refuses
-      # unprivileged user namespaces, so with this variable the test runs
-      # `sudo -n unshare --mount --propagation private` for that one shell:
-      # sudo is used only to create that mount namespace, and cargo, the
-      # test and the watcher stay the runner user.
+      # Two tests need a mount namespace of their own to mount in: the volume
+      # watcher's (a tmpfs, mounted and unmounted) and kernkraft-fs's
+      # same_filesystem test (a bind mount). The runner's AppArmor policy
+      # refuses unprivileged user namespaces, so with this variable each runs
+      # `sudo -n unshare --mount --propagation private` for one shell. sudo is
+      # used only to create that private mount namespace and to mount in it.
+      # The watcher test keeps cargo, the test and the watcher the runner user;
+      # the same_filesystem test mounts as root and then drops back to the
+      # runner user with setpriv before any test code runs. The btrfs
+      # subvolume test of same_filesystem is ignored here: this runner is not
+      # on btrfs.
       - name: Test
         timeout-minutes: 15
         env:

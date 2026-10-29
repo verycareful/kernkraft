@@ -155,15 +155,26 @@ pub struct WireUserDirs {
 /// not be told (`error`). JSON, with the answers in the order of the
 /// sources:
 ///
-/// - `{"state": "checked", "same": true}`: one filesystem, so a move is a
-///   rename;
+/// - `{"state": "checked", "same": true}`: the folder the source is in and
+///   the destination are one filesystem (same device number and same mount,
+///   the condition rename(2) checks), so a move is a rename;
 /// - `{"state": "checked", "same": false}`: another filesystem (or another
-///   mount of the same one), so a move is a copy followed by a delete;
+///   mount of the same one, or another btrfs subvolume), so a move is a copy
+///   followed by a delete;
 /// - `{"state": "failed", "error": WireError}`: that source could not be
-///   looked at (`NotFound`, `Io`, `BadPath`, `NotAbsolute`,
-///   `MountIdUnavailable`), or the destination could not, in which case
-///   every answer carries the same error naming it. Nothing is assumed:
-///   a consumer that gets `failed` decides what to do and says why.
+///   looked at (`NotFound`, `Io`, `InvalidName` for `/` or a path ending in
+///   `..`, `BadPath`, `NotAbsolute`, `MountIdUnavailable`), or the
+///   destination could not, in which case every answer carries the same
+///   error naming it. Nothing is assumed: a consumer that gets `failed`
+///   decides what to do and says why.
+///
+/// An answer can still be wrong in both directions where a filesystem has
+/// rename rules of its own, overlayfs and FUSE filesystems among them. A
+/// `same` that rename(2) then refuses with EXDEV costs only time: the move
+/// falls back to copying the item and deleting the source. A `different` for
+/// a rename that would have worked makes a copy where the user meant a
+/// move: the item ends up in both places and the source stays. Neither loses
+/// data. See `kernkraft_fs::same_filesystem` for the rule.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum WireSame {
@@ -332,8 +343,9 @@ impl<R: Runtime> Kernkraft<R> {
 
     /// For each of `sources`, whether moving it into the folder `dest` stays
     /// on one filesystem (see [`kernkraft_fs::same_filesystem`]: device
-    /// number and mount ID both equal, a symlink source judged as the link,
-    /// `dest` followed). One [`WireSame`] per source, in order. A source
+    /// number and mount ID of the source's folder and of `dest` both equal,
+    /// symlinks followed for the folders, a symlink source moved as itself).
+    /// One [`WireSame`] per source, in order. A source
     /// path that does not decode is that source's `failed` answer; a `dest`
     /// that does not decode fails every answer. Looks at nothing but the
     /// paths' status; it does not wait for or touch the undo journal.

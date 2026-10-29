@@ -55,7 +55,10 @@
 //!   next listing does not repeat what the consumer already has. Windows
 //!   share the hold: whichever takes first gets them.
 //! - A problem identical to one already held is held once, so UDisks2
-//!   leaving and returning over and over does not grow the hold.
+//!   leaving and returning over and over does not grow the hold. At most
+//!   [`MAX_HELD_PROBLEMS`] distinct problems are held, the first ones; the
+//!   take then ends with one more problem, `ProblemsNotShown`, saying how many
+//!   more arrived and were not kept ("N more not shown").
 //! - Not held, because they are not once-only: what the listing itself
 //!   finds (`problems` of every listing) and a watcher that failed to start
 //!   (reported by each listing until it does).
@@ -81,6 +84,13 @@ use crate::wire::WirePath;
 
 pub const EVENT_VOLUMES_CHANGED: &str = "kernkraft://volumes-changed";
 
+/// Most once-only problems held for a take. A healthy run produces a few (no
+/// system bus, UDisks2 leaving and returning), and a consumer takes them on
+/// every load; the bound is for one that never takes, and sits far above
+/// what a run produces. Problems beyond it are counted and reported by the
+/// take (`PluginError::ProblemsNotShown`), not dropped silently.
+pub(crate) const MAX_HELD_PROBLEMS: usize = 64;
+
 /// The payload of [`EVENT_VOLUMES_CHANGED`]: the volumes may have changed,
 /// list them again. `problems` are errors of the watch itself since the last
 /// event, usually none.
@@ -95,20 +105,42 @@ pub(crate) struct VolumesState {
     /// What starting the watcher could not follow, reported by the next
     /// listing only.
     once: Vec<WireError>,
-    /// Every once-only problem not yet taken, without repeats (see the
-    /// module documentation).
+    /// Every once-only problem not yet taken, without repeats, at most
+    /// [`MAX_HELD_PROBLEMS`] (see the module documentation).
     held: Vec<WireError>,
+    /// Problems that arrived while `held` was full.
+    not_kept: usize,
     watcher: Option<VolumeWatcher>,
 }
 
 impl VolumesState {
-    /// Holds `problems` for a take, leaving out any already held.
+    /// Holds `problems` for a take, leaving out any already held. Those that
+    /// do not fit are counted.
     fn hold(&mut self, problems: &[WireError]) {
         for problem in problems {
-            if !self.held.contains(problem) {
+            if self.held.contains(problem) {
+                continue;
+            }
+            if self.held.len() < MAX_HELD_PROBLEMS {
                 self.held.push(problem.clone());
+            } else {
+                self.not_kept += 1;
             }
         }
+    }
+
+    /// The held problems, oldest first, followed by one that says how many
+    /// did not fit, if any. Empties both.
+    fn take_held(&mut self) -> Vec<WireError> {
+        let mut taken = std::mem::take(&mut self.held);
+        let count = std::mem::take(&mut self.not_kept);
+        if count > 0 {
+            taken.push(WireError::from(PluginError::ProblemsNotShown {
+                count,
+                kept: MAX_HELD_PROBLEMS,
+            }));
+        }
+        taken
     }
 }
 
@@ -265,7 +297,7 @@ impl<R: Runtime> Kernkraft<R> {
     pub fn volumes_problems_take(&self) -> Vec<WireError> {
         let mut state = lock(&self.0.volumes);
         state.once.clear();
-        std::mem::take(&mut state.held)
+        state.take_held()
     }
 
     /// Stops the watcher. Dropped outside the lock: the drop waits for the
@@ -487,6 +519,42 @@ mod tests {
         let once = kk.volumes_start(&|cb| stand.start(cb));
         let kinds: Vec<_> = once.iter().map(|p| p.kind.as_str()).collect();
         assert_eq!(kinds, ["UdisksAbsent", "CallbackPanic"]);
+    }
+
+    /// A hold that is full keeps what it has and counts the rest, and a take
+    /// reports the count as a problem of its own, so nothing is dropped
+    /// without a word. A problem already held is not counted.
+    #[test]
+    fn held_problems_are_capped_and_the_overflow_is_reported() {
+        let (_app, kk) = kk();
+        let stand = Stand::new(Vec::new);
+        kk.volumes_list_with(&|cb| stand.start(cb)).unwrap();
+        let panic = |i: usize| VolumesError::CallbackPanic(format!("p{i}"));
+        for i in 0..MAX_HELD_PROBLEMS + 5 {
+            stand.fire(vec![panic(i)]);
+        }
+        // The first one again, with the hold full, is already held.
+        stand.fire(vec![panic(0)]);
+
+        let taken = kk.volumes_problems_take();
+        assert_eq!(taken.len(), MAX_HELD_PROBLEMS + 1);
+        // The first ones are kept, in order.
+        for (i, p) in taken[..MAX_HELD_PROBLEMS].iter().enumerate() {
+            assert_eq!(p.kind, "CallbackPanic");
+            assert!(p.message.ends_with(&format!("p{i}")), "{}", p.message);
+        }
+        let overflow = &taken[MAX_HELD_PROBLEMS];
+        assert_eq!(overflow.kind, "ProblemsNotShown");
+        assert!(
+            overflow.message.contains("5 more not shown"),
+            "{}",
+            overflow.message
+        );
+
+        // Taking starts the count again.
+        assert!(kk.volumes_problems_take().is_empty());
+        stand.fire(vec![panic(1000)]);
+        assert_eq!(kk.volumes_problems_take().len(), 1);
     }
 
     /// The problems of starting the watcher are in the first listing, and

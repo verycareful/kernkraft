@@ -175,6 +175,11 @@ pub enum PluginError {
         #[source]
         source: std::io::Error,
     },
+    /// Once-only volume problems that arrived while the hold for
+    /// `volumes_problems_take` was full: `count` were not kept, the first
+    /// `kept` were.
+    #[error("{count} more not shown: only the first {kept} volume problems are kept until taken")]
+    ProblemsNotShown { count: usize, kept: usize },
     /// A worker panicked or could not be joined; a bug, reported instead of
     /// lost.
     #[error("internal error: {0}")]
@@ -195,6 +200,7 @@ impl From<PluginError> for WireError {
             PluginError::NoDefaultApp { path, .. } => ("NoDefaultApp", Some(path)),
             PluginError::UnknownDevice(_) => ("UnknownDevice", None),
             PluginError::Watch { path, .. } => ("Watch", Some(path)),
+            PluginError::ProblemsNotShown { .. } => ("ProblemsNotShown", None),
             PluginError::Internal(_) => ("Internal", None),
         };
         WireError::new(kind, e.to_string(), path.map(|p| p.as_path()))

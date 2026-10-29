@@ -487,6 +487,18 @@
           "markdownDescription": "Denies the rename command without any pre-configured scope."
         },
         {
+          "description": "Enables the same_filesystem command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-same-filesystem",
+          "markdownDescription": "Enables the same_filesystem command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the same_filesystem command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-same-filesystem",
+          "markdownDescription": "Denies the same_filesystem command without any pre-configured scope."
+        },
+        {
           "description": "Enables the search command without any pre-configured scope.",
           "type": "string",
           "const": "allow-search",
@@ -739,6 +751,18 @@
           "markdownDescription": "Denies the volumes_list command without any pre-configured scope."
         },
         {
+          "description": "Enables the volumes_problems_take command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-volumes-problems-take",
+          "markdownDescription": "Enables the volumes_problems_take command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the volumes_problems_take command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-volumes-problems-take",
+          "markdownDescription": "Denies the volumes_problems_take command without any pre-configured scope."
+        },
+        {
           "description": "Enables the watch_dir command without any pre-configured scope.",
           "type": "string",
           "const": "allow-watch-dir",
@@ -751,10 +775,10 @@
           "markdownDescription": "Denies the watch_dir command without any pre-configured scope."
         },
         {
-          "description": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`\n- `allow-user-dirs`\n- `allow-text-open`\n- `allow-text-save`\n- `allow-text-check`\n- `allow-thumb-request`\n- `allow-thumb-cancel`\n- `allow-theme-get`\n- `allow-theme-set-prefs`\n- `allow-apps-for`\n- `allow-app-default`\n- `allow-all-apps`\n- `allow-launch-app`\n- `allow-open-default`\n- `allow-set-default-app`\n- `allow-open-terminal`\n- `allow-mime-of`\n- `allow-volumes-list`\n- `allow-volume-mount`\n- `allow-volume-unmount`\n- `allow-volume-eject`\n- `allow-search`\n- `allow-documents`",
+          "description": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`\n- `allow-user-dirs`\n- `allow-same-filesystem`\n- `allow-text-open`\n- `allow-text-save`\n- `allow-text-check`\n- `allow-thumb-request`\n- `allow-thumb-cancel`\n- `allow-theme-get`\n- `allow-theme-set-prefs`\n- `allow-apps-for`\n- `allow-app-default`\n- `allow-all-apps`\n- `allow-launch-app`\n- `allow-open-default`\n- `allow-set-default-app`\n- `allow-open-terminal`\n- `allow-mime-of`\n- `allow-volumes-list`\n- `allow-volumes-problems-take`\n- `allow-volume-mount`\n- `allow-volume-unmount`\n- `allow-volume-eject`\n- `allow-search`\n- `allow-documents`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`\n- `allow-user-dirs`\n- `allow-text-open`\n- `allow-text-save`\n- `allow-text-check`\n- `allow-thumb-request`\n- `allow-thumb-cancel`\n- `allow-theme-get`\n- `allow-theme-set-prefs`\n- `allow-apps-for`\n- `allow-app-default`\n- `allow-all-apps`\n- `allow-launch-app`\n- `allow-open-default`\n- `allow-set-default-app`\n- `allow-open-terminal`\n- `allow-mime-of`\n- `allow-volumes-list`\n- `allow-volume-mount`\n- `allow-volume-unmount`\n- `allow-volume-eject`\n- `allow-search`\n- `allow-documents`"
+          "markdownDescription": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`\n- `allow-user-dirs`\n- `allow-same-filesystem`\n- `allow-text-open`\n- `allow-text-save`\n- `allow-text-check`\n- `allow-thumb-request`\n- `allow-thumb-cancel`\n- `allow-theme-get`\n- `allow-theme-set-prefs`\n- `allow-apps-for`\n- `allow-app-default`\n- `allow-all-apps`\n- `allow-launch-app`\n- `allow-open-default`\n- `allow-set-default-app`\n- `allow-open-terminal`\n- `allow-mime-of`\n- `allow-volumes-list`\n- `allow-volumes-problems-take`\n- `allow-volume-mount`\n- `allow-volume-unmount`\n- `allow-volume-eject`\n- `allow-search`\n- `allow-documents`"
         }
       ]
     }

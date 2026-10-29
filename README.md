@@ -8,7 +8,7 @@
 [![image](https://img.shields.io/badge/image-0.25-informational?style=flat-square)](https://crates.io/crates/image)
 [![resvg](https://img.shields.io/badge/resvg-0.48-informational?style=flat-square)](https://crates.io/crates/resvg)
 <!-- Release -->
-[![Version](https://img.shields.io/badge/Version-0.1.1.0.42-informational?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/Version-0.1.1.0.43-informational?style=flat-square)](VERSION)
 <!-- Licence and status -->
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)
@@ -26,7 +26,7 @@ kernkraft is in alpha: its public API will change.
 
 | Crate | Kind | Owns |
 |---|---|---|
-| `kernkraft-fs` | core | atomic save, FreeDesktop trash, XDG directories, bulk file operations, scanning and properties totals, undo journal for file operations |
+| `kernkraft-fs` | core | atomic save, FreeDesktop trash, XDG directories, bulk file operations, scanning and properties totals, undo journal for file operations, and the same-filesystem query that tells a move from a copy (device number and mount ID) |
 | `kernkraft-pdf` | core | PDF load and atomic save, page ranges, page-tree flattening, extract, split, merge, rotate, reorder, remove; MuPDF rendering (`render` feature) |
 | `kernkraft-text` | core | text decode, UTF-8 BOM and line-ending preservation, read-only reasons, atomic save |
 | `kernkraft-xdg-apps` | core | MIME type lookup (Shared MIME-info Database), desktop entries, default applications |
@@ -34,7 +34,7 @@ kernkraft is in alpha: its public API will change.
 | `kernkraft-bus` | core | D-Bus session and system connections that resolve the bus address themselves and only ever use a Unix socket |
 | `kernkraft-theme` | system theme sources (Hyprland `hyprtoolkit.conf`, portal appearance, GTK, fontconfig), Kern's design tokens and the token resolver that emits CSS custom properties |
 | `kernkraft-volumes` | core | mounted volumes from `/proc/self/mountinfo` (labels from udev), UDisks2 mount, unmount and eject over the system bus, and a watcher that reports mounts, unmounts and devices appearing or going away (mountinfo `poll(2)` and UDisks2 signals) |
-| `kernkraft-tauri` | adapter | Tauri 2 plugin `kernkraft`: wire types for paths (`WirePath`, lossless for non-UTF-8 names) and errors (`WireError`); file manager commands (listing, create, rename, background copy, move, trash and delete with progress and conflict prompts, trash view, undo and redo, folder watching through inotify, properties); text open, check and save; a thumbnail queue; the system theme with live updates; applications, default apps and the terminal; volumes, listed with an identity the commands check, and updated live through `kernkraft://volumes-changed`; user folders; streamed name search and the Documents walk |
+| `kernkraft-tauri` | adapter | Tauri 2 plugin `kernkraft`: wire types for paths (`WirePath`, lossless for non-UTF-8 names) and errors (`WireError`); file manager commands (listing, create, rename, background copy, move, trash and delete with progress and conflict prompts, trash view, undo and redo, folder watching through inotify, properties); text open, check and save; a thumbnail queue; the system theme with live updates; applications, default apps and the terminal; volumes, listed with an identity the commands check, and updated live through `kernkraft://volumes-changed` (once-only watcher problems held until `volumes_problems_take`); user folders; the same-filesystem query for drops; streamed name search and the Documents walk |
 
 Core crates never depend on a UI or platform crate (`tauri`, `jni`); CI
 checks every core crate's dependency tree. No crate may depend on an HTTP,

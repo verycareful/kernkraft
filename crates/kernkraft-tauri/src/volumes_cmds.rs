@@ -37,6 +37,29 @@
 //! later, and a panic in the event callback, are in the `problems` of the
 //! next event.
 //!
+//! These once-only problems (the startup ones and the runtime ones) are not
+//! lost with the webview that was listening: they are also held here until
+//! [`Kernkraft::volumes_problems_take`] (`volumes_problems_take`) returns
+//! them and clears them. A consumer that reloads takes them on load, before
+//! it lists, and keeps them on screen for as long as they apply. The
+//! contract:
+//!
+//! - A problem is held from the moment it is found, whether or not any
+//!   window was listening, and stays held until a take. The first listing
+//!   still reports the startup problems in its `problems` and an event still
+//!   carries the runtime ones, so a problem can reach a consumer by both
+//!   routes; a problem is identified by its `kind`, `message` and `path`,
+//!   and a consumer shows each once.
+//! - A take returns every held problem, oldest first, and clears them. It
+//!   also settles the startup problems no listing has reported yet, so the
+//!   next listing does not repeat what the consumer already has. Windows
+//!   share the hold: whichever takes first gets them.
+//! - A problem identical to one already held is held once, so UDisks2
+//!   leaving and returning over and over does not grow the hold.
+//! - Not held, because they are not once-only: what the listing itself
+//!   finds (`problems` of every listing) and a watcher that failed to start
+//!   (reported by each listing until it does).
+//!
 //! A consumer listens for the event before its first `volumes_list`, and
 //! keeps what the first listing reported on screen for as long as it applies:
 //! those startup problems come back once and never again, while later events
@@ -72,7 +95,21 @@ pub(crate) struct VolumesState {
     /// What starting the watcher could not follow, reported by the next
     /// listing only.
     once: Vec<WireError>,
+    /// Every once-only problem not yet taken, without repeats (see the
+    /// module documentation).
+    held: Vec<WireError>,
     watcher: Option<VolumeWatcher>,
+}
+
+impl VolumesState {
+    /// Holds `problems` for a take, leaving out any already held.
+    fn hold(&mut self, problems: &[WireError]) {
+        for problem in problems {
+            if !self.held.contains(problem) {
+                self.held.push(problem.clone());
+            }
+        }
+    }
 }
 
 /// What starts a watcher: `kernkraft_volumes::watch`, or a stand-in.
@@ -195,7 +232,10 @@ impl<R: Runtime> Kernkraft<R> {
             let weak = Arc::downgrade(&self.0);
             let on_change: OnChange = Box::new(move |errors| {
                 if let Some(inner) = weak.upgrade() {
-                    let problems = errors.iter().map(WireError::from).collect();
+                    let problems: Vec<WireError> = errors.iter().map(WireError::from).collect();
+                    // Held before it is sent: a consumer that takes on the
+                    // event finds them.
+                    lock(&inner.volumes).hold(&problems);
                     let _ = inner
                         .app
                         .emit(EVENT_VOLUMES_CHANGED, VolumesChanged { problems });
@@ -205,7 +245,9 @@ impl<R: Runtime> Kernkraft<R> {
                 Ok((watcher, problems)) => {
                     state.started = true;
                     state.watcher = Some(watcher);
-                    state.once.extend(problems.iter().map(WireError::from));
+                    let problems: Vec<WireError> = problems.iter().map(WireError::from).collect();
+                    state.hold(&problems);
+                    state.once.extend(problems);
                 }
                 // No watcher; the next listing tries again, and this one
                 // says why there is none.
@@ -213,6 +255,17 @@ impl<R: Runtime> Kernkraft<R> {
             }
         }
         std::mem::take(&mut state.once)
+    }
+
+    /// The once-only problems held since the last take, oldest first, and
+    /// clears them: what starting the watcher could not follow, errors the
+    /// watcher met later, a panic in the event callback. Also settles the
+    /// startup problems no listing has reported yet. See the module
+    /// documentation for the contract.
+    pub fn volumes_problems_take(&self) -> Vec<WireError> {
+        let mut state = lock(&self.0.volumes);
+        state.once.clear();
+        std::mem::take(&mut state.held)
     }
 
     /// Stops the watcher. Dropped outside the lock: the drop waits for the
@@ -231,9 +284,9 @@ impl<R: Runtime> Kernkraft<R> {
     /// under another path is found by its identity. `UnknownDevice` when it
     /// is not listed.
     pub fn volume_mount(&self, device: Device) -> Result<WirePath, WireError> {
-        device.identity.known()?;
+        let wanted = device.identity.known()?;
         let udisks = Udisks::connect()?;
-        let listed = find_listed(udisks.unmounted()?, &device)?
+        let listed = find_listed(udisks.unmounted()?, &device.object_path, wanted)?
             .ok_or_else(|| PluginError::UnknownDevice(device.object_path.clone()))?;
         Ok(WirePath::from(&udisks.mount(&listed)?))
     }
@@ -434,6 +487,91 @@ mod tests {
         let once = kk.volumes_start(&|cb| stand.start(cb));
         let kinds: Vec<_> = once.iter().map(|p| p.kind.as_str()).collect();
         assert_eq!(kinds, ["UdisksAbsent", "CallbackPanic"]);
+    }
+
+    /// The problems of starting the watcher are in the first listing, and
+    /// are also held until a consumer takes them, so one that reloads after
+    /// that listing still gets them; taking clears them.
+    #[test]
+    fn startup_problems_are_held_until_taken() {
+        let (_app, kk) = kk();
+        let stand = Stand::new(|| vec![VolumesError::UdisksAbsent]);
+        assert!(kk.volumes_problems_take().is_empty());
+
+        let first = kk.volumes_list_with(&|cb| stand.start(cb)).unwrap();
+        assert!(kinds(&first).iter().any(|k| k == "UdisksAbsent"));
+        let second = kk.volumes_list_with(&|cb| stand.start(cb)).unwrap();
+        assert!(!kinds(&second).iter().any(|k| k == "UdisksAbsent"));
+
+        let taken: Vec<_> = kk
+            .volumes_problems_take()
+            .into_iter()
+            .map(|p| p.kind)
+            .collect();
+        assert_eq!(taken, ["UdisksAbsent"]);
+        assert!(kk.volumes_problems_take().is_empty());
+    }
+
+    /// What the watcher meets later is sent in the event as before and also
+    /// held, so an event that arrives while the webview reloads is not lost.
+    #[test]
+    fn runtime_problems_are_sent_and_held_until_taken() {
+        let (app, kk) = kk();
+        let (tx, rx) = mpsc::channel();
+        app.listen(EVENT_VOLUMES_CHANGED, move |e| {
+            let _ = tx.send(e.payload().to_owned());
+        });
+        let stand = Stand::new(Vec::new);
+        kk.volumes_list_with(&|cb| stand.start(cb)).unwrap();
+
+        // A change without a problem holds nothing.
+        stand.fire(Vec::new());
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(kk.volumes_problems_take().is_empty());
+
+        stand.fire(vec![VolumesError::CallbackPanic("x".into())]);
+        let sent: VolumesChanged =
+            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+        assert_eq!(sent.problems.len(), 1);
+        let taken = kk.volumes_problems_take();
+        assert_eq!(taken, sent.problems);
+        assert!(kk.volumes_problems_take().is_empty());
+    }
+
+    /// A problem that comes back unchanged (UDisks2 leaving and returning)
+    /// is held once.
+    #[test]
+    fn an_identical_problem_is_held_once() {
+        let (_app, kk) = kk();
+        let stand = Stand::new(Vec::new);
+        kk.volumes_list_with(&|cb| stand.start(cb)).unwrap();
+        for _ in 0..3 {
+            stand.fire(vec![VolumesError::UdisksAbsent]);
+        }
+        stand.fire(vec![VolumesError::CallbackPanic("p".into())]);
+        let kinds: Vec<_> = kk
+            .volumes_problems_take()
+            .into_iter()
+            .map(|p| p.kind)
+            .collect();
+        assert_eq!(kinds, ["UdisksAbsent", "CallbackPanic"]);
+    }
+
+    /// Startup problems a listing has not reported yet are settled by taking
+    /// them: the next listing does not repeat what the consumer has.
+    #[test]
+    fn taking_settles_unreported_startup_problems() {
+        let (_app, kk) = kk();
+        {
+            let mut state = lock(&kk.0.volumes);
+            let held = WireError::from(VolumesError::UdisksAbsent);
+            state.once = vec![held.clone()];
+            state.held = vec![held];
+        }
+        assert_eq!(kk.volumes_problems_take().len(), 1);
+        assert!(lock(&kk.0.volumes).once.is_empty());
+        let stand = Stand::new(Vec::new);
+        assert!(kk.volumes_start(&|cb| stand.start(cb)).is_empty());
     }
 
     /// Exiting the app stops the watcher; a window closing does not.

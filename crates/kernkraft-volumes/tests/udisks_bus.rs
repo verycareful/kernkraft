@@ -7,10 +7,11 @@
 //! would exceed the 107-byte `sun_path` limit) and `DBUS_SYSTEM_BUS_ADDRESS`
 //! points at it. That variable is the one address source the production path
 //! reads, and setting it is only safe while no other thread can read the
-//! environment, so this file has a single test: it sets the variable first
-//! thing, before it spawns a thread of its own, and restores it last. The
-//! test takes the name `org.freedesktop.UDisks2` on the bus and emits the
-//! signals UDisks2 documents, in turn for each scenario.
+//! environment, so this file has a single test: it sets the variable before
+//! it opens a connection (which spawns threads), and restores it after the
+//! scenarios, each of which has dropped its connections by then. The test
+//! takes the name `org.freedesktop.UDisks2` on the bus and emits the signals
+//! UDisks2 documents, in turn for each scenario.
 //!
 //! `dbus-daemon` must be installed; a missing binary fails the test.
 
@@ -189,8 +190,12 @@ fn expect_quiet(rx: &mpsc::Receiver<Vec<VolumesError>>, what: &str) {
 /// with every name released, so the next starts from a bus UDisks2 is not on.
 #[test]
 fn private_bus() {
-    // Declared first, so it is dropped last: after the daemon and every
-    // connection are gone.
+    // Locals drop in reverse order of declaration: `_env` puts the variable
+    // back first, then `daemon` is killed. The daemon is another process, so
+    // it does not matter that it outlives the variable; what matters is that
+    // the restore comes after the scenarios, which own every connection (and
+    // so every thread of this test that could read the environment) and have
+    // dropped them.
     let daemon = Daemon::start();
     let _env = EnvGuard::set(&daemon.address);
     udisks_signals_call_back(&daemon);

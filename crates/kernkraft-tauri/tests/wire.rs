@@ -122,6 +122,11 @@ fn fs_error_kind_names() {
         ),
         (FsError::Cancelled, "Cancelled", false),
         (
+            FsError::MountIdUnavailable { path: p("/a") },
+            "MountIdUnavailable",
+            true,
+        ),
+        (
             FsError::Changed {
                 path: p("/a"),
                 what: Change::Missing,

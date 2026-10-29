@@ -36,6 +36,11 @@ pub enum FsError {
     XattrsNotKept { path: PathBuf, names: Vec<String> },
     #[error("cancelled")]
     Cancelled,
+    /// The kernel did not report a mount ID for `path` (`statx(2)` with
+    /// `STATX_MNT_ID`, which needs Linux 5.8), so whether two places are on
+    /// one mount cannot be told. Never answered by a guess.
+    #[error("{path}: the kernel reports no mount ID for it (statx STATX_MNT_ID needs Linux 5.8)")]
+    MountIdUnavailable { path: PathBuf },
     /// An undo or redo found `path` different from what the journal
     /// recorded, before doing anything.
     #[error("{path} {what}")]

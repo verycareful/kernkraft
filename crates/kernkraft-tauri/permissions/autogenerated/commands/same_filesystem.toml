@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-same-filesystem"
+description = "Enables the same_filesystem command without any pre-configured scope."
+commands.allow = ["same_filesystem"]
+
+[[permission]]
+identifier = "deny-same-filesystem"
+description = "Denies the same_filesystem command without any pre-configured scope."
+commands.deny = ["same_filesystem"]

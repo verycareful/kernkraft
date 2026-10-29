@@ -14,6 +14,7 @@ mod error;
 mod naming;
 mod ops;
 mod progress;
+mod same_fs;
 mod scan;
 mod sys;
 mod trash;
@@ -30,6 +31,7 @@ pub use ops::{
     validate_name, Conflict, OpReport,
 };
 pub use progress::{NoProgress, Progress};
+pub use same_fs::same_filesystem;
 pub use scan::{
     list_dir, measure, scan, Entry, EntryKind, Measure, ScanOptions, ScanReport, DEFAULT_MAX_DEPTH,
 };

@@ -762,6 +762,83 @@ fn ipc_user_dirs() {
     );
 }
 
+/// One answer per source, in order: `{"state":"checked","same":bool}` or
+/// `{"state":"failed","error":WireError}`. A path that cannot be decoded, a
+/// missing source and a missing destination are answers, not failed calls.
+#[test]
+fn ipc_same_filesystem() {
+    let (e, v) = setup();
+    let from = e.dir("from");
+    let dest = e.dir("dest");
+    let (a, b) = (from.join("a"), from.join("b"));
+    fs::write(&a, "a").unwrap();
+    fs::write(&b, "b").unwrap();
+    let missing = from.join("missing");
+    let proc_version = std::path::Path::new("/proc/version");
+
+    let sources = json!([
+        wp(&a),
+        wp(&missing),
+        wp(proc_version),
+        json!("relative"),
+        wp(&b)
+    ]);
+    let reply = invoke(
+        &v,
+        "same_filesystem",
+        json!({"sources": sources, "dest": wp(&dest)}),
+    )
+    .unwrap();
+    let answers = reply.as_array().unwrap();
+    assert_eq!(answers.len(), 5, "{reply}");
+    assert_eq!(answers[0], json!({"state": "checked", "same": true}));
+    assert_eq!(answers[2], json!({"state": "checked", "same": false}));
+    assert_eq!(answers[4], json!({"state": "checked", "same": true}));
+    for (i, kind) in [(1, "NotFound"), (3, "BadPath")] {
+        assert_eq!(keys(&answers[i]), ["error", "state"], "{}", answers[i]);
+        assert_eq!(answers[i]["state"], "failed");
+        assert_eq!(
+            keys(&answers[i]["error"]),
+            ["details", "kind", "message", "path"]
+        );
+        assert_eq!(answers[i]["error"]["kind"], kind, "{}", answers[i]);
+    }
+    assert_eq!(answers[1]["error"]["path"], wp(&missing));
+
+    // A destination that is not there fails every answer, naming it.
+    let gone = e.base.join("gone");
+    let reply = invoke(
+        &v,
+        "same_filesystem",
+        json!({"sources": [wp(&a), wp(&b)], "dest": wp(&gone)}),
+    )
+    .unwrap();
+    for answer in reply.as_array().unwrap() {
+        assert_eq!(answer["state"], "failed", "{reply}");
+        assert_eq!(answer["error"]["kind"], "NotFound", "{reply}");
+        assert_eq!(answer["error"]["path"], wp(&gone), "{reply}");
+    }
+
+    // A destination that cannot be decoded does the same.
+    let reply = invoke(
+        &v,
+        "same_filesystem",
+        json!({"sources": [wp(&a)], "dest": {"k": "Nope"}}),
+    )
+    .unwrap();
+    assert_eq!(reply[0]["state"], "failed", "{reply}");
+    assert_eq!(reply[0]["error"]["kind"], "BadPath", "{reply}");
+
+    // Nothing to ask about.
+    let reply = invoke(
+        &v,
+        "same_filesystem",
+        json!({"sources": [], "dest": wp(&dest)}),
+    )
+    .unwrap();
+    assert_eq!(reply, json!([]));
+}
+
 #[test]
 fn ipc_volumes_list() {
     // Reads this machine's own mounts; only the shape is checked.
@@ -782,6 +859,29 @@ fn ipc_volumes_list() {
             ]
         );
     }
+}
+
+/// Startup problems of the volume watcher are in the first listing and held
+/// for `volumes_problems_take`, which returns each once. What a machine
+/// reports depends on its bus and UDisks2, so the test relates the two: every
+/// held problem was in the listing, and a second take is empty.
+#[test]
+fn ipc_volumes_problems_take() {
+    let (_e, v) = setup();
+    assert_eq!(
+        invoke(&v, "volumes_problems_take", json!({})).unwrap(),
+        json!([])
+    );
+    let listed = invoke(&v, "volumes_list", json!({})).unwrap();
+    let held = invoke(&v, "volumes_problems_take", json!({})).unwrap();
+    for problem in held.as_array().unwrap() {
+        assert_eq!(keys(problem), ["details", "kind", "message", "path"]);
+        assert!(listed["problems"].as_array().unwrap().contains(problem));
+    }
+    assert_eq!(
+        invoke(&v, "volumes_problems_take", json!({})).unwrap(),
+        json!([])
+    );
 }
 
 #[test]

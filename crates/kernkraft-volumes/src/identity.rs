@@ -3,14 +3,17 @@
 
 //! Which volume is which: the device number and the disk sequence number.
 //!
-//! Specification: the Linux kernel's `Documentation/ABI/stable/sysfs-block`,
-//! `/sys/block/<disk>/diskseq` ("The disk sequence number, a monotonically
-//! increasing 64-bit number the kernel assigns when a disk is created; it is
-//! not reused", since Linux 5.15), and sysfs's `/sys/dev/block/<major>:<minor>`
-//! links to the device directories. A partition's directory is inside its
-//! disk's and has a `partition` file but no `diskseq`; the disk's is at
-//! `<partition>/../diskseq`. proc(5), "/proc/pid/mountinfo", for the
-//! `major:minor` of a mount and its source.
+//! Specification: the kernel's sysfs-block ABI description (in the kernel
+//! tree's `Documentation/ABI/`) of `/sys/block/<disk>/diskseq`, since Linux
+//! 5.15: the disk sequence number is a 64 bit number assigned to every drive
+//! that only increases, and some devices, a loop device for one, get a new
+//! one when their backing file changes. A counter that only increases does
+//! not hand a value out twice before the next boot. Also sysfs's
+//! `/sys/dev/block/<major>:<minor>` links to the device directories. A
+//! partition's directory is inside its disk's and has a `partition` file but
+//! no `diskseq`; the disk's is at `<partition>/../diskseq`. proc(5),
+//! "/proc/pid/mountinfo", for the `major:minor` of a mount (the `st_dev` of
+//! its files, stat(2)) and its source.
 //!
 //! The device number alone is not an identity: the kernel hands the lowest
 //! free `sdX` index to the next disk plugged in, so unplugging a stick and
@@ -94,11 +97,23 @@ fn read_seq(path: &Path) -> Result<Option<u64>, String> {
     }
 }
 
+/// Whether `sys_dev_block` lists `major:minor` as a block device. An entry
+/// that is absent is `Ok(false)`; one that cannot be looked at for any other
+/// reason is an error carrying the cause, since it is not known to be absent.
+fn is_listed(sys_dev_block: &Path, major: u32, minor: u32) -> Result<bool, VolumesError> {
+    let entry = sys_dev_block.join(format!("{major}:{minor}"));
+    match std::fs::metadata(&entry) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(no_seq(major, minor, format!("{}: {e}", entry.display()))),
+    }
+}
+
 /// The identity of block device `major:minor`, read from `sys_dev_block`
 /// (`/sys/dev/block`, or a directory shaped like it).
 pub fn disk_id_in(sys_dev_block: &Path, major: u32, minor: u32) -> Result<DiskId, VolumesError> {
     let dir: PathBuf = sys_dev_block.join(format!("{major}:{minor}"));
-    if std::fs::metadata(&dir).is_err() {
+    if !is_listed(sys_dev_block, major, minor)? {
         return Err(no_seq(
             major,
             minor,
@@ -155,15 +170,27 @@ pub fn verify_disk_in(sys_dev_block: &Path, expected: &DiskId) -> Result<(), Vol
     })
 }
 
+/// Filesystems known to report an anonymous device number (major 0, which
+/// belongs to no block device) for their files even when they sit on a block
+/// device, so that mountinfo's `major:minor` does not name it. btrfs gives
+/// each subvolume an anonymous device of its own (`btrfs_getattr` in the
+/// kernel's `fs/btrfs/inode.c` reports it as `st_dev`), while the mount's
+/// source in mountinfo is still the device node (proc(5),
+/// "/proc/pid/mountinfo", the source field). Filesystems that are not on a
+/// block device at all (tmpfs, NFS, FUSE) have a source that is no node, and
+/// for any filesystem not listed here the source is not trusted to name the
+/// device.
+const ANONYMOUS_DEVICE_FILESYSTEMS: &[&str] = &["btrfs"];
+
 /// The block device a mount is on: its mountinfo `major:minor` when sysfs
-/// lists that as a block device, else, for filesystems that report an
-/// anonymous device (btrfs), the device node its source names.
+/// lists that as a block device, else, for a filesystem in
+/// [`ANONYMOUS_DEVICE_FILESYSTEMS`], the device node its source names.
 pub(crate) fn mount_block_device(
     sys_dev_block: &Path,
     line: &MountInfoLine,
 ) -> Result<(u32, u32), VolumesError> {
     let (major, minor) = (line.major, line.minor);
-    if std::fs::metadata(sys_dev_block.join(format!("{major}:{minor}"))).is_ok() {
+    if is_listed(sys_dev_block, major, minor)? {
         return Ok((major, minor));
     }
     let source = Path::new(&line.source);
@@ -172,12 +199,18 @@ pub(crate) fn mount_block_device(
             major,
             minor,
             format!(
-                "the mount is on device {major}:{minor}, which is not a block device, and its \
+                "the mount is on device {major}:{minor}, which sysfs does not list as a block device, and its \
                  source {:?} {detail}",
                 line.source
             ),
         )
     };
+    if !ANONYMOUS_DEVICE_FILESYSTEMS.contains(&line.fs_type.as_str()) {
+        return Err(why(format!(
+            "is not used, as {} is not a filesystem known to report an anonymous device",
+            line.fs_type
+        )));
+    }
     if !source.starts_with("/dev/") {
         return Err(why("is not a device node".to_string()));
     }

@@ -21,6 +21,7 @@ Allows every kernkraft command
 - `allow-unwatch-dir`
 - `allow-properties`
 - `allow-user-dirs`
+- `allow-same-filesystem`
 - `allow-text-open`
 - `allow-text-save`
 - `allow-text-check`
@@ -37,6 +38,7 @@ Allows every kernkraft command
 - `allow-open-terminal`
 - `allow-mime-of`
 - `allow-volumes-list`
+- `allow-volumes-problems-take`
 - `allow-volume-mount`
 - `allow-volume-unmount`
 - `allow-volume-eject`
@@ -464,6 +466,32 @@ Enables the rename command without any pre-configured scope.
 <td>
 
 Denies the rename command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-same-filesystem`
+
+</td>
+<td>
+
+Enables the same_filesystem command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-same-filesystem`
+
+</td>
+<td>
+
+Denies the same_filesystem command without any pre-configured scope.
 
 </td>
 </tr>
@@ -1010,6 +1038,32 @@ Enables the volumes_list command without any pre-configured scope.
 <td>
 
 Denies the volumes_list command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-volumes-problems-take`
+
+</td>
+<td>
+
+Enables the volumes_problems_take command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-volumes-problems-take`
+
+</td>
+<td>
+
+Denies the volumes_problems_take command without any pre-configured scope.
 
 </td>
 </tr>

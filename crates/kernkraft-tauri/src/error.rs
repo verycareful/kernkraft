@@ -228,6 +228,7 @@ impl From<&FsError> for WireError {
             FsError::OwnershipNotKept { path } => ("OwnershipNotKept", Some(path)),
             FsError::XattrsNotKept { path, .. } => ("XattrsNotKept", Some(path)),
             FsError::Cancelled => ("Cancelled", None),
+            FsError::MountIdUnavailable { path } => ("MountIdUnavailable", Some(path)),
             FsError::Changed { path, .. } => ("Changed", Some(path)),
             FsError::Irreversible { .. } => ("Irreversible", None),
             FsError::Partial { .. } => ("Partial", None),

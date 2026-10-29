@@ -17,14 +17,14 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use kernkraft_fs::{
-    create_dir, create_file, list_dir, rename, undoable_from_report, user_dirs, Entry, EntryKind,
-    FsError, NoProgress, OpKind, OpReport, TreeStamp, UndoOutcome, Undoable,
+    create_dir, create_file, list_dir, rename, same_filesystem, undoable_from_report, user_dirs,
+    Entry, EntryKind, FsError, NoProgress, OpKind, OpReport, TreeStamp, UndoOutcome, Undoable,
 };
 use kernkraft_xdg_apps::MimeDb;
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
 
-use crate::error::{WireError, WireItemError};
+use crate::error::{PluginError, WireError, WireItemError};
 use crate::state::{lock, Kernkraft};
 use crate::wire::WirePath;
 
@@ -148,6 +148,27 @@ pub struct WireUserDir {
 pub struct WireUserDirs {
     pub home: WirePath,
     pub dirs: Vec<WireUserDir>,
+}
+
+/// The answer of `same_filesystem` for one source: whether moving it into
+/// the destination folder is a single rename(2) (`same`), or why that could
+/// not be told (`error`). JSON, with the answers in the order of the
+/// sources:
+///
+/// - `{"state": "checked", "same": true}`: one filesystem, so a move is a
+///   rename;
+/// - `{"state": "checked", "same": false}`: another filesystem (or another
+///   mount of the same one), so a move is a copy followed by a delete;
+/// - `{"state": "failed", "error": WireError}`: that source could not be
+///   looked at (`NotFound`, `Io`, `BadPath`, `NotAbsolute`,
+///   `MountIdUnavailable`), or the destination could not, in which case
+///   every answer carries the same error naming it. Nothing is assumed:
+///   a consumer that gets `failed` decides what to do and says why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum WireSame {
+    Checked { same: bool },
+    Failed { error: WireError },
 }
 
 /// A path's name for a label, or the whole path when it has none.
@@ -307,6 +328,46 @@ impl<R: Runtime> Kernkraft<R> {
                 })
                 .collect(),
         })
+    }
+
+    /// For each of `sources`, whether moving it into the folder `dest` stays
+    /// on one filesystem (see [`kernkraft_fs::same_filesystem`]: device
+    /// number and mount ID both equal, a symlink source judged as the link,
+    /// `dest` followed). One [`WireSame`] per source, in order. A source
+    /// path that does not decode is that source's `failed` answer; a `dest`
+    /// that does not decode fails every answer. Looks at nothing but the
+    /// paths' status; it does not wait for or touch the undo journal.
+    pub fn same_filesystem(&self, sources: Vec<WirePath>, dest: WirePath) -> Vec<WireSame> {
+        let failed = |error: WireError| WireSame::Failed { error };
+        let dest = match PathBuf::try_from(dest) {
+            Ok(dest) => dest,
+            Err(e) => {
+                let error = WireError::from(e);
+                return sources.iter().map(|_| failed(error.clone())).collect();
+            }
+        };
+        let decoded: Vec<Result<PathBuf, WireError>> = sources
+            .into_iter()
+            .map(|s| PathBuf::try_from(s).map_err(WireError::from))
+            .collect();
+        let paths: Vec<PathBuf> = decoded
+            .iter()
+            .filter_map(|d| d.as_ref().ok().cloned())
+            .collect();
+        let mut answers = same_filesystem(&paths, &dest).into_iter();
+        decoded
+            .into_iter()
+            .map(|d| match d {
+                Err(error) => failed(error),
+                Ok(_) => match answers.next() {
+                    Some(Ok(same)) => WireSame::Checked { same },
+                    Some(Err(e)) => failed(WireError::from(e)),
+                    None => failed(WireError::from(PluginError::Internal(
+                        "same_filesystem answered fewer sources than it was given".to_owned(),
+                    ))),
+                },
+            })
+            .collect()
     }
 
     /// What undo and redo would do now.

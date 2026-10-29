@@ -24,7 +24,7 @@ use tauri::{AppHandle, Runtime, Window};
 
 use crate::apps_cmds::{WireAppDefault, WireAppList, WireMime};
 use crate::error::WireError;
-use crate::fs_cmds::{WireEntry, WireUndoOutcome, WireUndoState, WireUserDirs};
+use crate::fs_cmds::{WireEntry, WireSame, WireUndoOutcome, WireUndoState, WireUserDirs};
 use crate::ops::{OpId, WireReport};
 use crate::state::{blocking, Kernkraft, KernkraftExt};
 use crate::text_cmds::{WireStamp, WireText};
@@ -188,6 +188,16 @@ pub(crate) async fn user_dirs<R: Runtime>(app: AppHandle<R>) -> Result<WireUserD
 }
 
 #[tauri::command]
+pub(crate) async fn same_filesystem<R: Runtime>(
+    app: AppHandle<R>,
+    sources: Vec<WirePath>,
+    dest: WirePath,
+) -> Result<Vec<WireSame>, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || Ok(kk.same_filesystem(sources, dest))).await
+}
+
+#[tauri::command]
 pub(crate) async fn text_open<R: Runtime>(
     app: AppHandle<R>,
     path: WirePath,
@@ -338,6 +348,14 @@ pub(crate) async fn mime_of<R: Runtime>(
 pub(crate) async fn volumes_list<R: Runtime>(app: AppHandle<R>) -> Result<WireVolumes, WireError> {
     let kk = app.kernkraft();
     blocking(move || kk.volumes_list()).await
+}
+
+#[tauri::command]
+pub(crate) async fn volumes_problems_take<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Vec<WireError>, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || Ok(kk.volumes_problems_take())).await
 }
 
 #[tauri::command]

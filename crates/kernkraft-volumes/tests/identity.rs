@@ -4,14 +4,16 @@
 //! Volume identity (disk sequence number) against a sysfs-shaped directory
 //! tree standing in for `/sys/dev/block`: `M:m` entries are symlinks to
 //! device directories, a partition's directory sits inside its disk's and
-//! has a `partition` file, and only a disk has `diskseq` (Linux 5.15,
-//! Documentation/ABI/stable/sysfs-block, "diskseq").
+//! has a `partition` file, and only a disk has `diskseq` (Linux 5.15, the
+//! kernel's sysfs-block ABI description of `/sys/block/<disk>/diskseq`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{symlink, FileTypeExt};
 use std::path::{Path, PathBuf};
+
+use rustix::fs::{statx, AtFlags, StatxFlags, CWD};
 
 use kernkraft_volumes::{
     disk_id_in, parse_mountinfo, verify_disk_in, verify_mount_in, DiskId, VolumesError,
@@ -194,6 +196,119 @@ fn a_mount_without_a_block_device_has_no_identity() {
     match verify_mount_in(&sys.block(), &lines, Path::new("/mnt/anon"), &id(0, 40, 1)) {
         Err(VolumesError::NoDiskSeq { reason, .. }) => {
             assert!(reason.contains("block device"), "{reason}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A block device node under `/dev` and the device number the kernel says it
+/// stands for (`stx_rdev_major` and `stx_rdev_minor`, statx(2): "the device
+/// that this file (inode) represents if the file is of block or character
+/// device type"). Nodes cannot be made without privilege, so the test uses a
+/// real one; a machine with none under `/dev` fails it.
+fn a_real_block_device_node() -> (PathBuf, u32, u32) {
+    let node = fs::read_dir("/dev")
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_block_device()))
+        .expect("this test needs a block device node under /dev");
+    let st = statx(CWD, &node, AtFlags::SYMLINK_NOFOLLOW, StatxFlags::TYPE).unwrap();
+    (node, st.stx_rdev_major, st.stx_rdev_minor)
+}
+
+/// btrfs reports an anonymous device number for its files (major 0), so the
+/// block device is the one its source names. The mount is then identified
+/// by that node's device number and the sequence number sysfs holds for it.
+#[test]
+fn a_btrfs_mount_is_identified_by_its_source_device_node() {
+    let (node, major, minor) = a_real_block_device_node();
+    let sys = Sys::new();
+    sys.disk("disk", &format!("{major}:{minor}"), Some("77"));
+    let lines = parse_mountinfo(&format!(
+        "26 20 0:40 / /mnt/anon rw - btrfs {} rw\n",
+        node.display()
+    ));
+    assert_eq!((lines[0].major, lines[0].minor), (0, 40));
+
+    // The device number comes from the node, not from mountinfo's 0:40.
+    verify_mount_in(
+        &sys.block(),
+        &lines,
+        Path::new("/mnt/anon"),
+        &id(major, minor, 77),
+    )
+    .unwrap();
+    match verify_mount_in(&sys.block(), &lines, Path::new("/mnt/anon"), &id(0, 40, 77)) {
+        Err(VolumesError::IdentityMismatch { reason }) => {
+            assert!(reason.contains("not 0:40"), "{reason}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Only filesystems known to report an anonymous device may be identified by
+/// their source: for any other, a block device number that sysfs does not
+/// list is a problem to report, not a cue to look at the source.
+#[test]
+fn a_source_node_is_not_used_for_other_filesystems() {
+    let (node, major, minor) = a_real_block_device_node();
+    let sys = Sys::new();
+    sys.disk("disk", &format!("{major}:{minor}"), Some("77"));
+    for fs_type in ["ext4", "exfat"] {
+        let lines = parse_mountinfo(&format!(
+            "26 20 0:40 / /mnt/odd rw - {fs_type} {} rw\n",
+            node.display()
+        ));
+        match verify_mount_in(
+            &sys.block(),
+            &lines,
+            Path::new("/mnt/odd"),
+            &id(major, minor, 77),
+        ) {
+            Err(VolumesError::NoDiskSeq { reason, .. }) => {
+                assert!(
+                    reason.contains(fs_type) && reason.contains("anonymous"),
+                    "{reason}"
+                );
+            }
+            other => panic!("{fs_type}: {other:?}"),
+        }
+    }
+}
+
+/// A sysfs entry that cannot be read for a reason other than being absent is
+/// reported with that reason, not as a missing block device.
+#[test]
+fn an_unreadable_sysfs_entry_is_reported_with_its_cause() {
+    let root = tempfile::tempdir().unwrap();
+    // A file where the directory of block devices should be: looking inside
+    // it fails with ENOTDIR, which is not "not found".
+    let not_a_directory = root.path().join("block");
+    fs::write(&not_a_directory, "").unwrap();
+
+    match disk_id_in(&not_a_directory, 8, 16) {
+        Err(VolumesError::NoDiskSeq { reason, .. }) => {
+            assert!(reason.contains("Not a directory"), "{reason}");
+            assert!(!reason.contains("no block device"), "{reason}");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // The same for the check a mount's own device number goes through: the
+    // error is reported, and the source node is not tried instead.
+    let (node, ..) = a_real_block_device_node();
+    let lines = parse_mountinfo(&format!(
+        "26 20 0:40 / /mnt/anon rw - btrfs {} rw\n",
+        node.display()
+    ));
+    match verify_mount_in(
+        &not_a_directory,
+        &lines,
+        Path::new("/mnt/anon"),
+        &id(0, 40, 1),
+    ) {
+        Err(VolumesError::NoDiskSeq { reason, .. }) => {
+            assert!(reason.contains("Not a directory"), "{reason}");
         }
         other => panic!("{other:?}"),
     }

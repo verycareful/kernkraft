@@ -41,7 +41,7 @@ include!("command_list.rs");
 
 pub use apps_cmds::{WireApp, WireAppDefault, WireAppList, WireMime};
 pub use error::{PluginError, WireDetails, WireError, WireItemError};
-pub use fs_cmds::{WireEntry, WireUndoOutcome, WireUndoState, WireUserDir, WireUserDirs};
+pub use fs_cmds::{WireEntry, WireSame, WireUndoOutcome, WireUndoState, WireUserDir, WireUserDirs};
 pub use ops::{
     OpConflictEvent, OpDoneEvent, OpId, OpProgressEvent, WireDone, WireProperties, WireReport,
     EVENT_OP_CONFLICT, EVENT_OP_DONE, EVENT_OP_PROGRESS, PROGRESS_INTERVAL_MS,
@@ -91,6 +91,7 @@ pub fn init_with<R: Runtime>(config: Config) -> TauriPlugin<R> {
             commands::unwatch_dir,
             commands::properties,
             commands::user_dirs,
+            commands::same_filesystem,
             commands::text_open,
             commands::text_save,
             commands::text_check,
@@ -107,6 +108,7 @@ pub fn init_with<R: Runtime>(config: Config) -> TauriPlugin<R> {
             commands::open_terminal,
             commands::mime_of,
             commands::volumes_list,
+            commands::volumes_problems_take,
             commands::volume_mount,
             commands::volume_unmount,
             commands::volume_eject,

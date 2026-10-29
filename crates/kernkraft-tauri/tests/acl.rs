@@ -29,6 +29,24 @@ fn default_permission_allows_commands() {
         "user": {"mode": "dark", "accent": "teal", "density": "compact"}
     });
     invoke(&v, "theme_get", theme).unwrap();
+    let dir = e.dir("d");
+    let same = json!({"sources": [common::w(&dir)], "dest": common::w(&dir)});
+    let answer = invoke(&v, "same_filesystem", same).unwrap();
+    assert_eq!(answer, json!([{"state": "checked", "same": true}]));
+}
+
+#[test]
+fn same_filesystem_is_granted_by_its_own_permission() {
+    let e = env_with_permissions(&["kernkraft-tauri:allow-same-filesystem"]);
+    let v = e.webview("main");
+    let dir = e.dir("d");
+    let same = json!({"sources": [common::w(&dir)], "dest": common::w(&dir)});
+    invoke(&v, "same_filesystem", same).unwrap();
+    let refused = invoke(&v, "user_dirs", json!({})).unwrap_err();
+    assert!(
+        refused.as_str().unwrap().contains("not allowed"),
+        "{refused}"
+    );
 }
 
 #[test]

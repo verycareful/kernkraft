@@ -31,7 +31,7 @@ use zbus::blocking::Connection;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use zbus::DBusError;
 
-use crate::identity::{disk_id, Identity};
+use crate::identity::{disk_id, DiskId, Identity};
 use crate::mountinfo::{current_user, parse_mountinfo_strict, read_mountinfo, Classifier};
 use crate::{EjectRefusal, VolumesError};
 
@@ -78,32 +78,33 @@ pub struct Device {
     /// have none, so it is not checked.
     pub uuid: String,
     /// Which disk this is, from `Block.DeviceNumber` and the disk sequence
-    /// number read when it was listed (see [`DiskId`](crate::DiskId) for what it is
-    /// unique over). Required by [`find_listed`].
+    /// number read when it was listed (see [`DiskId`] for what it is
+    /// unique over). Mounting needs it to be known (see [`Identity::known`]).
     pub identity: Identity,
 }
 
-/// The device in `listed` that `wanted` stands for. `wanted` must have a
-/// known identity ([`VolumesError::IdentityUnknown`] otherwise). The device
-/// at its object path must be the same disk (device number and sequence
-/// number) or it is [`VolumesError::IdentityMismatch`]; if nothing is at that
-/// path, the device with the same identity under another path (the node was
+/// The device in `listed` that the device at `object_path` with identity
+/// `wanted` stands for (the caller gets `wanted` from
+/// [`Identity::known`] of the device it was given, so a device without one
+/// never gets here). The device at `object_path` must be the same disk
+/// (device number and sequence number) or it is
+/// [`VolumesError::IdentityMismatch`], and one listed there without an
+/// identity is [`VolumesError::IdentityUnknown`]; if nothing is at that path,
+/// the device with the same identity under another path (the node was
 /// renamed); else `None`.
-pub fn find_listed(listed: Vec<Device>, wanted: &Device) -> Result<Option<Device>, VolumesError> {
-    let wanted_id = wanted.identity.known()?;
-    if let Some(at_path) = listed.iter().find(|d| d.object_path == wanted.object_path) {
+pub fn find_listed(
+    listed: Vec<Device>,
+    object_path: &str,
+    wanted: DiskId,
+) -> Result<Option<Device>, VolumesError> {
+    if let Some(at_path) = listed.iter().find(|d| d.object_path == object_path) {
         return match &at_path.identity {
-            Identity::Known(id) if *id == wanted_id => Ok(Some(at_path.clone())),
+            Identity::Known(id) if *id == wanted => Ok(Some(at_path.clone())),
             Identity::Known(id) => Err(VolumesError::IdentityMismatch {
                 reason: format!(
-                    "{} is now device {}:{} with disk sequence number {}, not {}:{} with {}",
-                    wanted.object_path,
-                    id.major,
-                    id.minor,
-                    id.diskseq,
-                    wanted_id.major,
-                    wanted_id.minor,
-                    wanted_id.diskseq
+                    "{object_path} is now device {}:{} with disk sequence number {}, not {}:{} \
+                     with {}",
+                    id.major, id.minor, id.diskseq, wanted.major, wanted.minor, wanted.diskseq
                 ),
             }),
             Identity::Unknown { reason } => Err(VolumesError::IdentityUnknown {
@@ -113,7 +114,7 @@ pub fn find_listed(listed: Vec<Device>, wanted: &Device) -> Result<Option<Device
     }
     Ok(listed
         .into_iter()
-        .find(|d| d.identity == Identity::Known(wanted_id)))
+        .find(|d| d.identity == Identity::Known(wanted)))
 }
 
 /// A connection to UDisks2.
@@ -865,33 +866,31 @@ mod tests {
             device("/o/sdb1", known(8, 17, 5)),
             device("/o/sdc1", known(8, 33, 6)),
         ];
+        let id = |major, minor, diskseq| DiskId {
+            major,
+            minor,
+            diskseq,
+        };
         // Same path, same disk.
-        let got = find_listed(listed.clone(), &device("/o/sdb1", known(8, 17, 5))).expect("ok");
+        let got = find_listed(listed.clone(), "/o/sdb1", id(8, 17, 5)).expect("ok");
         assert_eq!(got.expect("found").object_path, "/o/sdb1");
         // Same path, another disk now (the next sequence number): refused.
         assert!(matches!(
-            find_listed(listed.clone(), &device("/o/sdb1", known(8, 17, 7))),
+            find_listed(listed.clone(), "/o/sdb1", id(8, 17, 7)),
             Err(VolumesError::IdentityMismatch { .. })
         ));
         // The path is gone but the disk is listed under another path.
-        let got = find_listed(listed.clone(), &device("/o/sdx9", known(8, 33, 6))).expect("ok");
+        let got = find_listed(listed.clone(), "/o/sdx9", id(8, 33, 6)).expect("ok");
         assert_eq!(got.expect("found").object_path, "/o/sdc1");
         // Not listed at all.
-        assert!(
-            find_listed(listed.clone(), &device("/o/sdx9", known(9, 9, 9)))
-                .expect("ok")
-                .is_none()
-        );
-        // A wanted device without an identity is never matched.
+        assert!(find_listed(listed, "/o/sdx9", id(9, 9, 9))
+            .expect("ok")
+            .is_none());
+        // A listed device without an identity is not passed over silently.
         let unknown = Identity::Unknown { reason: "x".into() };
-        assert!(matches!(
-            find_listed(listed.clone(), &device("/o/sdb1", unknown.clone())),
-            Err(VolumesError::IdentityUnknown { .. })
-        ));
-        // Nor is a listed one without an identity passed over silently.
         let listed = vec![device("/o/sdb1", unknown)];
         assert!(matches!(
-            find_listed(listed, &device("/o/sdb1", known(8, 17, 5))),
+            find_listed(listed, "/o/sdb1", id(8, 17, 5)),
             Err(VolumesError::IdentityUnknown { .. })
         ));
     }

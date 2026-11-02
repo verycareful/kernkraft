@@ -83,13 +83,35 @@ impl FileStamp {
     }
 }
 
-/// Atomically replaces (or creates) the file at `path` with what `write`
-/// produces.
+/// What a save expects at its path, and so what it may replace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expect<'a> {
+    /// The file as it was read: it must still match this stamp, else
+    /// nothing is written and the save fails with
+    /// [`FsError::ExternalModification`] (a file deleted since counts as
+    /// changed).
+    Unchanged(&'a FileStamp),
+    /// Nothing at all: the save creates the file and never replaces
+    /// anything. Whatever is at the path when the new file is put in place
+    /// (a file, a folder, a symlink, dangling or not) makes it fail with
+    /// [`FsError::Exists`] and is left as it is.
+    Nothing,
+    /// Whatever is there is replaced, or the file is created: a write the
+    /// user chose knowing what is there, or a file only this program writes.
+    Anything,
+}
+
+/// Atomically writes the file at `path` with what `write` produces, as far
+/// as `expect` allows ([`Expect`]).
 ///
-/// A symlink at `path` is followed, through any chain, and its final target
-/// is written; the links stay as they are. With `expected = Some(stamp)` the
-/// target must still match `stamp`, else nothing is written and the result
-/// is [`FsError::ExternalModification`]. An existing target's owner, group,
+/// With [`Expect::Unchanged`] or [`Expect::Anything`] a symlink at `path` is
+/// followed, through any chain, and its final target is written; the links
+/// stay as they are. With [`Expect::Nothing`] the name `path` itself is
+/// created, by a rename that refuses to replace
+/// (`renameat2(RENAME_NOREPLACE)`, rename(2), where the kernel checks and
+/// renames in one step; a filesystem without the flag links and unlinks,
+/// which refuses too), so something that appears there while the contents
+/// are written is not replaced either. An existing target's owner, group,
 /// extended attributes (POSIX ACLs among them) and permission bits carry
 /// over; a new file gets `0o666` less the process umask. A save that would
 /// change the owner or group (the file belongs to another user, or to a
@@ -102,9 +124,14 @@ impl FileStamp {
 /// now on disk.
 pub fn write_atomic(
     path: &Path,
-    expected: Option<&FileStamp>,
+    expect: Expect<'_>,
     write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
 ) -> Result<FileStamp, FsError> {
+    let expected = match expect {
+        Expect::Unchanged(stamp) => Some(stamp),
+        Expect::Anything => None,
+        Expect::Nothing => return create_new(path, write),
+    };
     let target = resolve_symlinks(path).map_err(|source| FsError::io(path, source))?;
     let existing = match fs::metadata(&target) {
         Ok(meta) => Some(meta),
@@ -203,13 +230,56 @@ fn keep_ownership(
     }
 }
 
+/// [`write_atomic`] with [`Expect::Nothing`]: a temp file in the folder of
+/// `path`, flushed and `fsync`ed, renamed to `path` only if nothing is there,
+/// then the folder `fsync`ed so the new name survives a crash. On any error
+/// the folder is left as it was: no file at `path`, no temp file.
+fn create_new(
+    path: &Path,
+    write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+) -> Result<FileStamp, FsError> {
+    let dir = parent_dir(path);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temp = tempfile::Builder::new()
+        .prefix(&format!(".{name}."))
+        .suffix(".kk-tmp")
+        .permissions(Permissions::from_mode(NEW_FILE_MODE))
+        .tempfile_in(dir)
+        .map_err(|source| FsError::io(dir, source))?;
+    let temp_path = temp.path().to_path_buf();
+    let fail = |source| FsError::io(&temp_path, source);
+
+    let mut out = BufWriter::new(temp.as_file());
+    write(&mut out).map_err(fail)?;
+    out.flush().map_err(fail)?;
+    drop(out);
+    temp.as_file().sync_all().map_err(fail)?;
+    temp.persist_noclobber(path).map_err(|e| {
+        if e.error.kind() == ErrorKind::AlreadyExists {
+            FsError::Exists {
+                path: path.to_path_buf(),
+            }
+        } else {
+            FsError::io(path, e.error)
+        }
+    })?;
+    File::open(dir)
+        .and_then(|d| d.sync_all())
+        .map_err(|source| FsError::io(dir, source))?;
+
+    FileStamp::of(path)
+}
+
 /// [`write_atomic`] with the contents given as bytes.
 pub fn write_bytes_atomic(
     path: &Path,
-    expected: Option<&FileStamp>,
+    expect: Expect<'_>,
     bytes: &[u8],
 ) -> Result<FileStamp, FsError> {
-    write_atomic(path, expected, |w| w.write_all(bytes))
+    write_atomic(path, expect, |w| w.write_all(bytes))
 }
 
 /// Follows `path` through every symlink to the path that is not one (or does

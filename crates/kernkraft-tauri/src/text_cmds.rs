@@ -6,16 +6,18 @@
 //! A file is opened with its line ending and UTF-8 byte order mark
 //! remembered (Unicode Standard 23.8), and with the reason it must not be
 //! saved, if any (see `kernkraft_text::ReadOnly`). Each open and save
-//! returns a [`WireStamp`] of the file as it is on disk; a later save with
-//! that stamp refuses with `ExternalModification` if anything changed the
-//! file meanwhile, and [`Kernkraft::text_check`] tells the editor whether
-//! the file it shows is still the one on disk.
+//! returns a [`WireStamp`] of the file as it is on disk. Every save says
+//! what it expects at the path ([`WireExpect`]): the file with that stamp
+//! (anything changed meanwhile refuses with `ExternalModification`), nothing
+//! (anything there refuses with `Exists`), or anything (an overwrite the
+//! user chose). [`Kernkraft::text_check`] tells the editor whether the file
+//! it shows is still the one on disk.
 
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
 
-use kernkraft_fs::{FileStamp, FsError};
+use kernkraft_fs::{Expect, FileStamp, FsError};
 use kernkraft_text::{LineEnding, ReadOnly};
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
@@ -90,6 +92,18 @@ impl WireStamp {
             changed_ns,
         })
     }
+}
+
+/// What a save expects at its path (`kernkraft_fs::Expect`), as the webview
+/// sends it: `{"kind": "unchanged", "stamp": ...}`, `{"kind": "nothing"}` or
+/// `{"kind": "anything"}`. There is no default: a save that may replace a
+/// changed or unknown file says so.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WireExpect {
+    Unchanged { stamp: WireStamp },
+    Nothing,
+    Anything,
 }
 
 /// Why a file is shown but must not be saved: `kind` is the name of the
@@ -172,30 +186,35 @@ impl<R: Runtime> Kernkraft<R> {
     }
 
     /// Writes `text` to `path` atomically with line ending `ending`
-    /// (`"lf"` or `"crlf"`) and, with `bom`, a UTF-8 byte order mark.
+    /// (`"lf"` or `"crlf"`) and, with `bom`, a UTF-8 byte order mark, as far
+    /// as `expect` allows. Returns the new stamp.
     ///
-    /// With `stamp`, the file must still be the one that stamp describes,
-    /// else `ExternalModification` and nothing is written. `None` writes
-    /// whatever is there: Save As to a new path, or an overwrite the user
-    /// chose after being told the file changed. Returns the new stamp.
+    /// - `unchanged`: the file must still be the one `stamp` describes, else
+    ///   `ExternalModification` and nothing is written. An ordinary save.
+    /// - `nothing`: nothing may be at `path`, else `Exists` and nothing is
+    ///   touched, including something that appears there while the text is
+    ///   written. Save As to a path found free, or a deleted file written
+    ///   again.
+    /// - `anything`: whatever is there is replaced. An overwrite the user
+    ///   chose after being told what is there.
     ///
-    /// In both cases an existing file is never replaced when its content
-    /// decodes read-only (not UTF-8, UTF-16, mixed line endings: the text
-    /// shown is a lossy copy) or the user has no write permission for it:
-    /// the save fails with `ReadOnly`, whose details name the reason
-    /// (`NoWritePermission` for the latter), and the file keeps its bytes
-    /// and mode. Only Save As to another path saves such text. Anything at
-    /// `path` that is not a regular file is refused (`Io`) before it is
-    /// opened, and an existing file above `kernkraft_text::OPEN_LIMIT` is
-    /// refused (`TooLargeToOpen`) because it cannot be checked. Save As to a
-    /// path with nothing there is not affected.
+    /// With `unchanged` or `anything` an existing file is never replaced
+    /// when its content decodes read-only (not UTF-8, UTF-16, mixed line
+    /// endings: the text shown is a lossy copy) or the user has no write
+    /// permission for it: the save fails with `ReadOnly`, whose details name
+    /// the reason (`NoWritePermission` for the latter), and the file keeps
+    /// its bytes and mode. Only Save As to another path saves such text.
+    /// Anything at `path` that is not a regular file is refused (`Io`)
+    /// before it is opened, and an existing file above
+    /// `kernkraft_text::OPEN_LIMIT` is refused (`TooLargeToOpen`) because it
+    /// cannot be checked.
     pub fn text_save(
         &self,
         path: WirePath,
         text: String,
         ending: String,
         bom: bool,
-        stamp: Option<WireStamp>,
+        expect: WireExpect,
     ) -> Result<WireStamp, WireError> {
         let path = PathBuf::try_from(path)?;
         let ending = match ending.as_str() {
@@ -208,8 +227,16 @@ impl<R: Runtime> Kernkraft<R> {
                 }))
             }
         };
-        let expected = stamp.map(|s| s.decode()).transpose()?;
-        let saved = kernkraft_text::save(&path, &text, ending, bom, expected.as_ref())?;
+        let decoded;
+        let expect = match &expect {
+            WireExpect::Unchanged { stamp } => {
+                decoded = stamp.decode()?;
+                Expect::Unchanged(&decoded)
+            }
+            WireExpect::Nothing => Expect::Nothing,
+            WireExpect::Anything => Expect::Anything,
+        };
+        let saved = kernkraft_text::save(&path, &text, ending, bom, expect)?;
         Ok(WireStamp::new(&saved))
     }
 

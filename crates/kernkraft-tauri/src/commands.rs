@@ -27,7 +27,7 @@ use crate::error::WireError;
 use crate::fs_cmds::{WireEntry, WireSame, WireUndoOutcome, WireUndoState, WireUserDirs};
 use crate::ops::{OpId, WireReport};
 use crate::state::{blocking, Kernkraft, KernkraftExt};
-use crate::text_cmds::{WireStamp, WireText};
+use crate::text_cmds::{WireExpect, WireStamp, WireText};
 use crate::theme_cmds::WireTheme;
 use crate::trash_cmds::{WireTrashListing, WireTrashedItem};
 use crate::volumes_cmds::WireVolumes;
@@ -222,10 +222,10 @@ pub(crate) async fn text_save<R: Runtime>(
     text: String,
     ending: String,
     bom: bool,
-    stamp: Option<WireStamp>,
+    expect: WireExpect,
 ) -> Result<WireStamp, WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.text_save(path, text, ending, bom, stamp)).await
+    blocking(move || kk.text_save(path, text, ending, bom, expect)).await
 }
 
 #[tauri::command]

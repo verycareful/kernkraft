@@ -48,7 +48,7 @@ pub use ops::{
 };
 pub use search_cmds::{SearchHitEvent, WireScanDone, EVENT_SEARCH_HIT, SEARCH_BATCH};
 pub use state::{Config, Kernkraft, KernkraftExt};
-pub use text_cmds::{WireReadOnly, WireStamp, WireText};
+pub use text_cmds::{WireExpect, WireReadOnly, WireStamp, WireText};
 pub use theme_cmds::{WireTheme, EVENT_THEME_CHANGED};
 pub use thumb_cmds::{ThumbEvent, EVENT_THUMB};
 pub use trash_cmds::{WireTrashListing, WireTrashedItem};

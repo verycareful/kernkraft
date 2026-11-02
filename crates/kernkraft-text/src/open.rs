@@ -8,7 +8,7 @@ use std::io::{self, ErrorKind, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use kernkraft_fs::{write_bytes_atomic, FileStamp, FsError};
+use kernkraft_fs::{write_bytes_atomic, Expect, FileStamp, FsError};
 use rustix::fs::{access, fcntl_getfl, fcntl_setfl, Access, OFlags};
 
 use crate::decode::{decode, Decoded, LineEnding, ReadOnly};
@@ -142,24 +142,31 @@ fn read_regular(path: &Path) -> Result<(Vec<u8>, FileStamp), TextError> {
     Ok((bytes, stamp))
 }
 
-/// Encodes `text` and writes it to `path` atomically; see
-/// [`kernkraft_fs::write_atomic`]. Returns the stamp of the file now on disk.
+/// Encodes `text` and writes it to `path` atomically, as far as `expect`
+/// allows; see [`kernkraft_fs::write_atomic`] and [`Expect`]. Returns the
+/// stamp of the file now on disk.
 ///
-/// With `expected` the file must still match that stamp, else
-/// [`FsError::ExternalModification`] and nothing is written (a file deleted
-/// since counts as changed). Without it, whatever is at `path` is replaced:
-/// Save As to a new path, or an overwrite the user chose.
+/// - [`Expect::Unchanged`]: the file must still match the stamp, else
+///   [`FsError::ExternalModification`] and nothing is written (a file
+///   deleted since counts as changed). An ordinary save.
+/// - [`Expect::Nothing`]: nothing may be at `path`, else [`FsError::Exists`]
+///   and nothing is touched; something appearing there while the text is
+///   written is not replaced either. Save As to a path found free, or a file
+///   written again after it was deleted.
+/// - [`Expect::Anything`]: whatever is there is replaced. An overwrite the
+///   user chose knowing what is there.
 ///
-/// Either way, an existing file at `path` (symlinks followed) is checked
-/// first, and nothing is written when it fails:
+/// With [`Expect::Unchanged`] or [`Expect::Anything`], an existing file at
+/// `path` (symlinks followed) is checked first, and nothing is written when
+/// it fails:
 ///
 /// - Anything that is not a regular file is refused from its metadata, as
 ///   in [`open`], before it is opened, so a save aimed at a device node
 ///   never opens the device; then the same handle-checked read as [`open`]
 ///   refuses one swapped in after that check, without blocking.
-/// - With `expected`, the stamp of that read must match. The write checks
-///   the stamp again, so a change between the read and the write is caught
-///   too.
+/// - With [`Expect::Unchanged`], the stamp of that read must match. The
+///   write checks the stamp again, so a change between the read and the
+///   write is caught too.
 /// - Content that decodes read-only for a content reason
 ///   ([`ReadOnly::is_content`]: not UTF-8, UTF-16, mixed line endings) is
 ///   refused with [`TextError::ReadOnly`]: the text the caller holds for it
@@ -176,14 +183,26 @@ fn read_regular(path: &Path) -> Result<(Vec<u8>, FileStamp), TextError> {
 ///   exist to prevent.
 ///
 /// [`ReadOnly::TooLarge`] alone is no reason to refuse: the text of such a
-/// file is exact. Save As to a path with nothing there skips every check.
+/// file is exact. A save to a path with nothing there skips every check.
 pub fn save(
     path: &Path,
     text: &str,
     ending: LineEnding,
     bom: bool,
-    expected: Option<&FileStamp>,
+    expect: Expect<'_>,
 ) -> Result<FileStamp, TextError> {
+    let expected = match expect {
+        Expect::Unchanged(stamp) => Some(stamp),
+        Expect::Anything => None,
+        // The write refuses whatever is there, a dangling symlink included, without reading it.
+        Expect::Nothing => {
+            return Ok(write_bytes_atomic(
+                path,
+                Expect::Nothing,
+                &encode(text, ending, bom),
+            )?)
+        }
+    };
     match fs::metadata(path) {
         Ok(meta) => {
             if !meta.is_file() {
@@ -198,7 +217,7 @@ pub fn save(
     }
     Ok(write_bytes_atomic(
         path,
-        expected,
+        expected.map_or(Expect::Anything, Expect::Unchanged),
         &encode(text, ending, bom),
     )?)
 }

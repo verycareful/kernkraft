@@ -488,7 +488,7 @@ fn ipc_text_save() {
     let stamp = invoke(
         &v,
         "text_save",
-        json!({"path": wp(&path), "text": "y\n", "ending": "crlf", "bom": true, "stamp": opened["stamp"]}),
+        json!({"path": wp(&path), "text": "y\n", "ending": "crlf", "bom": true, "expect": {"kind": "unchanged", "stamp": opened["stamp"]}}),
     )
     .unwrap();
     assert!(stamp.is_string());
@@ -498,7 +498,7 @@ fn ipc_text_save() {
         invoke(
             &v,
             "text_save",
-            json!({"path": wp(&path), "text": "z", "ending": "lf", "bom": false, "stamp": opened["stamp"]}),
+            json!({"path": wp(&path), "text": "z", "ending": "lf", "bom": false, "expect": {"kind": "unchanged", "stamp": opened["stamp"]}}),
         ),
         "ExternalModification",
     );
@@ -506,10 +506,49 @@ fn ipc_text_save() {
     invoke(
         &v,
         "text_save",
-        json!({"path": wp(&new), "text": "n", "ending": "lf", "bom": false, "stamp": null}),
+        json!({"path": wp(&new), "text": "n", "ending": "lf", "bom": false, "expect": {"kind": "nothing"}}),
     )
     .unwrap();
     assert_eq!(fs::read_to_string(&new).unwrap(), "n");
+    // Expecting nothing where something is: refused, untouched.
+    assert_wire_error(
+        invoke(
+            &v,
+            "text_save",
+            json!({"path": wp(&new), "text": "o", "ending": "lf", "bom": false, "expect": {"kind": "nothing"}}),
+        ),
+        "Exists",
+    );
+    assert_eq!(fs::read_to_string(&new).unwrap(), "n");
+    // Anything replaces it.
+    invoke(
+        &v,
+        "text_save",
+        json!({"path": wp(&new), "text": "p", "ending": "lf", "bom": false, "expect": {"kind": "anything"}}),
+    )
+    .unwrap();
+    assert_eq!(fs::read_to_string(&new).unwrap(), "p");
+    // There is no default: a save that says nothing about what it expects, or names no known
+    // kind, writes nothing.
+    for bad in [
+        json!(null),
+        json!({"kind": "whatever"}),
+        json!({"kind": "unchanged"}),
+    ] {
+        assert!(invoke(
+            &v,
+            "text_save",
+            json!({"path": wp(&new), "text": "q", "ending": "lf", "bom": false, "expect": bad}),
+        )
+        .is_err());
+    }
+    assert!(invoke(
+        &v,
+        "text_save",
+        json!({"path": wp(&new), "text": "q", "ending": "lf", "bom": false}),
+    )
+    .is_err());
+    assert_eq!(fs::read_to_string(&new).unwrap(), "p");
 }
 
 #[test]

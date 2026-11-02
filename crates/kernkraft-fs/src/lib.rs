@@ -23,7 +23,7 @@ mod version;
 mod xattr;
 mod xdg;
 
-pub use atomic::{write_atomic, write_bytes_atomic, FileStamp};
+pub use atomic::{write_atomic, write_bytes_atomic, Expect, FileStamp};
 pub use cache::PrivateCache;
 pub use error::FsError;
 pub use ops::{

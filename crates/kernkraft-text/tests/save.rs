@@ -6,7 +6,7 @@
 use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt;
 
-use kernkraft_fs::FsError;
+use kernkraft_fs::{Expect, FsError};
 use kernkraft_text::{open, save, LineEnding, ReadOnly, TextError, EDITABLE_LIMIT, OPEN_LIMIT};
 
 #[test]
@@ -23,7 +23,7 @@ fn save_preserves_crlf_and_bom() {
         &edited,
         file.decoded.ending,
         file.decoded.bom,
-        Some(&file.stamp),
+        Expect::Unchanged(&file.stamp),
     )
     .unwrap();
 
@@ -39,7 +39,14 @@ fn save_returns_the_stamp_of_the_new_file() {
     let path = dir.path().join("f.txt");
     fs::write(&path, "a\n").unwrap();
     let file = open(&path).unwrap();
-    let stamp = save(&path, "b\n", LineEnding::Lf, false, Some(&file.stamp)).unwrap();
+    let stamp = save(
+        &path,
+        "b\n",
+        LineEnding::Lf,
+        false,
+        Expect::Unchanged(&file.stamp),
+    )
+    .unwrap();
     assert_eq!(stamp, open(&path).unwrap().stamp);
 }
 
@@ -52,7 +59,14 @@ fn save_detects_external_change() {
 
     fs::write(&path, "changed elsewhere, longer\n").unwrap();
 
-    let err = save(&path, "mine\n", LineEnding::Lf, false, Some(&file.stamp)).unwrap_err();
+    let err = save(
+        &path,
+        "mine\n",
+        LineEnding::Lf,
+        false,
+        Expect::Unchanged(&file.stamp),
+    )
+    .unwrap_err();
     assert!(
         matches!(err, TextError::Fs(FsError::ExternalModification { .. })),
         "{err:?}"
@@ -218,7 +232,7 @@ fn save_with_stamp_refuses_lossy_content() {
             &file.decoded.text,
             file.decoded.ending,
             file.decoded.bom,
-            Some(&file.stamp),
+            Expect::Unchanged(&file.stamp),
         )
         .unwrap_err();
         match &err {
@@ -238,7 +252,7 @@ fn overwrite_without_stamp_refuses_lossy_content() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("f.txt");
         fs::write(&path, bytes).unwrap();
-        let err = save(&path, "new\n", LineEnding::Lf, false, None).unwrap_err();
+        let err = save(&path, "new\n", LineEnding::Lf, false, Expect::Anything).unwrap_err();
         assert!(matches!(err, TextError::ReadOnly { .. }), "{kind}: {err:?}");
         assert_eq!(fs::read(&path).unwrap(), bytes, "{kind}");
     }
@@ -248,10 +262,10 @@ fn overwrite_without_stamp_refuses_lossy_content() {
 fn save_as_to_a_new_path_and_overwrite_of_clean_text_write() {
     let dir = tempfile::tempdir().unwrap();
     let new = dir.path().join("new.txt");
-    save(&new, "n\n", LineEnding::CrLf, false, None).unwrap();
+    save(&new, "n\n", LineEnding::CrLf, false, Expect::Nothing).unwrap();
     assert_eq!(fs::read(&new).unwrap(), b"n\r\n");
-    // An existing file that decodes cleanly may be overwritten unstamped.
-    save(&new, "m\n", LineEnding::Lf, false, None).unwrap();
+    // An existing file that decodes cleanly may be overwritten when the caller expects anything.
+    save(&new, "m\n", LineEnding::Lf, false, Expect::Anything).unwrap();
     assert_eq!(fs::read(&new).unwrap(), b"m\n");
 }
 
@@ -262,7 +276,14 @@ fn save_with_stamp_of_deleted_file_is_external_modification() {
     fs::write(&path, "a").unwrap();
     let file = open(&path).unwrap();
     fs::remove_file(&path).unwrap();
-    let err = save(&path, "b", LineEnding::Lf, false, Some(&file.stamp)).unwrap_err();
+    let err = save(
+        &path,
+        "b",
+        LineEnding::Lf,
+        false,
+        Expect::Unchanged(&file.stamp),
+    )
+    .unwrap_err();
     assert!(
         matches!(err, TextError::Fs(FsError::ExternalModification { .. })),
         "{err:?}"
@@ -282,7 +303,7 @@ fn save_refuses_write_protected_file() {
     let file = open(&path).unwrap();
     // The folder is writable, so the atomic rename would succeed: the
     // refusal has to come from save itself.
-    for expected in [Some(&file.stamp), None] {
+    for expected in [Expect::Unchanged(&file.stamp), Expect::Anything] {
         let err = save(&path, "changed\n", LineEnding::Lf, false, expected).unwrap_err();
         assert!(
             matches!(
@@ -306,7 +327,7 @@ fn save_refuses_write_protected_file() {
         "changed\n",
         LineEnding::Lf,
         false,
-        None,
+        Expect::Nothing,
     )
     .unwrap();
 }
@@ -322,7 +343,7 @@ fn save_refuses_a_device_node() {
         "x",
         LineEnding::Lf,
         false,
-        None,
+        Expect::Anything,
     )
     .unwrap_err();
     assert!(invalid_input(&err), "{err:?}");
@@ -343,7 +364,13 @@ fn save_refuses_a_fifo_without_blocking() {
     let (tx, rx) = std::sync::mpsc::channel();
     let thread_path = path.clone();
     std::thread::spawn(move || {
-        let _ = tx.send(save(&thread_path, "x", LineEnding::Lf, false, None));
+        let _ = tx.send(save(
+            &thread_path,
+            "x",
+            LineEnding::Lf,
+            false,
+            Expect::Anything,
+        ));
     });
     let err = rx
         .recv_timeout(std::time::Duration::from_secs(5))
@@ -354,4 +381,40 @@ fn save_refuses_a_fifo_without_blocking() {
     assert!(rustix::fs::stat(&path).is_ok_and(|s| {
         rustix::fs::FileType::from_raw_mode(s.st_mode) == rustix::fs::FileType::Fifo
     }));
+}
+
+#[test]
+fn expecting_nothing_creates_with_the_ending_and_bom_and_its_stamp_opens_the_same() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("new.txt");
+    let stamp = save(&path, "one\ntwo\n", LineEnding::CrLf, true, Expect::Nothing).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"\xEF\xBB\xBFone\r\ntwo\r\n");
+    // The stamp is the one an open of the new file gives, so the next save checks against it.
+    assert_eq!(open(&path).unwrap().stamp, stamp);
+}
+
+#[test]
+fn expecting_nothing_never_replaces_a_file_that_is_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.txt");
+    fs::write(&path, b"theirs").unwrap();
+    let err = save(&path, "mine", LineEnding::Lf, false, Expect::Nothing).unwrap_err();
+    assert!(
+        matches!(err, TextError::Fs(FsError::Exists { .. })),
+        "{err:?}"
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"theirs");
+}
+
+#[test]
+fn expecting_nothing_refuses_a_dangling_symlink_and_writes_nowhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("link");
+    std::os::unix::fs::symlink(dir.path().join("nowhere"), &path).unwrap();
+    let err = save(&path, "mine", LineEnding::Lf, false, Expect::Nothing).unwrap_err();
+    assert!(
+        matches!(err, TextError::Fs(FsError::Exists { .. })),
+        "{err:?}"
+    );
+    assert!(!dir.path().join("nowhere").exists());
 }

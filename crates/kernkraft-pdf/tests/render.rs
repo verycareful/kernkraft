@@ -6,6 +6,7 @@
 
 mod common;
 
+use kernkraft_fs::Expect;
 use std::path::PathBuf;
 
 use common::*;
@@ -214,7 +215,7 @@ fn rotated_output_renders_swapped() {
     let mut doc = kernkraft_pdf::load_bytes(&pdf_n(1)).unwrap();
     kernkraft_pdf::rotate(&mut doc, &[1], kernkraft_pdf::Rotation::Cw90).unwrap();
     let path = dir.path().join("turned.pdf");
-    kernkraft_pdf::save(&mut doc, &path, None).unwrap();
+    kernkraft_pdf::save(&mut doc, &path, Expect::Anything).unwrap();
     let page = render_page(&path, 1, CORPUS_WIDTH).unwrap();
     let expected = (LETTER.0 * CORPUS_WIDTH as f32 / LETTER.1).round() as u32;
     assert_eq!((page.width, page.height), (CORPUS_WIDTH, expected));
@@ -226,7 +227,7 @@ fn flattened_nested_page_uses_inherited_cropbox() {
     let mut doc = kernkraft_pdf::load_bytes(&nested_pdf()).unwrap();
     kernkraft_pdf::flatten_page_tree(&mut doc).unwrap();
     let path = dir.path().join("flat.pdf");
-    kernkraft_pdf::save(&mut doc, &path, None).unwrap();
+    kernkraft_pdf::save(&mut doc, &path, Expect::Anything).unwrap();
     // NESTED_CROPBOX is square and lies inside NESTED_MEDIABOX.
     let page = render_page(&path, 2, CORPUS_WIDTH).unwrap();
     assert_eq!((page.width, page.height), (CORPUS_WIDTH, CORPUS_WIDTH));

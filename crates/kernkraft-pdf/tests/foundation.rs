@@ -6,6 +6,7 @@
 mod common;
 
 use common::*;
+use kernkraft_fs::Expect;
 use kernkraft_pdf::lopdf::{dictionary, Object};
 use kernkraft_pdf::{
     flatten_page_tree, load, load_bytes, page_count, parse_ranges, save, to_bytes, PageRange,
@@ -69,7 +70,7 @@ fn save_round_trips_markers() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.pdf");
     let mut doc = load_bytes(&pdf_n(3)).unwrap();
-    let stamp = save(&mut doc, &path, None).unwrap();
+    let stamp = save(&mut doc, &path, Expect::Anything).unwrap();
     assert_eq!(stamp.len, std::fs::metadata(&path).unwrap().len());
     let back = load(&path).unwrap();
     assert_eq!(markers(&back), ["P1", "P2", "P3"]);
@@ -80,9 +81,9 @@ fn save_refuses_externally_changed_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.pdf");
     let mut doc = load_bytes(&pdf_n(1)).unwrap();
-    let stamp = save(&mut doc, &path, None).unwrap();
+    let stamp = save(&mut doc, &path, Expect::Anything).unwrap();
     std::fs::write(&path, b"someone else").unwrap();
-    let err = save(&mut doc, &path, Some(&stamp)).unwrap_err();
+    let err = save(&mut doc, &path, Expect::Unchanged(&stamp)).unwrap_err();
     assert!(
         matches!(
             err,

@@ -24,7 +24,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use kernkraft_fs::write_bytes_atomic;
+use kernkraft_fs::{write_bytes_atomic, Expect};
 use md5::{Digest, Md5};
 use percent_encoding::{percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
@@ -289,7 +289,8 @@ fn store(
             .create(dir)
             .map_err(|e| ThumbError::io(dir, e))?;
     }
-    write_bytes_atomic(target, None, &bytes)?;
+    // Only the cache writes here, so whatever is at the name is a thumbnail to replace.
+    write_bytes_atomic(target, Expect::Anything, &bytes)?;
     // The atomic writer keeps an existing file's mode and gives a new file
     // 0666 less the umask, so the mode is set here either way.
     fs::set_permissions(target, Permissions::from_mode(FILE_MODE))

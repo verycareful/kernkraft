@@ -10,6 +10,7 @@ mod common;
 use std::fs;
 
 use common::{env, w};
+use kernkraft_tauri::WireExpect;
 
 #[test]
 fn text_open_save_round_trip_crlf() {
@@ -31,7 +32,9 @@ fn text_open_save_round_trip_crlf() {
             "one\ntwo\nthree\n".to_owned(),
             opened.ending.clone(),
             opened.bom,
-            Some(opened.stamp.clone()),
+            WireExpect::Unchanged {
+                stamp: opened.stamp.clone(),
+            },
         )
         .unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"one\r\ntwo\r\nthree\r\n");
@@ -81,19 +84,21 @@ fn text_save_stale_stamp_errors() {
             "mine, edited\n".to_owned(),
             "lf".to_owned(),
             false,
-            Some(opened.stamp.clone()),
+            WireExpect::Unchanged {
+                stamp: opened.stamp.clone(),
+            },
         )
         .unwrap_err();
     assert_eq!(err.kind, "ExternalModification");
     assert_eq!(fs::read_to_string(&path).unwrap(), "theirs, longer\n");
 
-    // Saving without a stamp is the user's explicit overwrite.
+    // Expecting anything is the user's explicit overwrite.
     e.kk.text_save(
         w(&path),
         "mine, edited\n".to_owned(),
         "lf".to_owned(),
         false,
-        None,
+        WireExpect::Anything,
     )
     .unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "mine, edited\n");
@@ -107,8 +112,14 @@ fn text_save_refuses_unknown_ending_and_open_refuses_large() {
     let e = env();
     let path = e.dir("t").join("a.txt");
     let err =
-        e.kk.text_save(w(&path), String::new(), "cr".to_owned(), false, None)
-            .unwrap_err();
+        e.kk.text_save(
+            w(&path),
+            String::new(),
+            "cr".to_owned(),
+            false,
+            WireExpect::Anything,
+        )
+        .unwrap_err();
     assert_eq!(err.kind, "InvalidArgument");
     assert!(!path.exists());
 
@@ -146,22 +157,36 @@ fn text_save_refuses_to_replace_lossy_content() {
             opened.text.clone(),
             opened.ending.clone(),
             opened.bom,
-            Some(opened.stamp.clone()),
+            WireExpect::Unchanged {
+                stamp: opened.stamp.clone(),
+            },
         )
         .unwrap_err();
     assert_eq!(err.kind, "ReadOnly");
     assert_eq!(err.path, Some(w(&path)));
-    // An explicit overwrite (no stamp) of that file is refused too.
+    // An explicit overwrite of that file is refused too.
     let err =
-        e.kk.text_save(w(&path), "new\n".to_owned(), "lf".to_owned(), false, None)
-            .unwrap_err();
+        e.kk.text_save(
+            w(&path),
+            "new\n".to_owned(),
+            "lf".to_owned(),
+            false,
+            WireExpect::Anything,
+        )
+        .unwrap_err();
     assert_eq!(err.kind, "ReadOnly");
     assert_eq!(fs::read(&path).unwrap(), original);
 
     // Save As of the same text to a new path works.
     let copy = e.dir("t").join("copy.txt");
-    e.kk.text_save(w(&copy), opened.text, "lf".to_owned(), false, None)
-        .unwrap();
+    e.kk.text_save(
+        w(&copy),
+        opened.text,
+        "lf".to_owned(),
+        false,
+        WireExpect::Nothing,
+    )
+    .unwrap();
     assert!(copy.is_file());
 }
 
@@ -183,7 +208,9 @@ fn text_save_refuses_a_write_protected_file() {
             "lost\n".to_owned(),
             "lf".to_owned(),
             false,
-            Some(opened.stamp),
+            WireExpect::Unchanged {
+                stamp: opened.stamp,
+            },
         )
         .unwrap_err();
     assert_eq!(err.kind, "ReadOnly");
@@ -192,4 +219,36 @@ fn text_save_refuses_a_write_protected_file() {
         serde_json::json!({"k": "ReadOnly", "reason": "NoWritePermission"})
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), "keep\n");
+}
+
+#[test]
+fn text_save_expecting_nothing_creates_and_never_replaces() {
+    let e = env();
+    let path = e.dir("t").join("new.txt");
+    let stamp =
+        e.kk.text_save(
+            w(&path),
+            "one\n".to_owned(),
+            "crlf".to_owned(),
+            false,
+            WireExpect::Nothing,
+        )
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"one\r\n");
+    // The returned stamp is what an open of the new file gives.
+    assert_eq!(e.kk.text_open(w(&path)).unwrap().stamp, stamp);
+
+    // Something is there now: nothing is written and the reason is Exists.
+    let err =
+        e.kk.text_save(
+            w(&path),
+            "two\n".to_owned(),
+            "lf".to_owned(),
+            false,
+            WireExpect::Nothing,
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, "Exists");
+    assert_eq!(err.path, Some(w(&path)));
+    assert_eq!(fs::read(&path).unwrap(), b"one\r\n");
 }

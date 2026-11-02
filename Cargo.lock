@@ -96,9 +96,9 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+checksum = "f426a31126c735126297bc5ea7a521263c9faff4f63ca415267ee625651c4f37"
 dependencies = [
  "async-task",
  "concurrent-queue",
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-bus"
-version = "0.1.1+0.46"
+version = "0.1.1+0.47"
 dependencies = [
  "thiserror 2.0.21",
  "zbus",
@@ -2229,7 +2229,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-fs"
-version = "0.1.1+0.46"
+version = "0.1.1+0.47"
 dependencies = [
  "chrono",
  "percent-encoding",
@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-pdf"
-version = "0.1.1+0.46"
+version = "0.1.1+0.47"
 dependencies = [
  "kernkraft-fs",
  "lopdf",
@@ -2251,7 +2251,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-tauri"
-version = "0.1.1+0.46"
+version = "0.1.1+0.47"
 dependencies = [
  "base64 0.22.1",
  "inotify",
@@ -2274,7 +2274,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-text"
-version = "0.1.1+0.46"
+version = "0.1.1+0.47"
 dependencies = [
  "kernkraft-fs",
  "rustix",
@@ -2284,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-theme"
-version = "0.1.1+0.46"
+version = "0.1.1+0.47"
 dependencies = [
  "inotify",
  "kernkraft-bus",
@@ -2299,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-thumb"
-version = "0.1.1+0.46"
+version = "0.1.1+0.47"
 dependencies = [
  "flate2",
  "image",
@@ -2315,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-volumes"
-version = "0.1.1+0.46"
+version = "0.1.1+0.47"
 dependencies = [
  "kernkraft-bus",
  "rustix",
@@ -2327,7 +2327,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-xdg-apps"
-version = "0.1.1+0.46"
+version = "0.1.1+0.47"
 dependencies = [
  "kernkraft-fs",
  "percent-encoding",

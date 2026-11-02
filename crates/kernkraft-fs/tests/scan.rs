@@ -34,6 +34,26 @@ fn list_dir_hides_dotfiles_by_default() {
 }
 
 #[test]
+fn an_entry_carries_its_permission_bits() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("f");
+    fs::write(&file, "").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+    let sticky = dir.path().join("s");
+    fs::create_dir(&sticky).unwrap();
+    fs::set_permissions(&sticky, fs::Permissions::from_mode(0o1755)).unwrap();
+    symlink("f", dir.path().join("l")).unwrap();
+    let entries = list_dir(dir.path(), false).unwrap();
+    let mode = |n: &str| entries.iter().find(|e| e.name == n).unwrap().mode;
+    assert_eq!(mode("f"), 0o640);
+    // The sticky, setuid and setgid bits are kept; the file type bits are not.
+    assert_eq!(mode("s"), 0o1755);
+    // A symlink's own mode: Linux gives every link 0777 (symlink(7)).
+    assert_eq!(mode("l"), 0o777);
+    assert_eq!(Entry::of(&file).unwrap().mode, 0o640);
+}
+
+#[test]
 fn list_dir_marks_symlink_targets() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("d")).unwrap();

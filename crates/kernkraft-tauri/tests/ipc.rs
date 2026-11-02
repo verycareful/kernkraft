@@ -9,6 +9,7 @@
 mod common;
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 
 use common::{env, invoke, w, Env};
 use kernkraft_tauri::{EVENT_OP_DONE, EVENT_SEARCH_HIT, EVENT_THEME_CHANGED, EVENT_THUMB};
@@ -80,6 +81,7 @@ fn ipc_list_dir() {
             "kind",
             "len",
             "mime",
+            "mode",
             "modified_ms",
             "name",
             "path",
@@ -716,6 +718,21 @@ fn ipc_open_terminal() {
         ),
         "Io",
     );
+}
+
+#[test]
+fn ipc_entry_of() {
+    let (e, v) = setup();
+    let dir = e.dir("d");
+    fs::write(dir.join("a.txt"), "12").unwrap();
+    fs::set_permissions(dir.join("a.txt"), fs::Permissions::from_mode(0o600)).unwrap();
+    let listed = invoke(&v, "list_dir", json!({"path": wp(&dir), "hidden": false})).unwrap();
+    let one = invoke(&v, "entry_of", json!({"path": wp(&dir.join("a.txt"))})).unwrap();
+    // The same entry the folder's listing gives.
+    assert_eq!(one, listed[0]);
+    assert_eq!(one["mode"], 0o600);
+    let gone = invoke(&v, "entry_of", json!({"path": wp(&dir.join("gone"))})).unwrap_err();
+    assert_eq!(gone["kind"], "NotFound");
 }
 
 #[test]

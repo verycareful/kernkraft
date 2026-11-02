@@ -107,6 +107,7 @@ pub fn init_with<R: Runtime>(config: Config) -> TauriPlugin<R> {
             commands::set_default_app,
             commands::open_terminal,
             commands::mime_of,
+            commands::entry_of,
             commands::volumes_list,
             commands::volumes_problems_take,
             commands::volume_mount,

@@ -38,6 +38,15 @@ fn origin<R: Runtime>(window: &Window<R>) -> Option<String> {
 }
 
 #[tauri::command]
+pub(crate) async fn entry_of<R: Runtime>(
+    app: AppHandle<R>,
+    path: WirePath,
+) -> Result<WireEntry, WireError> {
+    let kk: Kernkraft<R> = app.kernkraft();
+    blocking(move || kk.entry_of(path)).await
+}
+
+#[tauri::command]
 pub(crate) async fn list_dir<R: Runtime>(
     app: AppHandle<R>,
     path: WirePath,

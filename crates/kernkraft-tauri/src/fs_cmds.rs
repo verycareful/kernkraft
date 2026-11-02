@@ -49,6 +49,9 @@ pub struct WireEntry {
     pub modified_ms: Option<i64>,
     pub hidden: bool,
     pub mime: String,
+    /// The permission bits (`st_mode & 07777`) of the entry itself; see
+    /// `kernkraft_fs::Entry::mode`.
+    pub mode: u32,
 }
 
 impl WireEntry {
@@ -68,6 +71,7 @@ impl WireEntry {
             len: e.len,
             modified_ms: e.modified.map(epoch_ms),
             hidden: e.hidden,
+            mode: e.mode,
         }
     }
 }
@@ -253,6 +257,14 @@ impl<R: Runtime> Kernkraft<R> {
             .into_iter()
             .map(|e| WireEntry::new(e, mime))
             .collect())
+    }
+
+    /// The entry for `path` itself, as the listing of its folder gives it
+    /// (a symlink described, not followed).
+    pub fn entry_of(&self, path: WirePath) -> Result<WireEntry, WireError> {
+        let path = PathBuf::try_from(path)?;
+        let mime = self.mime()?;
+        Ok(WireEntry::new(Entry::of(&path)?, mime))
     }
 
     /// Creates folder `parent/name`, refusing an existing name, and

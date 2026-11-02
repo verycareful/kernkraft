@@ -10,6 +10,7 @@
 /// (`plugin:kernkraft-tauri|<name>`).
 pub const COMMANDS: &[&str] = &[
     "list_dir",
+    "entry_of",
     "create_dir",
     "create_file",
     "rename",

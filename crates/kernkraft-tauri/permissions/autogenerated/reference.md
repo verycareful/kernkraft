@@ -5,6 +5,7 @@ Allows every kernkraft command
 #### This default permission set includes the following:
 
 - `allow-list-dir`
+- `allow-entry-of`
 - `allow-create-dir`
 - `allow-create-file`
 - `allow-rename`
@@ -258,6 +259,32 @@ Enables the documents command without any pre-configured scope.
 <td>
 
 Denies the documents command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-entry-of`
+
+</td>
+<td>
+
+Enables the entry_of command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-entry-of`
+
+</td>
+<td>
+
+Denies the entry_of command without any pre-configured scope.
 
 </td>
 </tr>

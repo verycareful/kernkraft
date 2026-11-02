@@ -17,6 +17,10 @@ use std::time::SystemTime;
 
 use crate::{FsError, Progress};
 
+/// The permission bits of `st_mode`: S_ISUID | S_ISGID | S_ISVTX | S_IRWXU |
+/// S_IRWXG | S_IRWXO (POSIX.1-2017, <sys/stat.h>). The rest is the file type.
+const PERMISSION_BITS: u32 = 0o7777;
+
 /// Depth a scan descends to unless told otherwise: deep enough for real
 /// document trees, shallow enough to stay quick on a home directory.
 pub const DEFAULT_MAX_DEPTH: u32 = 12;
@@ -45,6 +49,10 @@ pub struct Entry {
     pub modified: Option<SystemTime>,
     /// The name starts with `.`.
     pub hidden: bool,
+    /// The permission bits of the entry itself (`st_mode & 07777`: owner,
+    /// group and other, with setuid, setgid and sticky), as `lstat(2)` gives
+    /// them. A symlink's are its own, which Linux fixes at 0777 (symlink(7)).
+    pub mode: u32,
 }
 
 impl Entry {
@@ -82,6 +90,7 @@ impl Entry {
             target_is_dir,
             len: meta.len(),
             modified: meta.modified().ok(),
+            mode: meta.mode() & PERMISSION_BITS,
             path,
         }
     }

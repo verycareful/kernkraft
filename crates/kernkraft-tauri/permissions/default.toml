@@ -5,6 +5,7 @@
 description = "Allows every kernkraft command"
 permissions = [
     "allow-list-dir",
+    "allow-entry-of",
     "allow-create-dir",
     "allow-create-file",
     "allow-rename",

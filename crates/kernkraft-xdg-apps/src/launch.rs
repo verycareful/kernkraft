@@ -10,15 +10,16 @@
 //! write to the user's `mimeapps.list`).
 
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::desktop_entry::DesktopEntry;
 use crate::error::AppsError;
-use crate::exec::expand_exec;
+use crate::exec::{expand_exec, Targets};
 use crate::terminal::terminal_command_for;
 
-/// Starts `entry` for `files`, detached from this process.
+/// Starts `entry` for `targets` (files, or one URL), detached from this
+/// process.
 ///
 /// One program per [`expand_exec`] argument vector. The working directory is
 /// the entry's `Path`, else `cwd`, else this process's. With `Terminal=true`
@@ -29,21 +30,21 @@ use crate::terminal::terminal_command_for;
 /// needed, the first failure stops the rest.
 pub fn launch(
     entry: &DesktopEntry,
-    files: &[PathBuf],
+    targets: Targets<'_>,
     cwd: Option<&Path>,
 ) -> Result<(), AppsError> {
-    launch_in_terminal(entry, files, cwd, None)
+    launch_in_terminal(entry, targets, cwd, None)
 }
 
 /// As [`launch`], with `terminal_setting` as the last choice of terminal for
 /// a `Terminal=true` entry (see [`crate::terminal_command`]).
 pub fn launch_in_terminal(
     entry: &DesktopEntry,
-    files: &[PathBuf],
+    targets: Targets<'_>,
     cwd: Option<&Path>,
     terminal_setting: Option<&str>,
 ) -> Result<(), AppsError> {
-    let launches = expand_exec(entry, files)?;
+    let launches = expand_exec(entry, targets)?;
     let dir = entry.path.as_deref().or(cwd);
     for argv in launches {
         let cmd = if entry.terminal {

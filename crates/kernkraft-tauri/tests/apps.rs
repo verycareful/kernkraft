@@ -26,6 +26,7 @@ use common::{env, w, Env, EVENT_WAIT};
 
 /// Programs the stubs stand in for. Each records into `<log>/<name>.<pid>`.
 const STUBS: &[&str] = &[
+    "rec-browser",
     "rec-open",
     "rec-launch",
     "rec-terminal-app",
@@ -363,4 +364,78 @@ fn launch_app_passes_non_utf8_names_as_their_bytes() {
     let got = raw_records("rec-launch", b"nonutf8-launch");
     assert_eq!(got.len(), 1);
     assert_eq!(got[0][1..], [odd.as_os_str().as_bytes().to_vec()]);
+}
+
+// ---- open_url ----
+
+fn browser(e: &Env, exec: &str) {
+    desktop(
+        e,
+        "browser.desktop",
+        &format!("[Desktop Entry]\nType=Application\nName=Browser\nExec={exec}\n"),
+    );
+    mimeapps(
+        e,
+        "[Default Applications]\nx-scheme-handler/https=browser.desktop\n",
+    );
+}
+
+#[test]
+fn open_url_starts_the_default_for_https_with_the_url_as_it_is() {
+    stubs();
+    let e = env();
+    browser(&e, "rec-browser --new-tab %u");
+    let url = "https://github.com/verycareful/kern?from=open-url-test#readme";
+    e.kk.open_url(url.to_owned(), None).unwrap();
+    let got = records("rec-browser", "open-url-test", 1);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0][1..], ["--new-tab", url]);
+}
+
+#[test]
+fn open_url_refuses_anything_but_an_https_url_and_starts_nothing() {
+    stubs();
+    let e = env();
+    browser(&e, "rec-browser %u");
+    for bad in [
+        "http://refused-scheme.example/",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "HTTPS://refused-case.example/",
+        "https://",
+        "https:///refused-no-host",
+        "https://refused space.example/",
+        "https://refused-quote.example/\"x",
+        "https://refused-newline.example/\n",
+        "https://refused-non-ascii.example/\u{e4}",
+        "https://refused-backslash.example\\x",
+        "",
+    ] {
+        let err = e.kk.open_url(bad.to_owned(), None).unwrap_err();
+        assert_eq!(err.kind, "InvalidArgument", "{bad:?}");
+    }
+    assert!(no_records("rec-browser", "refused"));
+}
+
+#[test]
+fn open_url_without_a_default_for_https_says_so() {
+    stubs();
+    let e = env();
+    mimeapps(&e, "[Default Applications]\n");
+    let err =
+        e.kk.open_url("https://example.org/no-handler".to_owned(), None)
+            .unwrap_err();
+    assert_eq!(err.kind, "NoUrlHandler");
+}
+
+#[test]
+fn open_url_refuses_a_default_that_takes_only_files() {
+    stubs();
+    let e = env();
+    browser(&e, "rec-browser %F");
+    let err =
+        e.kk.open_url("https://example.org/files-only-test".to_owned(), None)
+            .unwrap_err();
+    assert_eq!(err.kind, "NoUrlArgument");
+    assert!(no_records("rec-browser", "files-only-test"));
 }

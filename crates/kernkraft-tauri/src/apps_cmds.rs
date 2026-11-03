@@ -24,7 +24,7 @@
 use std::path::PathBuf;
 
 use kernkraft_xdg_apps::{
-    launch_in_terminal, open_terminal, set_default, AppRegistry, DesktopEntry, MimeDb,
+    launch_in_terminal, open_terminal, set_default, AppRegistry, DesktopEntry, MimeDb, Targets,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
@@ -47,6 +47,25 @@ pub struct WireApp {
     /// `NoDisplay=true`: it should not appear in menus of all applications.
     pub no_display: bool,
     pub mime_types: Vec<String>,
+}
+
+/// The one scheme [`Kernkraft::open_url`] hands on: the links Kern shows (its
+/// source, its sibling apps) are HTTPS pages.
+const URL_SCHEME: &str = "https";
+
+/// Whether `url` is `https://` with a non-empty host, every character in
+/// RFC 3986's unreserved and reserved sets or a `%` of a percent-encoding
+/// (section 2). Spaces, controls, quotes and anything outside ASCII are not.
+fn is_https_url(url: &str) -> bool {
+    const RESERVED_AND_UNRESERVED: &str = "-._~:/?#[]@!$&'()*+,;=%";
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    !host.is_empty()
+        && url
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || RESERVED_AND_UNRESERVED.contains(c))
 }
 
 impl From<&DesktopEntry> for WireApp {
@@ -163,7 +182,7 @@ impl<R: Runtime> Kernkraft<R> {
             .ok_or_else(|| PluginError::UnknownApp(id.clone()))?;
         Ok(launch_in_terminal(
             entry,
-            &paths,
+            Targets::Files(&paths),
             None,
             terminal.as_deref(),
         )?)
@@ -197,9 +216,45 @@ impl<R: Runtime> Kernkraft<R> {
             }
         }
         for (app, group) in groups {
-            launch_in_terminal(app, &group, None, terminal.as_deref())?;
+            launch_in_terminal(app, Targets::Files(&group), None, terminal.as_deref())?;
         }
         Ok(())
+    }
+
+    /// Opens `url` with the default application for its scheme, launched
+    /// with the URL. A scheme's default is set like a MIME type's, as
+    /// `x-scheme-handler/<scheme>` (MIME Applications Associations 1.0.1),
+    /// and the application takes the URL through `%u` or `%U` (Desktop Entry
+    /// Specification 1.5, "The Exec key"); one that takes only files is
+    /// refused with `NoUrlArgument`, since Kern downloads nothing. Kern
+    /// connects to nothing: the application started does.
+    ///
+    /// Only an `https` URL with a host, made of RFC 3986 characters (section
+    /// 2), is taken; anything else is `InvalidArgument` and nothing is
+    /// started. `NoUrlHandler` when no default application is set for the
+    /// scheme. `terminal` is the user's Terminal setting, as for
+    /// [`Kernkraft::launch_app`].
+    pub fn open_url(&self, url: String, terminal: Option<String>) -> Result<(), WireError> {
+        if !is_https_url(&url) {
+            return Err(WireError::from(PluginError::InvalidArgument {
+                what: "https URL",
+                value: url,
+            }));
+        }
+        let db = self.mime()?;
+        let registry = self.registry()?;
+        let handler = format!("x-scheme-handler/{URL_SCHEME}");
+        let Some(app) = registry.default_for(&handler, db) else {
+            return Err(WireError::from(PluginError::NoUrlHandler {
+                scheme: URL_SCHEME.to_owned(),
+            }));
+        };
+        Ok(launch_in_terminal(
+            app,
+            Targets::Url(&url),
+            None,
+            terminal.as_deref(),
+        )?)
     }
 
     /// Makes application `id` the default for `mime`, through

@@ -40,6 +40,7 @@ pub const COMMANDS: &[&str] = &[
     "all_apps",
     "launch_app",
     "open_default",
+    "open_url",
     "set_default_app",
     "open_terminal",
     "mime_of",

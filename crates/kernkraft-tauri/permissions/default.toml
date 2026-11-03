@@ -35,6 +35,7 @@ permissions = [
     "allow-all-apps",
     "allow-launch-app",
     "allow-open-default",
+    "allow-open-url",
     "allow-set-default-app",
     "allow-open-terminal",
     "allow-mime-of",

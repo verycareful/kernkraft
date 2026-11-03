@@ -166,6 +166,10 @@ pub enum PluginError {
     /// "Open with" instead.
     #[error("no default application opens {} ({mime})", path.display())]
     NoDefaultApp { path: PathBuf, mime: String },
+    /// No default application is set for the URL scheme (no
+    /// `x-scheme-handler/<scheme>` default).
+    #[error("no default application opens {scheme} links")]
+    NoUrlHandler { scheme: String },
     /// A device to mount that UDisks does not list as unmounted now.
     #[error("UDisks lists no unmounted filesystem {0:?}")]
     UnknownDevice(String),
@@ -198,6 +202,7 @@ impl From<PluginError> for WireError {
             PluginError::NotInTrash(path) => ("NotInTrash", Some(path)),
             PluginError::UnknownApp(_) => ("UnknownApp", None),
             PluginError::NoDefaultApp { path, .. } => ("NoDefaultApp", Some(path)),
+            PluginError::NoUrlHandler { .. } => ("NoUrlHandler", None),
             PluginError::UnknownDevice(_) => ("UnknownDevice", None),
             PluginError::Watch { path, .. } => ("Watch", Some(path)),
             PluginError::ProblemsNotShown { .. } => ("ProblemsNotShown", None),
@@ -319,6 +324,7 @@ impl From<&AppsError> for WireError {
             AppsError::MalformedMimeApps { path, .. } => ("MalformedMimeApps", Some(path)),
             AppsError::InvalidExec { .. } => ("InvalidExec", None),
             AppsError::NoFileArgument { .. } => ("NoFileArgument", None),
+            AppsError::NoUrlArgument { .. } => ("NoUrlArgument", None),
             AppsError::Launch { .. } => ("Launch", None),
             AppsError::XdgMime { .. } => ("XdgMime", None),
             AppsError::NoTerminal { .. } => ("NoTerminal", None),

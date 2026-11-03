@@ -20,7 +20,7 @@ use std::time::SystemTime;
 use rustix::fs::{fchown, Gid, Uid};
 use rustix::io::Errno;
 
-use crate::sys::parent_dir;
+use crate::sys::{parent_dir, rename_noreplace};
 use crate::xattr::copy_all;
 use crate::FsError;
 
@@ -119,9 +119,11 @@ pub enum Expect<'a> {
 /// [`FsError::OwnershipNotKept`], and one that cannot set an attribute with
 /// [`FsError::XattrsNotKept`].
 ///
-/// On any error, including one returned by `write`, the target and its
-/// directory are left exactly as they were. Returns the stamp of the file
-/// now on disk.
+/// An error up to and including the final rename, one returned by `write`
+/// among them, leaves the target and its directory exactly as they were.
+/// After the rename the new contents are in place, so a failed folder
+/// `fsync` or stamp is an error with the file written. Returns the stamp of
+/// the file now on disk.
 pub fn write_atomic(
     path: &Path,
     expect: Expect<'_>,
@@ -231,9 +233,12 @@ fn keep_ownership(
 }
 
 /// [`write_atomic`] with [`Expect::Nothing`]: a temp file in the folder of
-/// `path`, flushed and `fsync`ed, renamed to `path` only if nothing is there,
-/// then the folder `fsync`ed so the new name survives a crash. On any error
-/// the folder is left as it was: no file at `path`, no temp file.
+/// `path`, flushed and `fsync`ed, renamed to `path` only if nothing is there
+/// ([`rename_noreplace`]), then the folder `fsync`ed so the new name
+/// survives a crash. An error up to and including the rename leaves the
+/// folder as it was: no file at `path`, no temp file. After the rename the
+/// file is in place, so a failed folder `fsync` or stamp is an error with
+/// the new file written.
 fn create_new(
     path: &Path,
     write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
@@ -257,15 +262,19 @@ fn create_new(
     out.flush().map_err(fail)?;
     drop(out);
     temp.as_file().sync_all().map_err(fail)?;
-    temp.persist_noclobber(path).map_err(|e| {
-        if e.error.kind() == ErrorKind::AlreadyExists {
+    // Dropped on a failed rename, the temp file is removed; after a rename
+    // its old name is gone, and it is kept so nothing else is removed by it.
+    let temp = temp.into_temp_path();
+    rename_noreplace(&temp, path).map_err(|e| {
+        if e.kind() == ErrorKind::AlreadyExists {
             FsError::Exists {
                 path: path.to_path_buf(),
             }
         } else {
-            FsError::io(path, e.error)
+            FsError::io(path, e)
         }
     })?;
+    temp.keep().map_err(|e| FsError::io(path, e.error))?;
     File::open(dir)
         .and_then(|d| d.sync_all())
         .map_err(|source| FsError::io(dir, source))?;

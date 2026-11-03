@@ -360,3 +360,20 @@ fn trailing_bytes_after_eof_load() {
     bytes.extend_from_slice(b"\njunk");
     assert_eq!(page_count(&load_bytes(&bytes).unwrap()), 1);
 }
+
+#[test]
+fn save_expecting_nothing_creates_and_never_replaces() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("new.pdf");
+    let mut doc = load_bytes(&pdf_n(2)).unwrap();
+    save(&mut doc, &path, Expect::Nothing).unwrap();
+    assert_eq!(markers(&load(&path).unwrap()), ["P1", "P2"]);
+
+    std::fs::write(&path, b"someone else").unwrap();
+    let err = save(&mut doc, &path, Expect::Nothing).unwrap_err();
+    assert!(
+        matches!(err, PdfError::Fs(kernkraft_fs::FsError::Exists { .. })),
+        "{err:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"someone else");
+}

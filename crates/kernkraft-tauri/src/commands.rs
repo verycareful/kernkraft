@@ -325,6 +325,16 @@ pub(crate) async fn open_default<R: Runtime>(
 }
 
 #[tauri::command]
+pub(crate) async fn open_url<R: Runtime>(
+    app: AppHandle<R>,
+    url: String,
+    terminal: Option<String>,
+) -> Result<(), WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.open_url(url, terminal)).await
+}
+
+#[tauri::command]
 pub(crate) async fn set_default_app<R: Runtime>(
     app: AppHandle<R>,
     id: String,

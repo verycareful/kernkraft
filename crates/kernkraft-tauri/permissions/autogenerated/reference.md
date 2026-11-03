@@ -35,6 +35,7 @@ Allows every kernkraft command
 - `allow-all-apps`
 - `allow-launch-app`
 - `allow-open-default`
+- `allow-open-url`
 - `allow-set-default-app`
 - `allow-open-terminal`
 - `allow-mime-of`
@@ -415,6 +416,32 @@ Enables the open_terminal command without any pre-configured scope.
 <td>
 
 Denies the open_terminal command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-open-url`
+
+</td>
+<td>
+
+Enables the open_url command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-open-url`
+
+</td>
+<td>
+
+Denies the open_url command without any pre-configured scope.
 
 </td>
 </tr>

@@ -22,7 +22,7 @@ mod terminal;
 
 pub use desktop_entry::{desktop_id, parse_desktop_entry, DesktopEntry};
 pub use error::AppsError;
-pub use exec::expand_exec;
+pub use exec::{expand_exec, Targets};
 pub use launch::{launch, launch_in_terminal, set_default, set_default_command};
 pub use mime::{MimeDb, SNIFF_LEN};
 pub use mimeapps::AppRegistry;

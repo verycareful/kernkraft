@@ -18,10 +18,14 @@
 //! - An argument that is only `%f`, `%F`, `%u` or `%U` and has no file to
 //!   take is removed.
 //!
-//! File paths are `OsString` throughout: a path is arbitrary bytes on Linux
-//! and must reach the program unchanged, so it is not forced through UTF-8.
-//! URLs (`%u`, `%U`) are `file://` followed by the absolute path with every
-//! byte outside RFC 3986 unreserved characters and `/` written as `%XX`.
+//! A launch hands the application either local files or one URL
+//! ([`Targets`]). File paths are `OsString` throughout: a path is arbitrary
+//! bytes on Linux and must reach the program unchanged, so it is not forced
+//! through UTF-8. A file given to `%u` or `%U` is `file://` followed by the
+//! absolute path with every byte outside RFC 3986 unreserved characters and
+//! `/` written as `%XX`; a URL is given as it is. The specification lets a
+//! launcher download a URL for an application that takes only files; Kern
+//! does not, and refuses such a launch.
 
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -41,6 +45,23 @@ const URI_KEEP: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'~')
     .remove(b'/');
 
+/// What a launch hands the application.
+#[derive(Clone, Copy, Debug)]
+pub enum Targets<'a> {
+    /// Local files: `%f` and `%F` take their paths, `%u` and `%U` their
+    /// `file://` URLs.
+    Files(&'a [PathBuf]),
+    /// One URL, for `%u` or `%U`, passed as it is.
+    Url(&'a str),
+}
+
+/// One file or URL of a launch.
+#[derive(Clone, Copy, Debug)]
+enum Item<'a> {
+    File(&'a PathBuf),
+    Url(&'a str),
+}
+
 /// Field codes the specification lists as deprecated: removed, not an error.
 const DEPRECATED: &[char] = &['d', 'D', 'n', 'N', 'v', 'm'];
 
@@ -59,18 +80,19 @@ struct Arg {
     quoted: bool,
 }
 
-/// Expands `entry.exec` into one argument vector per launch.
+/// Expands `entry.exec` into one argument vector per launch for `targets`.
 ///
 /// `%f` and `%u` start the program once per file; `%F` and `%U` start it
 /// once with all files; with no file code and no files it starts once. With
 /// no file code and files given the result is [`AppsError::NoFileArgument`]:
 /// an application without a file code takes none, and files are never
-/// appended. A single-file code together with a list code is invalid, as is
-/// a list code or `%i` inside a longer argument, and an `Exec` that leaves
-/// nothing to run.
+/// appended. A URL needs `%u` or `%U`, else [`AppsError::NoUrlArgument`]. A
+/// single-file code together with a list code is invalid, as is a list code
+/// or `%i` inside a longer argument, and an `Exec` that leaves nothing to
+/// run.
 pub fn expand_exec(
     entry: &DesktopEntry,
-    files: &[PathBuf],
+    targets: Targets<'_>,
 ) -> Result<Vec<Vec<OsString>>, AppsError> {
     let invalid = |reason: &str| AppsError::InvalidExec {
         id: entry.id.clone(),
@@ -114,16 +136,29 @@ pub fn expand_exec(
             }
         }
     }
-    if !single && !multi && !files.is_empty() {
-        return Err(AppsError::NoFileArgument {
-            id: entry.id.clone(),
-        });
-    }
+    let items: Vec<Item<'_>> = match targets {
+        Targets::Files(files) => {
+            if !single && !multi && !files.is_empty() {
+                return Err(AppsError::NoFileArgument {
+                    id: entry.id.clone(),
+                });
+            }
+            files.iter().map(Item::File).collect()
+        }
+        Targets::Url(url) => {
+            if !has(&['u', 'U']) {
+                return Err(AppsError::NoUrlArgument {
+                    id: entry.id.clone(),
+                });
+            }
+            vec![Item::Url(url)]
+        }
+    };
 
-    let launches: Vec<&[PathBuf]> = if single && !files.is_empty() {
-        files.chunks(1).collect()
+    let launches: Vec<&[Item<'_>]> = if single && !items.is_empty() {
+        items.chunks(1).collect()
     } else {
-        vec![files]
+        vec![&items]
     };
     let mut out = Vec::with_capacity(launches.len());
     for group in launches {
@@ -209,17 +244,17 @@ fn tokenize(exec: &str) -> Result<Vec<Arg>, String> {
 }
 
 /// Appends the expansion of one argument for one launch to `argv`.
-fn expand_arg(entry: &DesktopEntry, arg: &Arg, files: &[PathBuf], argv: &mut Vec<OsString>) {
+fn expand_arg(entry: &DesktopEntry, arg: &Arg, items: &[Item<'_>], argv: &mut Vec<OsString>) {
     // The list and icon codes were checked to stand alone.
     if let [Piece::Code(code)] = arg.pieces.as_slice() {
         if !arg.quoted {
             match code {
                 'F' => {
-                    argv.extend(files.iter().map(|f| f.as_os_str().to_owned()));
+                    argv.extend(items.iter().filter_map(path_of));
                     return;
                 }
                 'U' => {
-                    argv.extend(files.iter().map(|f| OsString::from_vec(file_url(f))));
+                    argv.extend(items.iter().map(|i| OsString::from_vec(url_of(i))));
                     return;
                 }
                 'i' => {
@@ -243,14 +278,14 @@ fn expand_arg(entry: &DesktopEntry, arg: &Arg, files: &[PathBuf], argv: &mut Vec
             }
             Piece::Code(code) => match code {
                 'f' => {
-                    if let Some(file) = files.first() {
-                        bytes.extend_from_slice(file.as_os_str().as_bytes());
+                    if let Some(path) = items.first().and_then(path_of) {
+                        bytes.extend_from_slice(path.as_bytes());
                         produced = true;
                     }
                 }
                 'u' => {
-                    if let Some(file) = files.first() {
-                        bytes.extend(file_url(file));
+                    if let Some(item) = items.first() {
+                        bytes.extend(url_of(item));
                         produced = true;
                     }
                 }
@@ -270,6 +305,24 @@ fn expand_arg(entry: &DesktopEntry, arg: &Arg, files: &[PathBuf], argv: &mut Vec
     }
     if produced {
         argv.push(OsString::from_vec(bytes));
+    }
+}
+
+/// The path a file code takes. A URL never reaches a file code:
+/// [`expand_exec`] refuses a URL launch without `%u` or `%U`, and a single
+/// and a list code together.
+fn path_of(item: &Item<'_>) -> Option<OsString> {
+    match item {
+        Item::File(path) => Some(path.as_os_str().to_owned()),
+        Item::Url(_) => None,
+    }
+}
+
+/// What a URL code takes: a URL as given, a file as its `file://` URL.
+fn url_of(item: &Item<'_>) -> Vec<u8> {
+    match item {
+        Item::File(path) => file_url(path),
+        Item::Url(url) => url.as_bytes().to_vec(),
     }
 }
 

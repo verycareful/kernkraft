@@ -104,6 +104,7 @@ pub fn init_with<R: Runtime>(config: Config) -> TauriPlugin<R> {
             commands::all_apps,
             commands::launch_app,
             commands::open_default,
+            commands::open_url,
             commands::set_default_app,
             commands::open_terminal,
             commands::mime_of,

@@ -39,6 +39,10 @@ pub enum AppsError {
     /// code; such an application takes none.
     #[error("{id}: Exec has no file field code, so it cannot be given files")]
     NoFileArgument { id: String },
+    /// A URL was given to an application whose `Exec` takes no URL (no `%u`
+    /// or `%U`); Kern does not download it to hand over a file.
+    #[error("{id}: Exec has no URL field code, so it cannot be given a URL")]
+    NoUrlArgument { id: String },
     /// A program could not be started. `id` is the desktop file ID, or the
     /// program's name for a terminal or `xdg-mime`.
     #[error("{id}: cannot start: {source}")]

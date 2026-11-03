@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use kernkraft_xdg_apps::{launch, AppsError, DesktopEntry};
+use kernkraft_xdg_apps::{launch, AppsError, DesktopEntry, Targets};
 
 fn entry(exec: String) -> DesktopEntry {
     DesktopEntry {
@@ -39,7 +39,12 @@ fn launch_runs_detached_in_cwd_with_files() {
     .unwrap();
     let e = entry(format!("/bin/sh {} %F", script.display()));
     let file = work.path().join("f.txt");
-    launch(&e, std::slice::from_ref(&file), Some(work.path())).unwrap();
+    launch(
+        &e,
+        Targets::Files(std::slice::from_ref(&file)),
+        Some(work.path()),
+    )
+    .unwrap();
 
     let out = work.path().join("out.txt");
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -63,6 +68,6 @@ fn launch_runs_detached_in_cwd_with_files() {
 #[test]
 fn spawn_failure_is_launch_error() {
     let e = entry("/definitely/not/a/program".to_string());
-    let err = launch(&e, &[], None).unwrap_err();
+    let err = launch(&e, Targets::Files(&[]), None).unwrap_err();
     assert!(matches!(err, AppsError::Launch { ref id, .. } if id == "stub.desktop"));
 }

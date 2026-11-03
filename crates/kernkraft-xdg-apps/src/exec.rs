@@ -17,6 +17,10 @@
 //!   invalid.
 //! - An argument that is only `%f`, `%F`, `%u` or `%U` and has no file to
 //!   take is removed.
+//! - Field codes must not be used inside a quoted argument; the result is
+//!   undefined. Kern refuses such an entry: a quoted argument is where a
+//!   shell command line sits (`sh -c "app %f"`), and a file name or URL
+//!   expanded there would be read by the shell as code.
 //!
 //! A launch hands the application either local files or one URL
 //! ([`Targets`]). File paths are `OsString` throughout: a path is arbitrary
@@ -87,9 +91,9 @@ struct Arg {
 /// no file code and files given the result is [`AppsError::NoFileArgument`]:
 /// an application without a file code takes none, and files are never
 /// appended. A URL needs `%u` or `%U`, else [`AppsError::NoUrlArgument`]. A
-/// single-file code together with a list code is invalid, as is a list code
-/// or `%i` inside a longer argument, and an `Exec` that leaves nothing to
-/// run.
+/// single-file code together with a list code is invalid, as is a field
+/// code inside a quoted argument, a list code or `%i` inside a longer
+/// argument, and an `Exec` that leaves nothing to run.
 pub fn expand_exec(
     entry: &DesktopEntry,
     targets: Targets<'_>,
@@ -127,7 +131,10 @@ pub fn expand_exec(
         return Err(invalid("both a single-file and a file-list code"));
     }
     for arg in &args {
-        let lone = arg.pieces.len() == 1 && !arg.quoted;
+        if arg.quoted && arg.pieces.iter().any(|p| matches!(p, Piece::Code(_))) {
+            return Err(invalid("a field code inside a quoted argument"));
+        }
+        let lone = arg.pieces.len() == 1;
         for piece in &arg.pieces {
             if let Piece::Code(c @ ('F' | 'U' | 'i')) = piece {
                 if !lone {
@@ -245,27 +252,26 @@ fn tokenize(exec: &str) -> Result<Vec<Arg>, String> {
 
 /// Appends the expansion of one argument for one launch to `argv`.
 fn expand_arg(entry: &DesktopEntry, arg: &Arg, items: &[Item<'_>], argv: &mut Vec<OsString>) {
-    // The list and icon codes were checked to stand alone.
+    // The list and icon codes were checked to stand alone, and no quoted
+    // argument holds a code.
     if let [Piece::Code(code)] = arg.pieces.as_slice() {
-        if !arg.quoted {
-            match code {
-                'F' => {
-                    argv.extend(items.iter().filter_map(path_of));
-                    return;
-                }
-                'U' => {
-                    argv.extend(items.iter().map(|i| OsString::from_vec(url_of(i))));
-                    return;
-                }
-                'i' => {
-                    if let Some(icon) = &entry.icon {
-                        argv.push(OsString::from("--icon"));
-                        argv.push(OsString::from(icon));
-                    }
-                    return;
-                }
-                _ => {}
+        match code {
+            'F' => {
+                argv.extend(items.iter().filter_map(path_of));
+                return;
             }
+            'U' => {
+                argv.extend(items.iter().map(|i| OsString::from_vec(url_of(i))));
+                return;
+            }
+            'i' => {
+                if let Some(icon) = &entry.icon {
+                    argv.push(OsString::from("--icon"));
+                    argv.push(OsString::from(icon));
+                }
+                return;
+            }
+            _ => {}
         }
     }
     let mut bytes: Vec<u8> = Vec::new();
@@ -297,8 +303,7 @@ fn expand_arg(entry: &DesktopEntry, arg: &Arg, items: &[Item<'_>], argv: &mut Ve
                     bytes.extend_from_slice(entry.source.as_os_str().as_bytes());
                     produced = true;
                 }
-                // Removed codes, and list codes that stood alone but are
-                // quoted, expand to nothing.
+                // Removed codes expand to nothing.
                 _ => {}
             },
         }
@@ -308,9 +313,9 @@ fn expand_arg(entry: &DesktopEntry, arg: &Arg, items: &[Item<'_>], argv: &mut Ve
     }
 }
 
-/// The path a file code takes. A URL never reaches a file code:
-/// [`expand_exec`] refuses a URL launch without `%u` or `%U`, and a single
-/// and a list code together.
+/// The path a file code takes. A URL has none, so in a URL launch `%f`
+/// and `%F` take nothing and their arguments are removed, as for any file
+/// code with no file to take.
 fn path_of(item: &Item<'_>) -> Option<OsString> {
     match item {
         Item::File(path) => Some(path.as_os_str().to_owned()),

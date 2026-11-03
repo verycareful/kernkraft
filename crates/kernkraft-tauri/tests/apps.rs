@@ -27,6 +27,7 @@ use common::{env, w, Env, EVENT_WAIT};
 /// Programs the stubs stand in for. Each records into `<log>/<name>.<pid>`.
 const STUBS: &[&str] = &[
     "rec-browser",
+    "rec-shell",
     "rec-open",
     "rec-launch",
     "rec-terminal-app",
@@ -396,7 +397,8 @@ fn open_url_starts_the_default_for_https_with_the_url_as_it_is() {
 fn open_url_refuses_anything_but_an_https_url_and_starts_nothing() {
     stubs();
     let e = env();
-    browser(&e, "rec-browser %u");
+    // Every launch of this handler carries the marker, whatever its URL.
+    browser(&e, "rec-browser open-url-refused %u");
     for bad in [
         "http://refused-scheme.example/",
         "file:///etc/passwd",
@@ -409,12 +411,54 @@ fn open_url_refuses_anything_but_an_https_url_and_starts_nothing() {
         "https://refused-newline.example/\n",
         "https://refused-non-ascii.example/\u{e4}",
         "https://refused-backslash.example\\x",
+        "https://@/refused-userinfo-only",
+        "https://:443/refused-port-only",
+        "https://[/refused-open-bracket",
+        "https://[]/refused-empty-literal",
         "",
     ] {
         let err = e.kk.open_url(bad.to_owned(), None).unwrap_err();
         assert_eq!(err.kind, "InvalidArgument", "{bad:?}");
     }
-    assert!(no_records("rec-browser", "refused"));
+    assert!(no_records("rec-browser", "open-url-refused"));
+}
+
+#[test]
+fn open_url_takes_a_host_after_userinfo_before_a_port_and_in_brackets() {
+    stubs();
+    let e = env();
+    browser(&e, "rec-browser %u");
+    let urls = [
+        "https://user@example.org:8443/open-url-host-test",
+        "https://[2001:db8::1]/open-url-host-test",
+    ];
+    for url in urls {
+        e.kk.open_url(url.to_owned(), None).unwrap();
+    }
+    let got = records("rec-browser", "open-url-host-test", 2);
+    let mut want: Vec<Vec<String>> = urls.iter().map(|u| vec![u.to_string()]).collect();
+    want.sort();
+    let mut seen: Vec<Vec<String>> = got.iter().map(|r| r[1..].to_vec()).collect();
+    seen.sort();
+    assert_eq!(seen, want);
+}
+
+#[test]
+fn open_url_refuses_a_default_that_puts_the_url_in_a_shell_command_line() {
+    stubs();
+    let e = env();
+    // The URL holds shell syntax RFC 3986 allows; inside a quoted argument
+    // a shell would run it, so the entry is refused and nothing starts.
+    browser(&e, "rec-shell -c \"rec-browser %u\"");
+    let err =
+        e.kk.open_url(
+            "https://example.org/$(open-url-shell-test)".to_owned(),
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, "InvalidExec");
+    assert!(no_records("rec-shell", "open-url-shell-test"));
+    assert!(no_records("rec-browser", "open-url-shell-test"));
 }
 
 #[test]

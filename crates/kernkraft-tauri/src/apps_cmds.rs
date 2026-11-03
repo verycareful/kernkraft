@@ -56,12 +56,19 @@ const URL_SCHEME: &str = "https";
 /// Whether `url` is `https://` with a non-empty host, every character in
 /// RFC 3986's unreserved and reserved sets or a `%` of a percent-encoding
 /// (section 2). Spaces, controls, quotes and anything outside ASCII are not.
+/// The host is the authority (section 3.2) after any userinfo and before any
+/// port, an IP literal being what its brackets hold (section 3.2.2).
 fn is_https_url(url: &str) -> bool {
     const RESERVED_AND_UNRESERVED: &str = "-._~:/?#[]@!$&'()*+,;=%";
     let Some(rest) = url.strip_prefix("https://") else {
         return false;
     };
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = authority.rsplit('@').next().unwrap_or_default();
+    let host = match host_port.strip_prefix('[') {
+        Some(literal) => literal.split_once(']').map_or("", |(h, _)| h),
+        None => host_port.split(':').next().unwrap_or_default(),
+    };
     !host.is_empty()
         && url
             .chars()

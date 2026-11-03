@@ -172,6 +172,33 @@ fn field_code_as_program_rejected() {
     assert_eq!(out[0][0], "100%app");
 }
 
+#[test]
+fn a_field_code_inside_a_quoted_argument_is_refused() {
+    // Desktop Entry Specification 1.5, "The Exec key": field codes must not
+    // be used inside a quoted argument.
+    let file = files(&["/f"]);
+    for exec in [
+        r#"sh -c "app %f""#,
+        r#"sh -c "app %u""#,
+        r#"app "--name=%c""#,
+        r#"app "%k""#,
+        r#"app "%F""#,
+        r#"app "%i""#,
+    ] {
+        for targets in [Targets::Files(&file), Targets::Url(URL)] {
+            let r = expand_exec(&entry(exec), targets);
+            assert!(
+                matches!(&r, Err(AppsError::InvalidExec { reason, .. })
+                    if reason == "a field code inside a quoted argument"),
+                "{exec}: {r:?}"
+            );
+        }
+    }
+    // An escaped percent sign is text, so it may be quoted.
+    let out = expand_exec(&entry(r#"app "100%%" %f"#), Targets::Files(&file)).unwrap();
+    assert_eq!(strs(&out), [["app", "100%", "/f"]]);
+}
+
 // ---- a URL ----
 
 const URL: &str = "https://github.com/verycareful/kern?tab=readme#top";
@@ -182,6 +209,12 @@ fn a_url_is_given_as_it_is_to_percent_u_and_percent_u_list() {
     assert_eq!(strs(&out), [["browser", "--new", URL]]);
     let out = expand_exec(&entry("browser %U"), Targets::Url(URL)).unwrap();
     assert_eq!(strs(&out), [["browser", URL]]);
+}
+
+#[test]
+fn a_file_code_takes_nothing_in_a_url_launch() {
+    let out = expand_exec(&entry("app %f %u"), Targets::Url(URL)).unwrap();
+    assert_eq!(strs(&out), [["app", URL]]);
 }
 
 #[test]

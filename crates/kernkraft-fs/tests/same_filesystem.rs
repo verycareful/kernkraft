@@ -287,13 +287,18 @@ fn run_in_namespace() {
     // before `other` is bound.
     file(&other, "f");
     file(&other, "clash");
+    // `nest/m` is made a mount point (a bind of `other`) inside a plain
+    // folder with a plain sibling, for a merge that meets it one level down.
+    let nest = folder(&t.dir, "nest");
+    folder(&nest, "m");
+    file(&nest, "s");
     let exe = std::env::current_exe().unwrap();
     let meta = fs::metadata(&t.dir).unwrap();
     let sudo = std::env::var(SUDO_ENV).as_deref() == Ok("1");
 
-    // Makes the file mount, the bind mount and the tmpfs mount, then becomes
-    // the command that follows them.
-    let script = r#"mount --bind "$1/f" "$1/clash" || exit 5; mount --bind "$1" "$2" || exit 3; mount -t tmpfs tmpfs "$3" || exit 4; shift 3; exec "$@""#;
+    // Makes the file mount, the two bind mounts and the tmpfs mount, then
+    // becomes the command that follows them.
+    let script = r#"mount --bind "$1/f" "$1/clash" || exit 5; mount --bind "$1" "$2" || exit 3; mount -t tmpfs tmpfs "$3" || exit 4; mount --bind "$1" "$4/m" || exit 6; shift 4; exec "$@""#;
     let mut cmd = if sudo {
         let mut c = Command::new("sudo");
         c.args(["-n", "unshare", "--mount", "--propagation", "private"]);
@@ -306,7 +311,8 @@ fn run_in_namespace() {
     cmd.args(["sh", "-c", script, "sh"])
         .arg(&other)
         .arg(&bound)
-        .arg(&tmpfs);
+        .arg(&tmpfs)
+        .arg(&nest);
     if sudo {
         // The shell is root only to make the mount; the test runs as the
         // invoking user again.
@@ -514,6 +520,34 @@ fn in_namespace(src: &Path, same_dir: &Path, bound: &Path, tmpfs: &Path) {
         assert!(!dest.join("clash").exists());
     }
     assert!(mounted_file.exists());
+
+    // A mount point one level down in a merge is refused at its own merge,
+    // naming it, with its contents untouched; its plain sibling moves, and
+    // the folder that kept the mount point stays.
+    let nest = src.parent().unwrap().join("nest");
+    let nested = nest.join("m");
+    let nest_target = folder(same_dir, "nest");
+    folder(&nest_target, "m");
+    let report = move_items(
+        std::slice::from_ref(&nest),
+        same_dir,
+        &|_, _| Conflict::Replace,
+        &NoProgress,
+    )
+    .unwrap();
+    let refused: Vec<&Path> = report
+        .failed
+        .iter()
+        .map(|(_, e)| match e {
+            FsError::MountPoint { path } => path.as_path(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(refused, [nested.as_path()]);
+    assert_eq!(fs::read_to_string(nested.join("f")).unwrap(), "x");
+    assert_eq!(fs::read_dir(nest_target.join("m")).unwrap().count(), 0);
+    assert!(nest_target.join("s").exists() && !nest.join("s").exists());
+    assert!(nest.is_dir());
 }
 
 /// `BTRFS_SUPER_MAGIC`, the `f_type` of a btrfs filesystem (statfs(2)).

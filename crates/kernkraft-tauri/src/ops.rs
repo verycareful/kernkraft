@@ -293,8 +293,10 @@ impl<R: Runtime> Drop for UndoGuard<R> {
 }
 
 /// What `Busy` says to an operation or an undo that starts during a rename
-/// or create, which lasts moments.
-const EDIT_RUNNING: &str = "a rename or create is running; try again in a moment";
+/// or create. An edit is one system call, but on a mount that has stopped
+/// answering it lasts as long as the mount does, so the text promises no
+/// time.
+const EDIT_RUNNING: &str = "a rename or create is running; try again when it has finished";
 
 /// Counts a rename or create as under way until dropped, also when it
 /// unwinds. It holds no lock: the registry is free while the edit works.
@@ -1405,8 +1407,19 @@ mod tests {
     fn a_running_edit_refuses_an_operation_and_an_undo() {
         let (_app, kk, _root, _base) = fixture();
         let edit = kk.admit_edit().unwrap();
-        assert_eq!(kk.register(None).err().unwrap().kind, "Busy");
-        assert_eq!(kk.begin_undo().err().unwrap().kind, "Busy");
+        // Asked on another thread, so a registry still locked by the edit
+        // fails here instead of hanging the test.
+        let asked = kk.clone();
+        let refusals = within_patience(move || {
+            (
+                asked.register(None).err().map(|e| e.kind),
+                asked.begin_undo().err().map(|e| e.kind),
+            )
+        });
+        assert_eq!(
+            refusals.expect("the registry waited for the edit"),
+            (Some("Busy".to_owned()), Some("Busy".to_owned()))
+        );
         // A reader never conflicts with an edit.
         drop(kk.register_as(None, true).unwrap());
         drop(edit);
@@ -1430,8 +1443,10 @@ mod tests {
         let (_app, kk, _root, _base) = fixture();
         let reader = kk.register_as(None, true).unwrap();
         let op = reader.handle.id;
-        let edit = kk.admit_edit().unwrap();
+        // Raised before the edit is admitted: on this thread, after it, the
+        // line would wait for a registry the edit still held.
         lock(&kk.0.registry).workers += 1;
+        let edit = kk.admit_edit().unwrap();
 
         let asked = kk.clone();
         let answers = within_patience(move || {
@@ -1455,12 +1470,92 @@ mod tests {
         drop(edit);
         lock(&kk.0.registry).workers -= 1;
 
-        let (cancelled, answered, second_reader, all_done, waited) = answers.unwrap();
+        let (cancelled, answered, second_reader, all_done, waited) =
+            answers.expect("the registry waited for the edit");
         assert!(cancelled && second_reader);
         assert_eq!(answered, "UnknownConflict");
         // The wait kept its bound: the worker did not finish, and it gave up
         // at the limit, not when the edit ended.
         assert!(!all_done);
         assert!(waited < std::time::Duration::from_secs(15), "{waited:?}");
+    }
+
+    /// Waits up to twenty seconds for the registry's edit count to be `n`.
+    fn edits_reach(kk: &crate::state::Kernkraft<tauri::test::MockRuntime>, n: usize) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(20) {
+            if lock(&kk.0.registry).edits == n {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    }
+
+    /// A rename and a create count as under way until they return: one held
+    /// at the journal (taken after the edit is admitted) keeps an operation
+    /// and an undo refused, and the count falls back when it ends, also when
+    /// the edit fails.
+    #[test]
+    fn rename_and_create_hold_the_edit_until_they_return() {
+        use crate::wire::WirePath;
+        let (_app, kk, _root, base) = fixture();
+        let from = base.join("from");
+        fs::write(&from, "").unwrap();
+        type Edit =
+            Box<dyn FnOnce(&crate::state::Kernkraft<tauri::test::MockRuntime>) -> bool + Send>;
+        let cases: [(&str, Edit, bool); 3] = [
+            (
+                "rename",
+                Box::new({
+                    let p = WirePath::from(from.as_path());
+                    move |k| k.rename(p, "to".to_owned()).is_ok()
+                }),
+                true,
+            ),
+            (
+                "create",
+                Box::new({
+                    let p = WirePath::from(base.as_path());
+                    move |k| k.create_dir(p, "made".to_owned()).is_ok()
+                }),
+                true,
+            ),
+            (
+                "failing rename",
+                Box::new({
+                    let p = WirePath::from(base.join("missing").as_path());
+                    move |k| k.rename(p, "never".to_owned()).is_ok()
+                }),
+                false,
+            ),
+        ];
+        for (name, edit, succeeds) in cases {
+            let journal = lock(&kk.0.journal);
+            let editor = kk.clone();
+            let worker = std::thread::spawn(move || edit(&editor));
+            let admitted = edits_reach(&kk, 1);
+            let asked = kk.clone();
+            let refusals = within_patience(move || {
+                (
+                    asked.register(None).err().map(|e| e.kind),
+                    asked.begin_undo().err().map(|e| e.kind),
+                )
+            });
+            // Released before any assertion, so a failure does not leave the
+            // edit waiting on the journal for good.
+            drop(journal);
+            let ok = worker.join().unwrap();
+
+            assert!(admitted, "{name}: the edit was never counted");
+            assert_eq!(
+                refusals.expect("the registry waited for the edit"),
+                (Some("Busy".to_owned()), Some("Busy".to_owned())),
+                "{name}"
+            );
+            assert_eq!(ok, succeeds, "{name}");
+            assert!(edits_reach(&kk, 0), "{name}: the edit count stayed raised");
+        }
+        assert!(base.join("to").exists() && base.join("made").is_dir());
     }
 }

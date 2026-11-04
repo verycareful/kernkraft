@@ -315,7 +315,9 @@ fn rename_and_create_go_ahead_while_a_search_runs() {
     e.kk.create_file(w(&root), "made.txt".to_owned()).unwrap();
     assert!(root.join("kept").exists() && root.join("made").is_dir());
 
-    release.send(()).unwrap();
+    // Cancelled while still held, so the search is certainly registered
+    // when the cancel arrives; released after, it ends cancelled.
     e.kk.cancel_op(search).unwrap();
+    release.send(()).unwrap();
     e.wait_done(search);
 }

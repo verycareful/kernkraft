@@ -24,7 +24,8 @@
 use std::path::PathBuf;
 
 use kernkraft_xdg_apps::{
-    launch_in_terminal, open_terminal, set_default, AppRegistry, DesktopEntry, MimeDb, Targets,
+    launch_in_terminal, open_default, open_terminal, set_default, AppRegistry, DesktopEntry,
+    GroupOutcome, MimeDb, Targets,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
@@ -47,6 +48,26 @@ pub struct WireApp {
     /// `NoDisplay=true`: it should not appear in menus of all applications.
     pub no_display: bool,
     pub mime_types: Vec<String>,
+}
+
+/// What starting one default application came to: `app` is its desktop file
+/// ID, `paths` the files it was started for, and `error` is why it was not
+/// started, `None` when it was.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireOpened {
+    pub app: String,
+    pub paths: Vec<WirePath>,
+    pub error: Option<WireError>,
+}
+
+impl From<GroupOutcome> for WireOpened {
+    fn from(o: GroupOutcome) -> WireOpened {
+        WireOpened {
+            app: o.app,
+            paths: o.paths.iter().map(WirePath::from).collect(),
+            error: o.result.err().map(WireError::from),
+        }
+    }
 }
 
 /// The one scheme [`Kernkraft::open_url`] hands on: the links Kern shows (its
@@ -129,20 +150,30 @@ impl<R: Runtime> Kernkraft<R> {
 
     /// Applications that open `path`, best first (see
     /// `AppRegistry::apps_for`). `NoDisplay` entries are left out of the
-    /// list, except the current default, so the default always shows.
+    /// list, except the current default. The default is always in it: one
+    /// that `mimeapps.list` names without the application registering the
+    /// type is not an association, and is put first, where the
+    /// most-preferred application would be.
     pub fn apps_for(&self, path: WirePath) -> Result<WireAppList, WireError> {
         let path = PathBuf::try_from(path)?;
         let db = self.mime()?;
         let registry = self.registry()?;
         let mime = db.guess(&path);
-        let default = registry.default_for(&mime, db).map(|e| e.id.as_str());
+        let default = registry.default_for(&mime, db);
+        let default_id = default.map(|e| e.id.as_str());
+        let mut apps: Vec<WireApp> = registry
+            .apps_for(&mime, db)
+            .into_iter()
+            .filter(|e| !e.no_display || Some(e.id.as_str()) == default_id)
+            .map(WireApp::from)
+            .collect();
+        if let Some(default) = default {
+            if !apps.iter().any(|a| a.id == default.id) {
+                apps.insert(0, WireApp::from(default));
+            }
+        }
         Ok(WireAppList {
-            apps: registry
-                .apps_for(&mime, db)
-                .into_iter()
-                .filter(|e| !e.no_display || Some(e.id.as_str()) == default)
-                .map(WireApp::from)
-                .collect(),
+            apps,
             problems: problems(&registry),
         })
     }
@@ -197,35 +228,24 @@ impl<R: Runtime> Kernkraft<R> {
 
     /// Opens each of `paths` with the default application for its type,
     /// one launch per application with all of its paths, in the order the
-    /// applications first appear. Every path is checked first: if any has
-    /// no default application, nothing is opened and the error is
-    /// `NoDefaultApp` naming the first such path, so the UI can offer
-    /// "Open with" for it. A launch that fails stops the ones after it;
-    /// the ones before have started. `terminal` is the user's Terminal
-    /// setting, as for [`Kernkraft::launch_app`].
+    /// applications first appear (`kernkraft_xdg_apps::open_default`). Every
+    /// path is checked first: if any has no default application, nothing is
+    /// opened and the error is `NoDefaultApp` naming the first such path, so
+    /// the UI can offer "Open with" for it. Otherwise the answer holds one
+    /// [`WireOpened`] per application, started or not: an application that
+    /// fails to start is reported with its paths and does not stop the
+    /// others. `terminal` is the user's Terminal setting, as for
+    /// [`Kernkraft::launch_app`].
     pub fn open_default(
         &self,
         paths: Vec<WirePath>,
         terminal: Option<String>,
-    ) -> Result<(), WireError> {
+    ) -> Result<Vec<WireOpened>, WireError> {
         let paths = decode(paths)?;
         let db = self.mime()?;
         let registry = self.registry()?;
-        let mut groups: Vec<(&DesktopEntry, Vec<PathBuf>)> = Vec::new();
-        for path in paths {
-            let mime = db.guess(&path);
-            let Some(app) = registry.default_for(&mime, db) else {
-                return Err(WireError::from(PluginError::NoDefaultApp { path, mime }));
-            };
-            match groups.iter_mut().find(|(a, _)| a.id == app.id) {
-                Some((_, group)) => group.push(path),
-                None => groups.push((app, vec![path])),
-            }
-        }
-        for (app, group) in groups {
-            launch_in_terminal(app, Targets::Files(&group), None, terminal.as_deref())?;
-        }
-        Ok(())
+        let outcomes = open_default(&registry, db, &paths, terminal.as_deref())?;
+        Ok(outcomes.into_iter().map(WireOpened::from).collect())
     }
 
     /// Opens `url` with the default application for its scheme, launched

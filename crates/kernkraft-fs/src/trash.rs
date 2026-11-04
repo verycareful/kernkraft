@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use percent_encoding::{percent_decode_str, percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
 use crate::naming::numbered;
-use crate::sys::{rename_noreplace, uid};
+use crate::sys::{renameat_noreplace, uid};
 use crate::undo::Change;
 use crate::{BaseDirs, FsError};
 
@@ -169,7 +169,7 @@ impl Trash {
         );
         let (trash_name, info_path) = reserve_info(&files, &info, &name, meta.is_dir(), &contents)?;
 
-        if let Err(e) = rename_noreplace(&original, &files.join(&trash_name)) {
+        if let Err(e) = renameat_noreplace(&original, &files.join(&trash_name)) {
             let cleanup = fs::remove_file(&info_path);
             return Err(match cleanup {
                 Ok(()) => FsError::io(&original, e),
@@ -254,7 +254,7 @@ impl Trash {
         if let Some(parent) = item.original.parent() {
             fs::create_dir_all(parent).map_err(|e| FsError::io(parent, e))?;
         }
-        rename_noreplace(&file, &item.original).map_err(|e| {
+        renameat_noreplace(&file, &item.original).map_err(|e| {
             if e.kind() == ErrorKind::AlreadyExists {
                 FsError::Exists {
                     path: item.original.clone(),
@@ -289,7 +289,7 @@ impl Trash {
 /// restore; it is returned as `Ok(Some(warning))`.
 pub(crate) fn restore_for_undo(item: &TrashedItem) -> Result<Option<FsError>, FsError> {
     let (file, info) = item_paths(item);
-    rename_noreplace(&file, &item.original).map_err(|e| {
+    renameat_noreplace(&file, &item.original).map_err(|e| {
         if e.kind() == ErrorKind::AlreadyExists {
             FsError::Exists {
                 path: item.original.clone(),

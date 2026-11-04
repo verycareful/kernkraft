@@ -63,13 +63,20 @@ use std::path::{Path, PathBuf};
 use rustix::io::Errno;
 
 use crate::ops::{copy_exact, delete_tree};
-use crate::sys::{parent_dir, rename_noreplace};
+use crate::sys::{parent_dir, renameat_noreplace};
 use crate::trash::{held_path, item_at, restore_for_undo, verify_entry};
 use crate::{FileStamp, FsError, OpReport, Progress, Trash, TrashedItem};
 
 /// Entries kept on the undo stack: a session's worth of undo. When a new
 /// entry would exceed it, the oldest drops.
 pub const JOURNAL_DEPTH: usize = 100;
+
+/// Which of the journal's two stacks.
+#[derive(Clone, Copy)]
+enum Stack {
+    Undo,
+    Redo,
+}
 
 /// The error of [`Journal::undo`] and [`Journal::redo`]: the crate's
 /// [`FsError`], whose `Changed`, `Irreversible`, `Partial`, `NothingToUndo`
@@ -684,7 +691,10 @@ impl Journal {
     /// the most recent entry cannot be reversed: it is reported once and
     /// taken off the stack, so the next undo goes on to the older entries,
     /// each still guarded by its own check; [`FsError::Changed`] when the
-    /// check before acting finds a difference, with nothing done; the cause
+    /// check before acting finds a difference, with nothing done, and the
+    /// entry kept so that putting the item right lets a retry go ahead,
+    /// except for [`Change::Unverified`], which nothing can cure: that entry
+    /// is reported once and taken off the stack too; the cause
     /// itself when the first item fails, with nothing done;
     /// [`FsError::Partial`] when later items fail or the run is cancelled.
     pub fn undo(
@@ -701,8 +711,8 @@ impl Journal {
             self.undo.pop_back();
             return Err(err);
         }
-        check(&top.steps)?;
         let (shape, steps) = (top.shape, top.steps.clone());
+        self.check_top(check(&steps), Stack::Undo)?;
         let run = execute(steps, trash, progress);
         self.undo.pop_back();
         if !run.not_done.is_empty() {
@@ -728,9 +738,9 @@ impl Journal {
         progress: &dyn Progress,
     ) -> Result<UndoOutcome, UndoError> {
         let top = self.redo.last().ok_or(FsError::NothingToRedo)?;
-        check(&top.steps)?;
         let (shape, steps) = (top.shape, top.steps.clone());
         let shown = top.shown.clone();
+        self.check_top(check(&steps), Stack::Redo)?;
         let run = execute(steps, trash, progress);
         self.redo.pop();
         if !run.not_done.is_empty() {
@@ -745,6 +755,30 @@ impl Journal {
         }
         self.carry(&run.carried);
         run.finish()
+    }
+
+    /// Passes on the result of checking the top entry of `stack`. An entry
+    /// that is [`Change::Unverified`] can never be shown to match, whatever
+    /// the user does, so it is taken off the stack with the error, like an
+    /// irreversible one, and does not hold back the entries below it. Any
+    /// other difference may be put right by the user and leaves the entry
+    /// where it is.
+    fn check_top(&mut self, checked: Result<(), FsError>, stack: Stack) -> Result<(), FsError> {
+        if let Err(FsError::Changed {
+            what: Change::Unverified,
+            ..
+        }) = &checked
+        {
+            match stack {
+                Stack::Undo => {
+                    self.undo.pop_back();
+                }
+                Stack::Redo => {
+                    self.redo.pop();
+                }
+            }
+        }
+        checked
     }
 
     fn push_undo(&mut self, entry: Entry) {
@@ -1032,7 +1066,7 @@ fn run_step(
             stamp,
             was,
         } => {
-            match rename_noreplace(at, dest) {
+            match renameat_noreplace(at, dest) {
                 Ok(()) => {}
                 Err(e) if e.raw_os_error() == Some(Errno::XDEV.raw_os_error()) => {
                     move_across(at, dest, stamp, progress, &mut run.warnings)?;

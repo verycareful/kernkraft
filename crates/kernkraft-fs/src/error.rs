@@ -36,6 +36,12 @@ pub enum FsError {
     XattrsNotKept { path: PathBuf, names: Vec<String> },
     #[error("cancelled")]
     Cancelled,
+    /// A move was refused because `path`, the item being moved, is a mount
+    /// point: rename(2) fails with `EBUSY` for one ("is in use by the
+    /// system (for example as a mount point)") whatever the destination, and
+    /// the item is left where it is. Copying it is the alternative.
+    #[error("{path} is a mount point and cannot be moved")]
+    MountPoint { path: PathBuf },
     /// The kernel did not report a mount ID for `path` (`statx(2)` with
     /// `STATX_MNT_ID`, which needs Linux 5.8), so whether two places are on
     /// one mount cannot be told. Never answered by a guess.

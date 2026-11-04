@@ -18,6 +18,7 @@ mod exec;
 mod launch;
 mod mime;
 mod mimeapps;
+mod open;
 mod terminal;
 
 pub use desktop_entry::{desktop_id, parse_desktop_entry, DesktopEntry};
@@ -26,4 +27,5 @@ pub use exec::{expand_exec, Targets};
 pub use launch::{launch, launch_in_terminal, set_default, set_default_command};
 pub use mime::{MimeDb, SNIFF_LEN};
 pub use mimeapps::AppRegistry;
+pub use open::{default_groups, launch_groups, open_default, DefaultGroup, GroupOutcome};
 pub use terminal::{open_terminal, terminal_command, terminal_command_for};

@@ -268,13 +268,13 @@ impl<R: Runtime> Kernkraft<R> {
     }
 
     /// Creates folder `parent/name`, refusing an existing name, and
-    /// journals it.
+    /// journals it. `Busy` while an undo or redo runs.
     pub fn create_dir(&self, parent: WirePath, name: String) -> Result<WirePath, WireError> {
         self.create(parent, &name, create_dir)
     }
 
     /// Creates the empty file `parent/name`, refusing an existing name, and
-    /// journals it.
+    /// journals it. `Busy` while an undo or redo runs.
     pub fn create_file(&self, parent: WirePath, name: String) -> Result<WirePath, WireError> {
         self.create(parent, &name, create_file)
     }
@@ -286,6 +286,7 @@ impl<R: Runtime> Kernkraft<R> {
         make: fn(&Path, &str) -> Result<PathBuf, FsError>,
     ) -> Result<WirePath, WireError> {
         let parent = PathBuf::try_from(parent)?;
+        self.refuse_during_undo()?;
         // Held across the create and its record, so an undo cannot run in
         // between.
         let mut journal = lock(&self.0.journal);
@@ -296,9 +297,11 @@ impl<R: Runtime> Kernkraft<R> {
 
     /// Renames `path` to `new_name` in its folder, never replacing anything,
     /// and journals it. The item's prior stamps are taken right before the
-    /// rename, so older entries naming it stay undoable.
+    /// rename, so older entries naming it stay undoable. `Busy` while an
+    /// undo or redo runs.
     pub fn rename(&self, path: WirePath, new_name: String) -> Result<WirePath, WireError> {
         let path = PathBuf::try_from(path)?;
+        self.refuse_during_undo()?;
         let mut journal = lock(&self.0.journal);
         let prior = journal.prior_stamps(std::slice::from_ref(&path));
         let to = rename(&path, &new_name)?;

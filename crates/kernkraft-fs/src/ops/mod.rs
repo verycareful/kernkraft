@@ -15,7 +15,7 @@ pub use names::{unique_name, validate_name};
 pub use transfer::{copy, move_items, Conflict};
 pub(crate) use transfer::{copy_exact, delete_tree};
 
-use crate::sys::rename_noreplace;
+use crate::sys::{parent_dir, renameat_noreplace};
 use crate::{FsError, Progress};
 
 /// What a multi-item operation did, item by item.
@@ -75,11 +75,42 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, FsError> {
         fs::symlink_metadata(path).map_err(|e| FsError::not_found_or_io(path, e))?;
         return Ok(dest);
     }
-    rename_noreplace(path, &dest).map_err(|e| match e.kind() {
+    renameat_noreplace(path, &dest).map_err(|e| match e.kind() {
         ErrorKind::AlreadyExists => FsError::Exists { path: dest.clone() },
         _ => FsError::not_found_or_io(path, e),
     })?;
     Ok(dest)
+}
+
+/// Moves `from` to `to` on one filesystem, failing with
+/// [`FsError::Exists`] (naming `to`) instead of replacing anything there: a
+/// file, a folder, or a link, dangling or not. Nothing is replaced whatever
+/// runs alongside, because the kernel checks and renames in one step
+/// (`renameat2` with `RENAME_NOREPLACE`, rename(2)). A symlink is moved as
+/// itself, a folder with its contents.
+///
+/// A filesystem without that flag (NFS, SMB and other FUSE filesystems among
+/// them) is handled without a window in which something could be replaced:
+/// a folder through an empty placeholder that only an empty folder can be
+/// renamed over, anything else by a hard link, which also refuses an
+/// existing name, and then removing the original. A filesystem that cannot
+/// hard-link either fails with [`FsError::Io`] of kind `Unsupported`; it is
+/// never moved by a plain rename.
+///
+/// `from` and `to` must be on one filesystem: across two, and for a mount
+/// point, the failure is [`FsError::Io`] (`EXDEV`, `EBUSY`), as for
+/// rename(2). A missing `from` is [`FsError::NotFound`] naming it; when
+/// `from` is there and `to` cannot be reached, the missing folder is named.
+pub fn rename_noreplace(from: &Path, to: &Path) -> Result<(), FsError> {
+    renameat_noreplace(from, to).map_err(|e| match e.kind() {
+        ErrorKind::AlreadyExists => FsError::Exists {
+            path: to.to_path_buf(),
+        },
+        ErrorKind::NotFound if fs::symlink_metadata(from).is_ok() => FsError::NotFound {
+            path: parent_dir(to).to_path_buf(),
+        },
+        _ => FsError::not_found_or_io(from, e),
+    })
 }
 
 /// Deletes each path for good. A directory is removed with its contents; a

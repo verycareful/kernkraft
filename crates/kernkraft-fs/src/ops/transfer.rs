@@ -31,7 +31,8 @@ use rustix::io::Errno;
 
 use super::names::unique_name_for;
 use super::OpReport;
-use crate::sys::{parent_dir, rename_noreplace};
+use crate::same_fs::is_mount_point;
+use crate::sys::{parent_dir, renameat_noreplace};
 use crate::xattr::copy_all;
 use crate::{FsError, Progress};
 
@@ -86,7 +87,10 @@ pub fn copy(
 /// Moves each source into `dest_dir`: a rename where source and destination
 /// share a filesystem, else a copy followed by deleting the source.
 /// Conflicts, progress, cancellation and the `Err` cases are as for
-/// [`copy`]; a source already in `dest_dir` is skipped.
+/// [`copy`]; a source already in `dest_dir` is skipped. A source that is a
+/// mount point cannot be renamed (`EBUSY`) and is never copied and deleted
+/// in its place: it fails with [`FsError::MountPoint`] and stays where it
+/// is.
 pub fn move_items(
     sources: &[PathBuf],
     dest_dir: &Path,
@@ -222,7 +226,7 @@ impl<'a> Transfer<'a> {
         let renamed = if replace {
             fs::rename(src, target)
         } else {
-            rename_noreplace(src, target)
+            renameat_noreplace(src, target)
         };
         match renamed {
             Ok(()) => {
@@ -243,6 +247,16 @@ impl<'a> Transfer<'a> {
                     },
                     other => other,
                 }
+            }
+            Err(e)
+                if e.raw_os_error() == Some(Errno::BUSY.raw_os_error()) && is_mount_point(src) =>
+            {
+                self.fail(
+                    src,
+                    FsError::MountPoint {
+                        path: src.to_path_buf(),
+                    },
+                )
             }
             Err(e) if e.kind() == ErrorKind::AlreadyExists => self.fail(
                 src,

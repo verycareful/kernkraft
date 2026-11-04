@@ -16,18 +16,18 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Each step limit is at least four times that step's time in run
-    # 40281452851 (the last run that reached every step: checkout 0 s, system
-    # libraries 28 s, toolchain 8 s, format 0 s, clippy 128 s, test 191 s,
-    # release timing 7 s, boundary 0 s, deny 23 s) and at least 5 minutes, so
-    # a hang costs minutes. The release timing step has a wider limit: an
-    # earlier run spent about 9 minutes in it when the release build was cold.
-    # The measured steps add up to about 6.5 minutes, but a cold run took 43
-    # minutes 51 seconds (d4b0ef4), so the job limit is 60 minutes, above that
-    # run and not derived from the warm one.
+    # The step limits are guards against a hang, not measurements. Nothing is
+    # cached between runs. The last run that passed (41583328405) took:
+    # checkout 1 s, system libraries 32 s, toolchain 1 s, format 2 s, clippy
+    # 266 s, test 380 s, release timing 11 s, boundary 2 s, deny 15 s. The
+    # release timing step builds only kernkraft-xdg-apps and its few small
+    # dependencies in release (`-p`), which is why a fresh build of it takes
+    # seconds and a cache would save next to nothing. One earlier run was
+    # slower, 43 minutes 51 seconds (d4b0ef4), so the job limit is 60
+    # minutes, above that run.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         timeout-minutes: 5
 
       # dbus-daemon: the volume watcher tests start a private one.

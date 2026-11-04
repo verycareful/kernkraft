@@ -126,6 +126,7 @@ fn fs_error_kind_names() {
             "MountIdUnavailable",
             true,
         ),
+        (FsError::MountPoint { path: p("/a") }, "MountPoint", true),
         (
             FsError::Changed {
                 path: p("/a"),
@@ -271,6 +272,14 @@ fn apps_error_kind_names() {
             AppsError::NoFileArgument { id: "x".into() },
             "NoFileArgument",
             false,
+        ),
+        (
+            AppsError::NoDefaultApp {
+                path: p("/a"),
+                mime: "m/n".into(),
+            },
+            "NoDefaultApp",
+            true,
         ),
         (
             AppsError::Launch {

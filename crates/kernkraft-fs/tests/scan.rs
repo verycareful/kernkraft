@@ -286,6 +286,51 @@ fn entry_of_describes_one_path() {
 }
 
 #[test]
+fn entry_of_describes_a_dangling_symlink_as_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("dangling");
+    symlink("nowhere", &link).unwrap();
+    let e = Entry::of(&link).unwrap();
+    assert_eq!(e.kind, EntryKind::Symlink);
+    assert!(!e.target_is_dir);
+    // A link's size is the length of the target path it holds
+    // (readlink(2)), "nowhere" being 7 bytes; its mode is 0777 (symlink(7)).
+    assert_eq!(e.len, "nowhere".len() as u64);
+    assert_eq!(e.mode, 0o777);
+    assert_eq!((e.name.as_str(), e.hidden), ("dangling", false));
+    assert_eq!(e.path, link);
+}
+
+#[test]
+fn entry_of_keeps_the_bytes_of_a_non_utf8_path() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    // 0xff is never valid in UTF-8 (RFC 3629, section 3).
+    let raw = std::ffi::OsStr::from_bytes(b".bad\xffname");
+    let path = dir.path().join(raw);
+    fs::write(&path, "12").unwrap();
+    let e = Entry::of(&path).unwrap();
+    assert_eq!(e.path, path);
+    assert_eq!(e.path.file_name().unwrap().as_bytes(), b".bad\xffname");
+    assert_eq!(e.name, ".bad\u{fffd}name");
+    // Hidden is judged on the name's first byte, which is valid.
+    assert!(e.hidden);
+    assert_eq!((e.kind, e.len), (EntryKind::File, 2));
+}
+
+#[test]
+fn entry_of_keeps_setuid_on_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("prog");
+    fs::write(&file, "").unwrap();
+    // The owner may set the setuid bit on their own file (chmod(2)).
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o4755)).unwrap();
+    let e = Entry::of(&file).unwrap();
+    assert_eq!(e.mode, 0o4755);
+    assert_eq!(e.kind, EntryKind::File);
+}
+
+#[test]
 fn measure_counts_files_dirs_and_bytes() {
     let root = tempfile::tempdir().unwrap();
     let top = root.path().join("top");

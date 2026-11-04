@@ -40,7 +40,7 @@ use std::os::unix::fs::{symlink, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use kernkraft_fs::{same_filesystem, FsError};
+use kernkraft_fs::{move_items, same_filesystem, Conflict, FsError, NoProgress};
 
 /// Set (to `1`) on CI to make the mount namespace with `sudo`.
 const SUDO_ENV: &str = "KERN_TEST_SUDO_MOUNTNS";
@@ -375,6 +375,29 @@ fn in_namespace(src: &Path, same_dir: &Path, bound: &Path) {
     );
     let busy = fs::rename(bound, same_dir.join("moved")).unwrap_err();
     assert_eq!(busy.kind(), ErrorKind::ResourceBusy, "{busy}");
+
+    // move_items reports that refusal as a typed error naming the mount
+    // point, so a caller can say it cannot be moved and offer a copy; the
+    // mount is untouched, and a plain item moved with it still moves.
+    let plain = file(src, "plain");
+    let report = move_items(
+        &[bound.to_path_buf(), plain.clone()],
+        same_dir,
+        &|_, _| Conflict::Skip,
+        &NoProgress,
+    )
+    .unwrap();
+    match &report.failed[..] {
+        [(item, FsError::MountPoint { path })] => {
+            assert_eq!(item, bound);
+            assert_eq!(path, bound);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(report.done, [(plain, Some(same_dir.join("plain")))]);
+    assert!(same_dir.join("plain").exists());
+    assert!(bound.join("inside").exists());
+    assert!(!same_dir.join("bound").exists());
 }
 
 /// `BTRFS_SUPER_MAGIC`, the `f_type` of a btrfs filesystem (statfs(2)).
@@ -448,8 +471,39 @@ fn btrfs_subvolume_files_and_roots() {
     );
     fs::rename(&sub, other.join("sub")).unwrap();
 
+    // The root of a subvolume into a folder of another subvolume: btrfs
+    // renames it (the one cross-subvolume rename it allows), so rename(2)
+    // would do it in one step, yet the folder it is in and the folder it
+    // enters are in different subvolumes, so the answer is "different". This
+    // is the wrong answer the module documentation names, and its price: the
+    // caller copies where a move would have worked.
+    let sub = other.join("sub");
+    let second = parent.join("second");
+    let made = Command::new("btrfs")
+        .args(["subvolume", "create"])
+        .arg(&second)
+        .output()
+        .expect("this test needs `btrfs` (btrfs-progs) to make a subvolume");
+    assert!(
+        made.status.success(),
+        "btrfs subvolume create {} failed ({}): {}",
+        second.display(),
+        made.status,
+        String::from_utf8_lossy(&made.stderr)
+    );
+    assert_ne!(
+        fs::metadata(&second).unwrap().dev(),
+        fs::metadata(&other).unwrap().dev()
+    );
+    assert_eq!(
+        same(&same_filesystem(std::slice::from_ref(&sub), &second)),
+        [Some(false)]
+    );
+    fs::rename(&sub, second.join("sub")).unwrap();
+
     // An empty subvolume can be removed like a folder, so the test directory
-    // goes away with it.
-    fs::remove_file(other.join("sub/inside")).unwrap();
-    fs::remove_dir(other.join("sub")).unwrap();
+    // goes away with them.
+    fs::remove_file(second.join("sub/inside")).unwrap();
+    fs::remove_dir(second.join("sub")).unwrap();
+    fs::remove_dir(&second).unwrap();
 }

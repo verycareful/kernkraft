@@ -77,8 +77,15 @@ fn search_streams_batches() {
     let (batches, done) = collect(&e, op);
 
     assert!(batches.iter().all(|b| b.key == "find"));
+    // A batch goes out when it is full or after SEARCH_FLUSH, so on a slow
+    // machine it may be smaller: never larger, and nothing lost or repeated.
     let sizes: Vec<usize> = batches.iter().map(|b| b.entries.len()).collect();
-    assert_eq!(sizes, [SEARCH_BATCH, SEARCH_BATCH, 51]);
+    assert!(
+        sizes.iter().all(|&n| (1..=SEARCH_BATCH).contains(&n)),
+        "{sizes:?}"
+    );
+    assert!(batches.len() >= 3, "{sizes:?}");
+    assert_eq!(sizes.iter().sum::<usize>(), expected.len());
     // Case-insensitive, at any depth.
     assert_eq!(found(&batches), expected);
     let scan = done.scan.unwrap();
@@ -201,15 +208,22 @@ fn search_cancel_reports_cancelled() {
             fs::write(d.join(format!("f{j}.txt")), "").unwrap();
         }
     }
-    // Event listeners run on the emitting thread, so holding the first
-    // batch's listener holds the walk right after that batch: the cancel
-    // lands while the walk still has folders left.
+    // Event listeners run on the emitting thread, and the walk's next hit
+    // waits for the batch being sent. The first batch's listener cancels the
+    // op itself, so the cancel lands while the walk still has folders left
+    // whichever of the walk and the flush timer sent that batch, then holds
+    // it until the test has looked at undo.
     let (release, held) = mpsc::channel::<()>();
     let held = Mutex::new(Some(held));
     let (reached, at_batch) = mpsc::channel::<()>();
     let reached = Mutex::new(reached);
+    let (op_of, op_in) = mpsc::channel::<OpId>();
+    let op_in = Mutex::new(op_in);
+    let canceller = e.kk.clone();
     e.app.listen_any(EVENT_SEARCH_HIT, move |_| {
         if let Some(rx) = held.lock().unwrap().take() {
+            let op = op_in.lock().unwrap().recv_timeout(EVENT_WAIT).unwrap();
+            canceller.cancel_op(op).unwrap();
             let _ = reached.lock().unwrap().send(());
             let _ = rx.recv_timeout(EVENT_WAIT);
         }
@@ -218,19 +232,19 @@ fn search_cancel_reports_cancelled() {
     let op =
         e.kk.search("c".to_owned(), vec![w(&root)], "f".to_owned(), false, None)
             .unwrap();
+    op_of.send(op).unwrap();
     at_batch.recv_timeout(EVENT_WAIT).unwrap();
     // A search only reads, so it does not hold undo back: with nothing
     // journalled, undo says so instead of Busy.
     assert_eq!(e.kk.undo().unwrap_err().kind, "NothingToUndo");
-    e.kk.cancel_op(op).unwrap();
     release.send(()).unwrap();
 
     let (batches, done) = collect(&e, op);
     let scan = done.scan.unwrap();
     assert!(scan.cancelled);
     let total = (DIRS * PER_DIR) as u64;
-    // The first full batch went out; the walk stopped before the end.
-    assert!(scan.found >= SEARCH_BATCH as u64, "{}", scan.found);
+    // A batch went out; the walk stopped before the end.
+    assert!(scan.found >= 1, "{}", scan.found);
     assert!(scan.found < total, "{} of {total}", scan.found);
     assert_eq!(found(&batches).len() as u64, scan.found);
 }

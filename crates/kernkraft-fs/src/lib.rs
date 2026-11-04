@@ -27,8 +27,8 @@ pub use atomic::{write_atomic, write_bytes_atomic, Expect, FileStamp};
 pub use cache::PrivateCache;
 pub use error::FsError;
 pub use ops::{
-    copy, create_dir, create_file, delete_permanently, move_items, rename, unique_name,
-    validate_name, Conflict, OpReport,
+    copy, create_dir, create_file, delete_permanently, move_items, rename, rename_noreplace,
+    unique_name, validate_name, Conflict, OpReport,
 };
 pub use progress::{NoProgress, Progress};
 pub use same_fs::same_filesystem;

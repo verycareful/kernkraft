@@ -58,7 +58,7 @@
 //!   leaving and returning over and over does not grow the hold. At most
 //!   [`MAX_HELD_PROBLEMS`] distinct problems are held, the first ones; the
 //!   take then ends with one more problem, `ProblemsNotShown`, saying how many
-//!   more arrived and were not kept ("N more not shown").
+//!   more distinct ones arrived and were not kept ("N more not shown").
 //! - Not held, because they are not once-only: what the listing itself
 //!   finds (`problems` of every listing) and a watcher that failed to start
 //!   (reported by each listing until it does).
@@ -68,6 +68,9 @@
 //! those startup problems come back once and never again, while later events
 //! carry only what happened since the previous one.
 
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -108,8 +111,10 @@ pub(crate) struct VolumesState {
     /// Every once-only problem not yet taken, without repeats, at most
     /// [`MAX_HELD_PROBLEMS`] (see the module documentation).
     held: Vec<WireError>,
-    /// Problems that arrived while `held` was full.
-    not_kept: usize,
+    /// Fingerprints ([`fingerprint`]) of the distinct problems that arrived
+    /// while `held` was full: the same problem arriving again is counted
+    /// once. Eight bytes each, so a consumer that never takes costs little.
+    not_kept: HashSet<u64>,
     watcher: Option<VolumeWatcher>,
 }
 
@@ -124,7 +129,7 @@ impl VolumesState {
             if self.held.len() < MAX_HELD_PROBLEMS {
                 self.held.push(problem.clone());
             } else {
-                self.not_kept += 1;
+                self.not_kept.insert(fingerprint(problem));
             }
         }
     }
@@ -133,7 +138,7 @@ impl VolumesState {
     /// did not fit, if any. Empties both.
     fn take_held(&mut self) -> Vec<WireError> {
         let mut taken = std::mem::take(&mut self.held);
-        let count = std::mem::take(&mut self.not_kept);
+        let count = std::mem::take(&mut self.not_kept).len();
         if count > 0 {
             taken.push(WireError::from(PluginError::ProblemsNotShown {
                 count,
@@ -142,6 +147,17 @@ impl VolumesState {
         }
         taken
     }
+}
+
+/// A hash of what identifies a problem (its `kind`, `message` and `path`,
+/// as the module documentation says a consumer does), to count distinct ones
+/// without keeping them.
+fn fingerprint(problem: &WireError) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    problem.kind.hash(&mut hasher);
+    problem.message.hash(&mut hasher);
+    format!("{:?}", problem.path).hash(&mut hasher);
+    hasher.finish()
 }
 
 /// What starts a watcher: `kernkraft_volumes::watch`, or a stand-in.
@@ -535,6 +551,11 @@ mod tests {
         }
         // The first one again, with the hold full, is already held.
         stand.fire(vec![panic(0)]);
+        // A problem that did not fit, arriving again and again, is still one
+        // problem: the count is of distinct problems.
+        for _ in 0..3 {
+            stand.fire(vec![panic(MAX_HELD_PROBLEMS + 2)]);
+        }
 
         let taken = kk.volumes_problems_take();
         assert_eq!(taken.len(), MAX_HELD_PROBLEMS + 1);

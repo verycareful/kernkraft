@@ -162,10 +162,6 @@ pub enum PluginError {
     /// No installed application has this desktop file ID.
     #[error("no application {0:?} is installed")]
     UnknownApp(String),
-    /// No default application is set for the type of `path`; the UI offers
-    /// "Open with" instead.
-    #[error("no default application opens {} ({mime})", path.display())]
-    NoDefaultApp { path: PathBuf, mime: String },
     /// No default application is set for the URL scheme (no
     /// `x-scheme-handler/<scheme>` default).
     #[error("no default application opens {scheme} links")]
@@ -201,7 +197,6 @@ impl From<PluginError> for WireError {
             PluginError::NoHome => ("NoHome", None),
             PluginError::NotInTrash(path) => ("NotInTrash", Some(path)),
             PluginError::UnknownApp(_) => ("UnknownApp", None),
-            PluginError::NoDefaultApp { path, .. } => ("NoDefaultApp", Some(path)),
             PluginError::NoUrlHandler { .. } => ("NoUrlHandler", None),
             PluginError::UnknownDevice(_) => ("UnknownDevice", None),
             PluginError::Watch { path, .. } => ("Watch", Some(path)),
@@ -240,6 +235,7 @@ impl From<&FsError> for WireError {
             FsError::XattrsNotKept { path, .. } => ("XattrsNotKept", Some(path)),
             FsError::Cancelled => ("Cancelled", None),
             FsError::MountIdUnavailable { path } => ("MountIdUnavailable", Some(path)),
+            FsError::MountPoint { path } => ("MountPoint", Some(path)),
             FsError::Changed { path, .. } => ("Changed", Some(path)),
             FsError::Irreversible { .. } => ("Irreversible", None),
             FsError::Partial { .. } => ("Partial", None),
@@ -325,6 +321,7 @@ impl From<&AppsError> for WireError {
             AppsError::InvalidExec { .. } => ("InvalidExec", None),
             AppsError::NoFileArgument { .. } => ("NoFileArgument", None),
             AppsError::NoUrlArgument { .. } => ("NoUrlArgument", None),
+            AppsError::NoDefaultApp { path, .. } => ("NoDefaultApp", Some(path)),
             AppsError::Launch { .. } => ("Launch", None),
             AppsError::XdgMime { .. } => ("XdgMime", None),
             AppsError::NoTerminal { .. } => ("NoTerminal", None),

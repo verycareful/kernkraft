@@ -20,7 +20,7 @@ use rustix::io::Errno;
 /// (an old kernel `ENOSYS`); there the move goes through
 /// [`move_without_noreplace`], which never replaces either. Every other
 /// error, `EXDEV` among them, is returned as it is.
-pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn renameat_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     match renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE) {
         Ok(()) => Ok(()),
         Err(Errno::INVAL | Errno::NOSYS) => move_without_noreplace(from, to),
@@ -32,7 +32,7 @@ pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
 /// replaced at once.
 const PLACEHOLDER_MODE: u32 = 0o700;
 
-/// [`rename_noreplace`] where the filesystem lacks `RENAME_NOREPLACE`: a
+/// [`renameat_noreplace`] where the filesystem lacks `RENAME_NOREPLACE`: a
 /// folder through an empty placeholder ([`claim_placeholder`], then
 /// [`rename_into_placeholder`]), anything else by [`link_then_unlink`].
 pub(crate) fn move_without_noreplace(from: &Path, to: &Path) -> io::Result<()> {
@@ -153,7 +153,7 @@ mod tests {
 
     use super::{
         claim_placeholder, link_then_unlink, move_without_noreplace, rename_into_placeholder,
-        rename_noreplace, take_back_link,
+        renameat_noreplace, take_back_link,
     };
     use std::fs;
     use std::io::ErrorKind;
@@ -167,12 +167,12 @@ mod tests {
         fs::write(&a, "a").unwrap();
         fs::write(&b, "b").unwrap();
 
-        let err = rename_noreplace(&a, &b).unwrap_err();
+        let err = renameat_noreplace(&a, &b).unwrap_err();
 
         assert_eq!(err.kind(), ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(&b).unwrap(), "b");
         let c = dir.path().join("c");
-        rename_noreplace(&a, &c).unwrap();
+        renameat_noreplace(&a, &c).unwrap();
         assert_eq!(fs::read_to_string(&c).unwrap(), "a");
     }
 

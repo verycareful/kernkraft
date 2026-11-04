@@ -15,15 +15,19 @@
 //!   Associations]` and `[Removed Associations]`, each line `mime=id;id;`.
 //!   The associations of a type are built from the section 2 files in
 //!   order. For each `mimeapps.list`: its `[Added Associations]`, minus the
-//!   blacklist; its `[Removed Associations]` join the blacklist; then the
-//!   desktop files of that same directory whose `MimeType=` lists the type,
-//!   minus the blacklist; then all of that directory's desktop files join
-//!   the blacklist. A removal therefore applies to its own directory's
-//!   desktop files and to everything below, never to what an earlier
-//!   directory already added: a desktop file in `$XDG_DATA_HOME` outranks
-//!   an addition in `/usr/share/applications/mimeapps.list`, and a removal
-//!   there does not remove it. A configuration directory has no desktop
-//!   files of its own and contributes only its lists.
+//!   blacklist; its `[Removed Associations]` join the blacklist. After the
+//!   last `mimeapps.list` of an applications directory (the desktop-specific
+//!   files, then the plain one), the desktop files of that directory whose
+//!   `MimeType=` lists the type, minus the blacklist; then all of that
+//!   directory's desktop files join the blacklist. A removal therefore
+//!   applies to its own directory's desktop files and to everything below,
+//!   never to what an earlier directory already added: a desktop file in
+//!   `$XDG_DATA_HOME` outranks an addition in
+//!   `/usr/share/applications/mimeapps.list`, and a removal there does not
+//!   remove it. A configuration directory has no desktop files of its own
+//!   and contributes only its lists. (The specification does not say whether
+//!   a directory's desktop files come after each of its lists or after the
+//!   last; after the last is the merged table GLib's `gio` builds.)
 //! - Section 4, "Default application": group `[Default Applications]`; the
 //!   first listed desktop file ID that is installed wins, file by file in
 //!   priority order. When no file names a usable one, the most-preferred
@@ -36,9 +40,11 @@
 //! `mimeinfo.cache`.
 //!
 //! An entry whose `TryExec` names a program that is not an executable file
-//! (a path as given, a bare name looked up on `PATH`) is not installed
-//! (Desktop Entry Specification 1.5, `TryExec`) and is neither an
-//! association nor a default. `NoDisplay` hides an entry from menus only
+//! (an absolute path as given; any other value, with a `/` or without,
+//! looked up in each `PATH` directory) is not installed (Desktop Entry
+//! Specification 1.5, `TryExec`) and is neither an association nor a
+//! default. `PATH` and the programs are looked at once, when the registry is
+//! loaded. `NoDisplay` hides an entry from menus only
 //! (same specification); such an entry is still an association, so a
 //! custom command with `NoDisplay=true` can be the default.
 //!
@@ -159,6 +165,9 @@ pub struct AppRegistry {
     /// 3 order, highest priority first.
     steps: Vec<Step>,
     skipped: Vec<AppsError>,
+    /// IDs of the entries in `entries` whose `TryExec` program is not an
+    /// executable file, looked at when the registry was loaded.
+    not_installed: HashSet<String>,
 }
 
 impl AppRegistry {
@@ -178,6 +187,7 @@ impl AppRegistry {
             shadowed: HashSet::new(),
             steps: Vec::new(),
             skipped: Vec::new(),
+            not_installed: HashSet::new(),
         };
         let mut app_dirs = vec![base.data.join("applications")];
         app_dirs.extend(base.data_dirs.iter().map(|d| d.join("applications")));
@@ -185,6 +195,17 @@ impl AppRegistry {
             let mut visited = HashSet::new();
             registry.scan(dir, dir, rank, &mut visited)?;
         }
+        let path = std::env::var_os("PATH");
+        registry.not_installed = registry
+            .entries
+            .values()
+            .filter(|e| {
+                e.try_exec
+                    .as_deref()
+                    .is_some_and(|t| !program_exists(t, path.as_deref()))
+            })
+            .map(|e| e.id.clone())
+            .collect();
         let first_app_dir = 1 + base.config_dirs.len();
         for (index, dir) in list_dirs(base, &app_dirs).into_iter().enumerate() {
             let start = registry.steps.len();
@@ -401,13 +422,9 @@ impl AppRegistry {
     }
 
     /// Whether `entry` can be offered: not `Hidden`, and its `TryExec`
-    /// program, if it names one, is an executable file.
+    /// program, if it names one, was an executable file at load.
     fn installed(&self, entry: &DesktopEntry) -> bool {
-        !entry.hidden
-            && entry
-                .try_exec
-                .as_deref()
-                .is_none_or(|t| program_exists(t, std::env::var_os("PATH").as_deref()))
+        !entry.hidden && !self.not_installed.contains(&entry.id)
     }
 
     /// The default application for `mime`, level by level: the type, then
@@ -444,13 +461,16 @@ impl AppRegistry {
     }
 }
 
-/// `name` as a path when it has a separator, else the first executable
-/// file of that name in `path`.
+/// Whether `name`, a `TryExec` value, is an executable file: an absolute
+/// path as given, anything else (with or without a `/`) as a path below
+/// each directory of `path` (Desktop Entry Specification 1.5, `TryExec`: "If
+/// the path is not an absolute path, the file is looked up in the $PATH
+/// environment variable").
 fn program_exists(name: &str, path: Option<&std::ffi::OsStr>) -> bool {
     let is_exec = |p: &Path| {
         fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     };
-    if name.contains('/') {
+    if Path::new(name).is_absolute() {
         return is_exec(Path::new(name));
     }
     path.is_some_and(|p| {

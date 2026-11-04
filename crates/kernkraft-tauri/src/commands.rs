@@ -22,7 +22,7 @@ use kernkraft_theme::{Follow, UserChoice};
 use kernkraft_volumes::{Device, DiskId};
 use tauri::{AppHandle, Runtime, Window};
 
-use crate::apps_cmds::{WireAppDefault, WireAppList, WireMime};
+use crate::apps_cmds::{WireAppDefault, WireAppList, WireMime, WireOpened};
 use crate::error::WireError;
 use crate::fs_cmds::{WireEntry, WireSame, WireUndoOutcome, WireUndoState, WireUserDirs};
 use crate::ops::{OpId, WireReport};
@@ -319,7 +319,7 @@ pub(crate) async fn open_default<R: Runtime>(
     app: AppHandle<R>,
     paths: Vec<WirePath>,
     terminal: Option<String>,
-) -> Result<(), WireError> {
+) -> Result<Vec<WireOpened>, WireError> {
     let kk = app.kernkraft();
     blocking(move || kk.open_default(paths, terminal)).await
 }

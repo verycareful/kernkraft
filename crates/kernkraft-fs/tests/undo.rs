@@ -767,6 +767,43 @@ fn unreadable_at_record_refuses_undo() {
     assert!(trashed_originals(&f.trash).is_empty());
 }
 
+// An entry that can never be verified is reported once and taken off, like
+// an irreversible one, so it does not hold back the older entries below it.
+#[test]
+fn an_unverifiable_entry_is_taken_off_and_the_older_ones_stay_undoable() {
+    let f = fixture();
+    let mut journal = Journal::new();
+    journal.record(copy_files(&f, &["older"]));
+    let tree = f.src.join("tree");
+    fs::create_dir_all(tree.join("locked")).unwrap();
+    let report = copy(std::slice::from_ref(&tree), &f.dest, &never, &NoProgress).unwrap();
+    let locked = f.dest.join("tree/locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let op = undoable_from_report(OpKind::Copy, &report);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    journal.record(op);
+
+    let err = journal.undo(&f.trash, &NoProgress).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            UndoError::Changed {
+                what: Change::Unverified,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    // Nothing was touched, and the entry is gone from the stack.
+    assert!(locked.exists());
+    assert!(trashed_originals(&f.trash).is_empty());
+
+    // The next undo reaches the older entry.
+    let outcome = journal.undo(&f.trash, &NoProgress).unwrap();
+    assert_eq!(outcome.done, [f.dest.join("older")]);
+    assert_eq!(trashed_originals(&f.trash), [f.dest.join("older")]);
+}
+
 #[test]
 fn record_ignores_op_with_nothing_done() {
     let f = fixture();

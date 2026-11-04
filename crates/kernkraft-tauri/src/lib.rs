@@ -39,14 +39,14 @@ mod wire;
 
 include!("command_list.rs");
 
-pub use apps_cmds::{WireApp, WireAppDefault, WireAppList, WireMime};
+pub use apps_cmds::{WireApp, WireAppDefault, WireAppList, WireMime, WireOpened};
 pub use error::{PluginError, WireDetails, WireError, WireItemError};
 pub use fs_cmds::{WireEntry, WireSame, WireUndoOutcome, WireUndoState, WireUserDir, WireUserDirs};
 pub use ops::{
     OpConflictEvent, OpDoneEvent, OpId, OpProgressEvent, WireDone, WireProperties, WireReport,
     EVENT_OP_CONFLICT, EVENT_OP_DONE, EVENT_OP_PROGRESS, PROGRESS_INTERVAL_MS,
 };
-pub use search_cmds::{SearchHitEvent, WireScanDone, EVENT_SEARCH_HIT, SEARCH_BATCH};
+pub use search_cmds::{SearchHitEvent, WireScanDone, EVENT_SEARCH_HIT, SEARCH_BATCH, SEARCH_FLUSH};
 pub use state::{Config, Kernkraft, KernkraftExt};
 pub use text_cmds::{WireExpect, WireReadOnly, WireStamp, WireText};
 pub use theme_cmds::{WireTheme, EVENT_THEME_CHANGED};

@@ -132,6 +132,21 @@ fn exists(path: &Path) -> Result<(), Unread> {
         .map_err(Unread::Errno)
 }
 
+/// Whether `path` is a mount point: itself, not followed, it is on a
+/// different mount than the folder it is in (followed, as the path leads to
+/// it). An answer that cannot be had (the kernel reports no mount ID, a
+/// path with no folder or name, a failed look) is `false`: the caller keeps
+/// the error it already has.
+pub(crate) fn is_mount_point(path: &Path) -> bool {
+    if path.file_name().is_none() {
+        return false;
+    }
+    match (place_of(path, false), place_of(parent_dir(path), true)) {
+        (Ok(itself), Ok(folder)) => itself.mnt_id != folder.mnt_id,
+        _ => false,
+    }
+}
+
 /// For each of `sources`, whether moving it into the folder `dest` stays on
 /// one filesystem, that is, is a single rename(2) rather than a copy and a
 /// delete. One answer per source, in order.
@@ -147,7 +162,9 @@ fn exists(path: &Path) -> Result<(), Unread> {
 /// The answer is `Ok(true)` when both the device number and the mount ID of
 /// the two folders match. A source that is itself a mount point is judged by
 /// the folder it is in; rename(2) does not move a mount point at all
-/// (`EBUSY`), which is a failure of the move and not part of this answer.
+/// (`EBUSY`), which [`crate::move_items`] reports as
+/// [`FsError::MountPoint`]; it is a failure of the move and not part of this
+/// answer.
 /// `dest` is not required to be a folder; this tells where it is, not
 /// whether an item can go in.
 ///
@@ -213,6 +230,15 @@ mod tests {
             FsError::MountIdUnavailable { path: p } => assert_eq!(p, path),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn the_proc_mount_is_a_mount_point_and_a_file_in_it_is_not() {
+        // procfs is a mount of its own at /proc (proc_pid_mountinfo, proc(5)).
+        assert!(is_mount_point(Path::new("/proc")));
+        assert!(!is_mount_point(Path::new("/proc/version")));
+        assert!(!is_mount_point(Path::new("/proc/no-such-entry")));
+        assert!(!is_mount_point(Path::new("/")));
     }
 
     #[test]

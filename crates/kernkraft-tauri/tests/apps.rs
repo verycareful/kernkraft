@@ -29,6 +29,7 @@ const STUBS: &[&str] = &[
     "rec-browser",
     "rec-shell",
     "rec-open",
+    "rec-pics",
     "rec-launch",
     "rec-terminal-app",
     "xdg-mime",
@@ -164,7 +165,11 @@ fn open_default_groups_paths_by_app() {
     let dir = e.dir("group");
     let a = file(&dir, "a.txt", b"a");
     let b = file(&dir, "b.txt", b"b");
-    e.kk.open_default(vec![w(&a), w(&b)], None).unwrap();
+    let outcomes = e.kk.open_default(vec![w(&a), w(&b)], None).unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].app, "viewer.desktop");
+    assert_eq!(outcomes[0].paths, [w(&a), w(&b)]);
+    assert_eq!(outcomes[0].error, None);
     // %F: one launch with both files.
     let got = records("rec-open", "group", 1);
     assert_eq!(got.len(), 1);
@@ -174,6 +179,57 @@ fn open_default_groups_paths_by_app() {
             a.to_string_lossy().into_owned(),
             b.to_string_lossy().into_owned()
         ]
+    );
+}
+
+// One application failing to start is its own outcome, with its own files;
+// the application before it and the one after it are started and say so.
+#[test]
+fn open_default_reports_each_application_and_a_failure_stops_no_other() {
+    stubs();
+    let e = env();
+    viewer(&e);
+    desktop(
+        &e,
+        "broken.desktop",
+        "[Desktop Entry]\nType=Application\nName=Broken\nExec=/definitely/not/a/program %F\nMimeType=application/pdf;\n",
+    );
+    desktop(
+        &e,
+        "pics.desktop",
+        "[Desktop Entry]\nType=Application\nName=Pics\nExec=rec-pics %F\nMimeType=image/png;\n",
+    );
+    mimeapps(
+        &e,
+        "[Default Applications]\ntext/plain=viewer.desktop\napplication/pdf=broken.desktop\nimage/png=pics.desktop\n",
+    );
+    let dir = e.dir("each");
+    let (a, doc, pic) = (
+        file(&dir, "a.txt", b"a"),
+        file(&dir, "doc.pdf", b"d"),
+        file(&dir, "p.png", b"p"),
+    );
+
+    let outcomes =
+        e.kk.open_default(vec![w(&a), w(&doc), w(&pic)], None)
+            .unwrap();
+
+    let apps: Vec<&str> = outcomes.iter().map(|o| o.app.as_str()).collect();
+    assert_eq!(apps, ["viewer.desktop", "broken.desktop", "pics.desktop"]);
+    assert_eq!(outcomes[0].error, None);
+    let failed = outcomes[1].error.as_ref().unwrap();
+    assert_eq!(failed.kind, "Launch");
+    assert_eq!(outcomes[1].paths, [w(&doc)]);
+    assert_eq!(outcomes[2].error, None);
+    assert_eq!(outcomes[2].paths, [w(&pic)]);
+    // The two that were started got exactly their own files.
+    assert_eq!(
+        records("rec-open", "each", 1)[0][1..],
+        [a.to_string_lossy().into_owned()]
+    );
+    assert_eq!(
+        records("rec-pics", "each", 1)[0][1..],
+        [pic.to_string_lossy().into_owned()]
     );
 }
 
@@ -311,6 +367,35 @@ fn apps_for_omits_no_display_except_the_default() {
     let default = e.kk.app_default(w(&doc)).unwrap().app.unwrap();
     assert!(default.no_display);
     assert_eq!(default.id, "custom.desktop");
+}
+
+// The default is always in the "Open with" list, first, even when it is named
+// under [Default Applications] without registering the type: here
+// `other.desktop` lists only image/png and is the default for text/plain.
+#[test]
+fn apps_for_shows_a_default_that_is_not_an_association_first() {
+    stubs();
+    let e = env();
+    viewer(&e);
+    desktop(
+        &e,
+        "other.desktop",
+        "[Desktop Entry]\nType=Application\nName=Other\nExec=rec-open %f\nMimeType=image/png;\n",
+    );
+    mimeapps(&e, "[Default Applications]\ntext/plain=other.desktop\n");
+    let doc = file(&e.dir("na"), "a.txt", b"x");
+    let ids: Vec<String> =
+        e.kk.apps_for(w(&doc))
+            .unwrap()
+            .apps
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+    assert_eq!(ids, ["other.desktop", "viewer.desktop"]);
+    assert_eq!(
+        e.kk.app_default(w(&doc)).unwrap().app.unwrap().id,
+        "other.desktop"
+    );
 }
 
 /// The complete records of stub `name` whose bytes contain `marker`, as

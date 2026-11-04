@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use kernkraft_fs::{
-    create_dir, create_file, delete_permanently, rename, unique_name, validate_name, FsError,
-    NoProgress, Progress,
+    create_dir, create_file, delete_permanently, rename, rename_noreplace, unique_name,
+    validate_name, FsError, NoProgress, Progress,
 };
 
 #[test]
@@ -216,4 +216,86 @@ fn rename_directory_and_missing_same_name() {
         rename(&missing, "missing"),
         Err(FsError::NotFound { .. })
     ));
+}
+
+#[test]
+fn rename_noreplace_moves_a_file_a_folder_and_a_link_as_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let file = root.join("file");
+    fs::write(&file, "f").unwrap();
+    let folder = root.join("folder");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("inside"), "i").unwrap();
+    // A link to a file that is not there: moved as the link it is.
+    let link = root.join("link");
+    symlink("nowhere", &link).unwrap();
+    fs::create_dir(root.join("dest")).unwrap();
+
+    for name in ["file", "folder", "link"] {
+        rename_noreplace(&root.join(name), &root.join("dest").join(name)).unwrap();
+        assert!(fs::symlink_metadata(root.join(name)).is_err(), "{name}");
+    }
+
+    let dest = root.join("dest");
+    assert_eq!(fs::read_to_string(dest.join("file")).unwrap(), "f");
+    assert_eq!(fs::read_to_string(dest.join("folder/inside")).unwrap(), "i");
+    assert_eq!(
+        fs::read_link(dest.join("link")).unwrap(),
+        PathBuf::from("nowhere")
+    );
+}
+
+#[test]
+fn rename_noreplace_never_replaces_what_is_at_the_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let from = root.join("from");
+    fs::write(&from, "from").unwrap();
+    // A file, a folder and a dangling link, each of which a plain rename(2)
+    // would replace or, for the folder, refuse differently.
+    let file = root.join("file");
+    fs::write(&file, "kept").unwrap();
+    let folder = root.join("folder");
+    fs::create_dir(&folder).unwrap();
+    let dangling = root.join("dangling");
+    symlink("nowhere", &dangling).unwrap();
+
+    for to in [&file, &folder, &dangling] {
+        let err = rename_noreplace(&from, to).unwrap_err();
+        assert!(
+            matches!(&err, FsError::Exists { path } if path == to),
+            "{err:?}"
+        );
+    }
+
+    assert_eq!(fs::read_to_string(&from).unwrap(), "from");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "kept");
+    assert!(folder.is_dir());
+    assert_eq!(fs::read_link(&dangling).unwrap(), PathBuf::from("nowhere"));
+}
+
+#[test]
+fn rename_noreplace_names_the_path_that_is_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let there = root.join("there");
+    fs::write(&there, "x").unwrap();
+
+    let gone = root.join("gone");
+    let err = rename_noreplace(&gone, &root.join("to")).unwrap_err();
+    assert!(
+        matches!(&err, FsError::NotFound { path } if *path == gone),
+        "{err:?}"
+    );
+
+    // The source exists, the folder to put it in does not: that folder is
+    // what is missing.
+    let nowhere = root.join("nowhere");
+    let err = rename_noreplace(&there, &nowhere.join("to")).unwrap_err();
+    assert!(
+        matches!(&err, FsError::NotFound { path } if *path == nowhere),
+        "{err:?}"
+    );
+    assert_eq!(fs::read_to_string(&there).unwrap(), "x");
 }

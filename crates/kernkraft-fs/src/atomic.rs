@@ -20,7 +20,7 @@ use std::time::SystemTime;
 use rustix::fs::{fchown, Gid, Uid};
 use rustix::io::Errno;
 
-use crate::sys::{parent_dir, rename_noreplace};
+use crate::sys::{parent_dir, renameat_noreplace};
 use crate::xattr::copy_all;
 use crate::FsError;
 
@@ -234,7 +234,7 @@ fn keep_ownership(
 
 /// [`write_atomic`] with [`Expect::Nothing`]: a temp file in the folder of
 /// `path`, flushed and `fsync`ed, renamed to `path` only if nothing is there
-/// ([`rename_noreplace`]), then the folder `fsync`ed so the new name
+/// ([`renameat_noreplace`]), then the folder `fsync`ed so the new name
 /// survives a crash. An error up to and including the rename leaves the
 /// folder as it was: no file at `path`, no temp file. After the rename the
 /// file is in place, so a failed folder `fsync` or stamp is an error with
@@ -265,7 +265,7 @@ fn create_new(
     // Dropped on a failed rename, the temp file is removed; after a rename
     // its old name is gone, and it is kept so nothing else is removed by it.
     let temp = temp.into_temp_path();
-    rename_noreplace(&temp, path).map_err(|e| {
+    renameat_noreplace(&temp, path).map_err(|e| {
         if e.kind() == ErrorKind::AlreadyExists {
             FsError::Exists {
                 path: path.to_path_buf(),

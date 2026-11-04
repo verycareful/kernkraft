@@ -31,6 +31,18 @@
 //! home folder, only read, and neither wait for nor hold back an undo.
 //! Operations may run side by side; each item's failure, a source removed
 //! by another operation included, is in that operation's report.
+//!
+//! A copy, move or trash is journalled when it ends, so an entry for a
+//! rename or create made while it runs sits below it. If that rename moved
+//! an item the operation had already placed, the operation's entry could
+//! not stamp the item when it was recorded: its undo is refused with
+//! `Changed` (`Unverified`, naming the path), changes nothing, and the entry
+//! is taken off the stack, so the entries below it (the rename among them)
+//! stay undoable. Nothing is lost or replaced. A rename or create that
+//! touches nothing the operation placed leaves its undo as it was. Rename and
+//! create are not refused while an operation runs, because renaming an
+//! unrelated file during a long copy is ordinary use, and a refusal that
+//! spared the rare overlap would take that away.
 
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -555,6 +567,21 @@ impl<R: Runtime> Kernkraft<R> {
         }
         registry.undo_running = true;
         Ok(UndoGuard { kk: self.clone() })
+    }
+
+    /// `Busy` while an undo or redo runs. A rename or create takes the
+    /// journal, which an undo holds from its check to its last action (a
+    /// move back across filesystems can take minutes), so it is refused at
+    /// once, as a file operation is, instead of waiting that long. An undo
+    /// that starts just after this check still holds the journal first and
+    /// the call waits for it: slow in that one case, never wrong.
+    pub(crate) fn refuse_during_undo(&self) -> Result<(), WireError> {
+        if lock(&self.0.registry).undo_running {
+            return Err(WireError::from(PluginError::Busy(
+                "an undo or redo is running",
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) fn spawn(&self, job: Job, origin: Option<String>) -> Result<OpId, WireError> {
@@ -1192,5 +1219,58 @@ mod tests {
         let seen = Seen::of(&listed[0]);
         trash.purge(&listed[0]).unwrap();
         assert!(matches!(seen.check(), Err(FsError::NotFound { .. })));
+    }
+
+    /// While an undo runs it holds the journal, which a rename or a create
+    /// must also take: they say so at once instead of waiting out the undo
+    /// (a move back across filesystems can take minutes).
+    #[test]
+    fn rename_and_create_do_not_wait_out_an_undo() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use tauri::test::mock_app;
+
+        use crate::state::{lock, Config, Kernkraft};
+        use crate::wire::WirePath;
+
+        let app = mock_app();
+        let kk = Kernkraft::new(app.handle().clone(), Config::default());
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        let file = base.join("a");
+        fs::write(&file, "").unwrap();
+
+        // What an undo in progress looks like from outside: the flag set and
+        // the journal held.
+        let undo = kk.begin_undo().unwrap();
+        let journal = lock(&kk.0.journal);
+
+        let (answer, answered) = mpsc::channel();
+        let asked = kk.clone();
+        let (renamed, created, parent) = (
+            WirePath::from(file.as_path()),
+            WirePath::from(base.as_path()),
+            WirePath::from(base.as_path()),
+        );
+        std::thread::spawn(move || {
+            let rename = asked.rename(renamed, "b".to_owned()).unwrap_err().kind;
+            let dir = asked.create_dir(created, "d".to_owned()).unwrap_err().kind;
+            let file = asked.create_file(parent, "f".to_owned()).unwrap_err().kind;
+            let _ = answer.send((rename, dir, file));
+        });
+        let kinds = answered.recv_timeout(Duration::from_secs(20));
+        // Released before any assertion, so a failure does not leave the
+        // helper thread waiting on the journal for good.
+        drop(journal);
+        drop(undo);
+
+        assert_eq!(
+            kinds.unwrap(),
+            ("Busy".to_owned(), "Busy".to_owned(), "Busy".to_owned())
+        );
+        // Nothing was renamed or made.
+        assert!(file.exists());
+        assert!(!base.join("b").exists() && !base.join("d").exists() && !base.join("f").exists());
     }
 }

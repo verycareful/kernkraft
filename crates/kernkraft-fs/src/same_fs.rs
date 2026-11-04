@@ -163,8 +163,8 @@ pub(crate) fn is_mount_point(path: &Path) -> bool {
 /// the two folders match. A source that is itself a mount point is judged by
 /// the folder it is in; rename(2) does not move a mount point at all
 /// (`EBUSY` within its mount, `EXDEV` to another filesystem), and
-/// [`crate::move_items`] reports either as [`FsError::MountPoint`] without
-/// copying anything; that is a failure of the move and not part of this
+/// [`crate::move_items`] reports either, and a merge of it into a folder of
+/// the same name, as [`FsError::MountPoint`] without copying anything; that is a failure of the move and not part of this
 /// answer.
 /// `dest` is not required to be a folder; this tells where it is, not
 /// whether an item can go in.

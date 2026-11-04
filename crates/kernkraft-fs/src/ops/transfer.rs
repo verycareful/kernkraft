@@ -88,11 +88,13 @@ pub fn copy(
 /// share a filesystem, else a copy followed by deleting the source.
 /// Conflicts, progress, cancellation and the `Err` cases are as for
 /// [`copy`]; a source already in `dest_dir` is skipped. A source that is
-/// itself a mount point cannot be renamed, whether the destination is on its
-/// mount (`EBUSY`) or on another filesystem (`EXDEV`, where a copy and delete
-/// would empty the mounted folder): it fails with [`FsError::MountPoint`],
-/// nothing is copied or deleted, and it stays where it is. A folder that
-/// merely has a mount point somewhere inside it is not refused.
+/// itself a mount point is never moved: rename(2) refuses it, with `EBUSY`
+/// when the destination is on its mount and `EXDEV` when it is on another
+/// filesystem (where a copy and delete would empty the mounted folder), and
+/// merging it into a folder of the same name would move its contents out one
+/// by one. It fails with [`FsError::MountPoint`], nothing is copied, merged
+/// or deleted, and it stays where it is. A folder that merely has a mount
+/// point somewhere inside it is not refused.
 pub fn move_items(
     sources: &[PathBuf],
     dest_dir: &Path,
@@ -437,6 +439,16 @@ impl<'a> Transfer<'a> {
     /// settled entry by entry. After a move whose every entry went over,
     /// the emptied source directory is removed.
     fn merge(&mut self, mode: Mode, src: &Path, target: &Path) -> Placed {
+        // A mount point is never moved, and merging it would move out what
+        // the mount holds one entry at a time before the last step failed.
+        if mode == Mode::Move && is_mount_point(src) {
+            return self.fail(
+                src,
+                FsError::MountPoint {
+                    path: src.to_path_buf(),
+                },
+            );
+        }
         let (outcome, placed) = self.each_child(mode, src, target);
         if placed > 0 {
             // Mixed with what was there, whatever happens next.

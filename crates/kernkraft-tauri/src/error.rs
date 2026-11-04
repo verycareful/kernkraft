@@ -176,10 +176,18 @@ pub enum PluginError {
         source: std::io::Error,
     },
     /// Once-only volume problems that arrived while the hold for
-    /// `volumes_problems_take` was full: `count` were not kept, the first
-    /// `kept` were.
-    #[error("{count} more not shown: only the first {kept} volume problems are kept until taken")]
-    ProblemsNotShown { count: usize, kept: usize },
+    /// `volumes_problems_take` was full: `count` distinct ones were not
+    /// kept, the first `kept` were. With `at_least` there were more than
+    /// `count`: the hold stopped telling them apart at that many.
+    #[error(
+        "{}{count} more not shown: only the first {kept} volume problems are kept until taken",
+        if *at_least { "at least " } else { "" }
+    )]
+    ProblemsNotShown {
+        count: usize,
+        kept: usize,
+        at_least: bool,
+    },
     /// A worker panicked or could not be joined; a bug, reported instead of
     /// lost.
     #[error("internal error: {0}")]

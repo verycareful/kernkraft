@@ -41,12 +41,15 @@
 //! gone. A program outside Kern can still do either; the undo then stops
 //! with `Changed` rather than act on a file that differs from the one
 //! recorded. Search and the Documents walk only read and never block these.
+//! A rename or create lasts moments, and an operation or an undo that starts
+//! meanwhile is refused with `Busy`; no lock of the registry is held while it
+//! works, so cancelling, answering a conflict and the exit never wait for it.
 
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use kernkraft_fs::{
@@ -202,6 +205,8 @@ pub(crate) struct Registry {
     last: OpId,
     ops: HashMap<OpId, Arc<OpHandle>>,
     undo_running: bool,
+    /// Renames and creates under way (see [`Kernkraft::admit_edit`]).
+    edits: usize,
     /// Background workers not yet finished, op-done sent included.
     workers: usize,
 }
@@ -284,6 +289,23 @@ pub(crate) struct UndoGuard<R: Runtime> {
 impl<R: Runtime> Drop for UndoGuard<R> {
     fn drop(&mut self) {
         lock(&self.kk.0.registry).undo_running = false;
+    }
+}
+
+/// What `Busy` says to an operation or an undo that starts during a rename
+/// or create, which lasts moments.
+const EDIT_RUNNING: &str = "a rename or create is running; try again in a moment";
+
+/// Counts a rename or create as under way until dropped, also when it
+/// unwinds. It holds no lock: the registry is free while the edit works.
+pub(crate) struct EditGuard<R: Runtime> {
+    kk: Kernkraft<R>,
+}
+
+impl<R: Runtime> Drop for EditGuard<R> {
+    fn drop(&mut self) {
+        let mut registry = lock(&self.kk.0.registry);
+        registry.edits = registry.edits.saturating_sub(1);
     }
 }
 
@@ -519,19 +541,23 @@ impl<R: Runtime> Kernkraft<R> {
             .ok_or_else(|| WireError::from(PluginError::UnknownOp(op)))
     }
 
-    /// Registers an operation. Refused while an undo or redo runs.
+    /// Registers an operation. Refused while an undo, a redo or a rename or
+    /// create runs.
     pub(crate) fn register(&self, origin: Option<String>) -> Result<Running<R>, WireError> {
         self.register_as(origin, false)
     }
 
-    /// Registers an operation; a `reader` is not refused while an undo or
-    /// redo runs.
+    /// Registers an operation; a `reader` is not refused while an undo, a
+    /// redo or a rename or create runs.
     fn register_as(&self, origin: Option<String>, reader: bool) -> Result<Running<R>, WireError> {
         let mut registry = lock(&self.0.registry);
         if registry.undo_running && !reader {
             return Err(WireError::from(PluginError::Busy(
                 "an undo or redo is running",
             )));
+        }
+        if registry.edits > 0 && !reader {
+            return Err(WireError::from(PluginError::Busy(EDIT_RUNNING)));
         }
         registry.last += 1;
         let handle = Arc::new(OpHandle {
@@ -563,6 +589,9 @@ impl<R: Runtime> Kernkraft<R> {
                 "a file operation is running; undo and redo wait until it ends",
             )));
         }
+        if registry.edits > 0 {
+            return Err(WireError::from(PluginError::Busy(EDIT_RUNNING)));
+        }
         registry.undo_running = true;
         Ok(UndoGuard { kk: self.clone() })
     }
@@ -574,11 +603,17 @@ impl<R: Runtime> Kernkraft<R> {
     /// minutes, and an operation is journalled when it ends, so an item
     /// renamed while the operation runs is not where its entry says it is
     /// and a name reused meanwhile would be taken for the item the operation
-    /// placed. The registry stays locked for as long as the returned guard
-    /// lives, so no operation, undo or redo can start between the check and
-    /// the rename or create it admits.
-    pub(crate) fn admit_edit(&self) -> Result<MutexGuard<'_, Registry>, WireError> {
-        let registry = lock(&self.0.registry);
+    /// placed.
+    ///
+    /// The check and the count happen in one critical section of the
+    /// registry, which is released before the edit touches the file system:
+    /// the edit may sit on a hung mount, and no other use of the registry
+    /// (cancelling, answering, the exit's wait) may wait for it. While the
+    /// returned guard lives, an operation or an undo that tries to start is
+    /// refused with `Busy` instead, so none starts between the check and the
+    /// edit.
+    pub(crate) fn admit_edit(&self) -> Result<EditGuard<R>, WireError> {
+        let mut registry = lock(&self.0.registry);
         if registry.undo_running {
             return Err(WireError::from(PluginError::Busy(
                 "an undo or redo is running; wait for it to finish",
@@ -589,7 +624,8 @@ impl<R: Runtime> Kernkraft<R> {
                 "a file operation is running; wait for it to finish",
             )));
         }
-        Ok(registry)
+        registry.edits += 1;
+        Ok(EditGuard { kk: self.clone() })
     }
 
     pub(crate) fn spawn(&self, job: Job, origin: Option<String>) -> Result<OpId, WireError> {
@@ -1192,6 +1228,7 @@ mod tests {
     use kernkraft_fs::{FsError, Trash};
 
     use super::Seen;
+    use crate::state::lock;
 
     #[test]
     fn a_same_named_entry_trashed_after_listing_is_not_the_one_seen() {
@@ -1346,5 +1383,84 @@ mod tests {
         let (_app, kk, _root, base) = fixture();
         let _reader = kk.register_as(None, true).unwrap();
         assert_eq!(edits(&kk, &base, "reader"), ["Ok", "Ok", "Ok"]);
+    }
+
+    /// Runs `f` on another thread and gives its answer, or `None` when it
+    /// has not answered in twenty seconds (it is then blocked; the thread is
+    /// left to finish when the lock it waits on is released).
+    fn within_patience<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+        let (answer, answered) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = answer.send(f());
+        });
+        answered
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .ok()
+    }
+
+    /// An edit in progress (the registry's count, held by the guard) refuses
+    /// the start of a file operation and of an undo or redo, and the guard
+    /// lifts it, also when the edit unwinds.
+    #[test]
+    fn a_running_edit_refuses_an_operation_and_an_undo() {
+        let (_app, kk, _root, _base) = fixture();
+        let edit = kk.admit_edit().unwrap();
+        assert_eq!(kk.register(None).err().unwrap().kind, "Busy");
+        assert_eq!(kk.begin_undo().err().unwrap().kind, "Busy");
+        // A reader never conflicts with an edit.
+        drop(kk.register_as(None, true).unwrap());
+        drop(edit);
+        drop(kk.register(None).unwrap());
+        drop(kk.begin_undo().unwrap());
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _edit = kk.admit_edit().unwrap();
+            panic!("the edit fails");
+        }));
+        assert!(unwound.is_err());
+        drop(kk.register(None).unwrap());
+    }
+
+    /// While an edit is under way nothing else in the registry waits for
+    /// it: it may be stuck on a hung mount, and cancelling an operation,
+    /// answering its conflict, registering a reader and the exit's wait for
+    /// workers all go on.
+    #[test]
+    fn the_registry_does_not_wait_for_an_edit_in_progress() {
+        let (_app, kk, _root, _base) = fixture();
+        let reader = kk.register_as(None, true).unwrap();
+        let op = reader.handle.id;
+        let edit = kk.admit_edit().unwrap();
+        lock(&kk.0.registry).workers += 1;
+
+        let asked = kk.clone();
+        let answers = within_patience(move || {
+            let cancelled = asked.cancel_op(op).is_ok();
+            let answered = asked
+                .answer_conflict(op, 1, "skip", false)
+                .unwrap_err()
+                .kind;
+            asked.cancel_from(Some("no-such-window"));
+            let second_reader = asked.register_as(None, true).is_ok();
+            let started = std::time::Instant::now();
+            let all_done = asked.wait_for_workers(std::time::Duration::from_millis(200));
+            (
+                cancelled,
+                answered,
+                second_reader,
+                all_done,
+                started.elapsed(),
+            )
+        });
+        drop(edit);
+        lock(&kk.0.registry).workers -= 1;
+
+        let (cancelled, answered, second_reader, all_done, waited) = answers.unwrap();
+        assert!(cancelled && second_reader);
+        assert_eq!(answered, "UnknownConflict");
+        // The wait kept its bound: the worker did not finish, and it gave up
+        // at the limit, not when the edit ended.
+        assert!(!all_done);
+        assert!(waited < std::time::Duration::from_secs(15), "{waited:?}");
     }
 }

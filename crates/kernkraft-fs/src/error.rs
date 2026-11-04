@@ -40,9 +40,10 @@ pub enum FsError {
     /// mount point: rename(2) fails for one with `EBUSY` when the
     /// destination is on its mount ("is in use by the system (for example
     /// as a mount point)") and with `EXDEV` when it is on another
-    /// filesystem, where a copy and delete would empty the mounted folder.
-    /// Nothing is copied or deleted and the item stays where it is. Copying
-    /// it is the alternative.
+    /// filesystem, where a copy and delete would empty the mounted folder; a
+    /// mount point that is the source of a merge into a folder of the same
+    /// name is refused too. Nothing is copied, merged or deleted and the item
+    /// stays where it is. Copying it is the alternative.
     #[error("{path} is a mount point and cannot be moved")]
     MountPoint { path: PathBuf },
     /// The kernel did not report a mount ID for `path` (`statx(2)` with

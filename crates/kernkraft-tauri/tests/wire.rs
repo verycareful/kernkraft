@@ -593,7 +593,11 @@ fn plugin_error_kind_names() {
             true,
         ),
         (
-            PluginError::ProblemsNotShown { count: 3, kept: 64 },
+            PluginError::ProblemsNotShown {
+                count: 3,
+                kept: 64,
+                at_least: false,
+            },
             "ProblemsNotShown",
             false,
         ),

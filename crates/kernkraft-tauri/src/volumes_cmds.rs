@@ -60,8 +60,8 @@
 //!   [`MAX_HELD_PROBLEMS`] distinct problems are held, the first ones; the
 //!   take then ends with one more problem, `ProblemsNotShown`, saying how many
 //!   more distinct ones arrived and were not kept ("N more not shown"). The
-//!   distinct ones are told apart up to [`MAX_COUNTED_UNKEPT`]; past that
-//!   every arrival adds one, so the count is then an upper bound.
+//!   distinct ones are told apart up to [`MAX_COUNTED_UNKEPT`]; past that the
+//!   count stays there and the problem says "at least N more not shown".
 //! - Not held, because they are not once-only: what the listing itself
 //!   finds (`problems` of every listing) and a watcher that failed to start
 //!   (reported by each listing until it does).
@@ -100,8 +100,8 @@ pub(crate) const MAX_HELD_PROBLEMS: usize = 64;
 /// Most distinct problems told apart among those that did not fit in the
 /// hold: 4096 fingerprints are 32 KiB of hash values, and a device that
 /// flaps with a message that changes each time would otherwise grow the set
-/// for as long as the app runs. Past it each further arrival is counted as
-/// one more, so the count in `ProblemsNotShown` is then an upper bound.
+/// for as long as the app runs. Past it the count in `ProblemsNotShown`
+/// stays at this number and the problem says "at least".
 pub(crate) const MAX_COUNTED_UNKEPT: usize = 4096;
 
 /// The payload of [`EVENT_VOLUMES_CHANGED`]: the volumes may have changed,
@@ -125,8 +125,9 @@ pub(crate) struct VolumesState {
     /// while `held` was full, at most [`MAX_COUNTED_UNKEPT`]: the same
     /// problem arriving again is counted once.
     not_kept: HashSet<u64>,
-    /// Arrivals beyond [`MAX_COUNTED_UNKEPT`], each counted as one.
-    not_kept_beyond: usize,
+    /// A problem not in `not_kept` arrived after it was full: there were more
+    /// distinct ones than it holds.
+    not_kept_overflowed: bool,
     watcher: Option<VolumeWatcher>,
 }
 
@@ -143,7 +144,7 @@ impl VolumesState {
             } else if self.not_kept.len() < MAX_COUNTED_UNKEPT {
                 self.not_kept.insert(fingerprint(problem));
             } else if !self.not_kept.contains(&fingerprint(problem)) {
-                self.not_kept_beyond += 1;
+                self.not_kept_overflowed = true;
             }
         }
     }
@@ -152,12 +153,13 @@ impl VolumesState {
     /// did not fit, if any. Empties both.
     fn take_held(&mut self) -> Vec<WireError> {
         let mut taken = std::mem::take(&mut self.held);
-        let count =
-            std::mem::take(&mut self.not_kept).len() + std::mem::take(&mut self.not_kept_beyond);
+        let count = std::mem::take(&mut self.not_kept).len();
+        let at_least = std::mem::take(&mut self.not_kept_overflowed);
         if count > 0 {
             taken.push(WireError::from(PluginError::ProblemsNotShown {
                 count,
                 kept: MAX_HELD_PROBLEMS,
+                at_least,
             }));
         }
         taken
@@ -588,7 +590,7 @@ mod tests {
         let overflow = &taken[MAX_HELD_PROBLEMS];
         assert_eq!(overflow.kind, "ProblemsNotShown");
         assert!(
-            overflow.message.contains("5 more not shown"),
+            overflow.message.starts_with("5 more not shown"),
             "{}",
             overflow.message
         );
@@ -667,8 +669,6 @@ mod tests {
         assert_eq!(kinds, ["UdisksAbsent", "CallbackPanic"]);
     }
 
-    /// Startup problems a listing has not reported yet are settled by taking
-    /// them: the next listing does not repeat what the consumer has.
     fn problem(message: &str) -> WireError {
         WireError {
             kind: "CallbackPanic".to_owned(),
@@ -726,12 +726,17 @@ mod tests {
         let last = taken.last().unwrap();
         assert!(
             last.message
-                .contains(&format!("{} more not shown", MAX_COUNTED_UNKEPT + extra)),
+                .starts_with(&format!("at least {MAX_COUNTED_UNKEPT} more not shown")),
             "{}",
             last.message
         );
+        // Taking starts the count again, with nothing said about "at least".
+        state.hold(&[problem("fresh")]);
+        assert!(state.held.len() == 1 && !state.not_kept_overflowed);
     }
 
+    /// Startup problems a listing has not reported yet are settled by taking
+    /// them: the next listing does not repeat what the consumer has.
     #[test]
     fn taking_settles_unreported_startup_problems() {
         let (_app, kk) = kk();

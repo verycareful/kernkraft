@@ -469,6 +469,51 @@ fn in_namespace(src: &Path, same_dir: &Path, bound: &Path, tmpfs: &Path) {
         other => panic!("{other:?}"),
     }
     assert!(clash.exists());
+
+    // A mount point that is the source of a merge is refused too, before
+    // any of its children is touched: the folder it would merge into has its
+    // name, and Replace was answered.
+    let target = folder(same_dir, "bound");
+    let report = move_items(
+        &[bound.to_path_buf()],
+        same_dir,
+        &|_, _| Conflict::Replace,
+        &NoProgress,
+    )
+    .unwrap();
+    match &report.failed[..] {
+        [(item, FsError::MountPoint { path })] => {
+            assert_eq!(item, bound);
+            assert_eq!(path, bound);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fs::read_to_string(bound.join("inside")).unwrap(), "x");
+    assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+    assert!(report.replaced.is_empty());
+
+    // A file that is a mount point is refused as a source, within its mount
+    // (EBUSY) and to another filesystem (EXDEV).
+    let mounted_file = other.join("clash");
+    for dest in [same_dir, tmpfs] {
+        let report = move_items(
+            std::slice::from_ref(&mounted_file),
+            dest,
+            &|_, _| Conflict::Skip,
+            &NoProgress,
+        )
+        .unwrap();
+        match &report.failed[..] {
+            [(item, FsError::MountPoint { path })] => {
+                assert_eq!(item, &mounted_file);
+                assert_eq!(path, &mounted_file);
+            }
+            other => panic!("{dest:?}: {other:?}"),
+        }
+        assert!(report.done.is_empty());
+        assert!(!dest.join("clash").exists());
+    }
+    assert!(mounted_file.exists());
 }
 
 /// `BTRFS_SUPER_MAGIC`, the `f_type` of a btrfs filesystem (statfs(2)).

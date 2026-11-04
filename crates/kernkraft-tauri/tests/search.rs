@@ -282,3 +282,40 @@ fn documents_lists_text_only() {
     );
     assert_eq!(done.scan.unwrap().found, 4);
 }
+
+// Search only reads: a rename or a create goes ahead while one runs.
+#[test]
+fn rename_and_create_go_ahead_while_a_search_runs() {
+    let e = env();
+    let root = e.dir("busy-search");
+    for i in 0..20 {
+        fs::write(root.join(format!("f{i}")), "").unwrap();
+    }
+    fs::write(root.join("keep"), "").unwrap();
+    // Hold the walk right after its first batch: the search is registered
+    // and running while the edits are made.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let held = std::sync::Mutex::new(Some(held));
+    let (reached, at_batch) = std::sync::mpsc::channel::<()>();
+    let reached = std::sync::Mutex::new(reached);
+    e.app.listen_any(EVENT_SEARCH_HIT, move |_| {
+        if let Some(rx) = held.lock().unwrap().take() {
+            let _ = reached.lock().unwrap().send(());
+            let _ = rx.recv_timeout(EVENT_WAIT);
+        }
+    });
+    let search =
+        e.kk.search("s".to_owned(), vec![w(&root)], "f".to_owned(), false, None)
+            .unwrap();
+    at_batch.recv_timeout(EVENT_WAIT).unwrap();
+
+    e.kk.rename(w(&root.join("keep")), "kept".to_owned())
+        .unwrap();
+    e.kk.create_dir(w(&root), "made".to_owned()).unwrap();
+    e.kk.create_file(w(&root), "made.txt".to_owned()).unwrap();
+    assert!(root.join("kept").exists() && root.join("made").is_dir());
+
+    release.send(()).unwrap();
+    e.kk.cancel_op(search).unwrap();
+    e.wait_done(search);
+}

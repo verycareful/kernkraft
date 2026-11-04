@@ -16,15 +16,14 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # The step limits are guards against a hang, not measurements. Nothing is
-    # cached between runs. The last run that passed (41583328405) took:
-    # checkout 1 s, system libraries 32 s, toolchain 1 s, format 2 s, clippy
-    # 266 s, test 380 s, release timing 11 s, boundary 2 s, deny 15 s. The
+    # The step limits are guards against a hang, not measurements, and
+    # nothing is cached between runs. The steps take: checkout 1 s, system
+    # libraries 32 s, toolchain 1 s, format 2 s, clippy 266 s, test 380 s,
+    # release timing 11 s, boundary 2 s, deny 15 s (run 41583328405). The
     # release timing step builds only kernkraft-xdg-apps and its few small
-    # dependencies in release (`-p`), which is why a fresh build of it takes
-    # seconds and a cache would save next to nothing. One earlier run was
-    # slower, 43 minutes 51 seconds (d4b0ef4), so the job limit is 60
-    # minutes, above that run.
+    # dependencies in release (`-p`), so a cache would save next to nothing.
+    # The job limit of 60 minutes sits above the slowest run seen, 43
+    # minutes 51 seconds.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7

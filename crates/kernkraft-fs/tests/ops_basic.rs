@@ -299,3 +299,24 @@ fn rename_noreplace_names_the_path_that_is_missing() {
     );
     assert_eq!(fs::read_to_string(&there).unwrap(), "x");
 }
+
+#[test]
+fn rename_noreplace_of_a_folder_into_its_own_descendant_fails_and_leaves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let top = root.join("top");
+    fs::create_dir_all(top.join("below")).unwrap();
+    fs::write(top.join("below/inside"), "i").unwrap();
+
+    // The kernel refuses with EINVAL (rename(2)); the call reports it as an
+    // I/O error naming the source, and no placeholder folder stays behind.
+    let err = rename_noreplace(&top, &top.join("below/top")).unwrap_err();
+
+    assert!(
+        matches!(&err, FsError::Io { path, source } if *path == top && source.kind() == std::io::ErrorKind::InvalidInput),
+        "{err:?}"
+    );
+    assert_eq!(fs::read_to_string(top.join("below/inside")).unwrap(), "i");
+    assert!(!top.join("below/top").exists());
+    assert_eq!(fs::read_dir(top.join("below")).unwrap().count(), 1);
+}

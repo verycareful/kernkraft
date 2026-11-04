@@ -54,11 +54,14 @@
 //!   also settles the startup problems no listing has reported yet, so the
 //!   next listing does not repeat what the consumer already has. Windows
 //!   share the hold: whichever takes first gets them.
-//! - A problem identical to one already held is held once, so UDisks2
+//! - A problem identical to one already held (the same `kind`, `message` and
+//!   `path`; `details` do not tell two problems apart) is held once, so UDisks2
 //!   leaving and returning over and over does not grow the hold. At most
 //!   [`MAX_HELD_PROBLEMS`] distinct problems are held, the first ones; the
 //!   take then ends with one more problem, `ProblemsNotShown`, saying how many
-//!   more distinct ones arrived and were not kept ("N more not shown").
+//!   more distinct ones arrived and were not kept ("N more not shown"). The
+//!   distinct ones are told apart up to [`MAX_COUNTED_UNKEPT`]; past that
+//!   every arrival adds one, so the count is then an upper bound.
 //! - Not held, because they are not once-only: what the listing itself
 //!   finds (`problems` of every listing) and a watcher that failed to start
 //!   (reported by each listing until it does).
@@ -94,6 +97,13 @@ pub const EVENT_VOLUMES_CHANGED: &str = "kernkraft://volumes-changed";
 /// take (`PluginError::ProblemsNotShown`), not dropped silently.
 pub(crate) const MAX_HELD_PROBLEMS: usize = 64;
 
+/// Most distinct problems told apart among those that did not fit in the
+/// hold: 4096 fingerprints are 32 KiB of hash values, and a device that
+/// flaps with a message that changes each time would otherwise grow the set
+/// for as long as the app runs. Past it each further arrival is counted as
+/// one more, so the count in `ProblemsNotShown` is then an upper bound.
+pub(crate) const MAX_COUNTED_UNKEPT: usize = 4096;
+
 /// The payload of [`EVENT_VOLUMES_CHANGED`]: the volumes may have changed,
 /// list them again. `problems` are errors of the watch itself since the last
 /// event, usually none.
@@ -112,9 +122,11 @@ pub(crate) struct VolumesState {
     /// [`MAX_HELD_PROBLEMS`] (see the module documentation).
     held: Vec<WireError>,
     /// Fingerprints ([`fingerprint`]) of the distinct problems that arrived
-    /// while `held` was full: the same problem arriving again is counted
-    /// once. Eight bytes each, so a consumer that never takes costs little.
+    /// while `held` was full, at most [`MAX_COUNTED_UNKEPT`]: the same
+    /// problem arriving again is counted once.
     not_kept: HashSet<u64>,
+    /// Arrivals beyond [`MAX_COUNTED_UNKEPT`], each counted as one.
+    not_kept_beyond: usize,
     watcher: Option<VolumeWatcher>,
 }
 
@@ -123,13 +135,15 @@ impl VolumesState {
     /// do not fit are counted.
     fn hold(&mut self, problems: &[WireError]) {
         for problem in problems {
-            if self.held.contains(problem) {
+            if self.held.iter().any(|held| same_problem(held, problem)) {
                 continue;
             }
             if self.held.len() < MAX_HELD_PROBLEMS {
                 self.held.push(problem.clone());
-            } else {
+            } else if self.not_kept.len() < MAX_COUNTED_UNKEPT {
                 self.not_kept.insert(fingerprint(problem));
+            } else if !self.not_kept.contains(&fingerprint(problem)) {
+                self.not_kept_beyond += 1;
             }
         }
     }
@@ -138,7 +152,8 @@ impl VolumesState {
     /// did not fit, if any. Empties both.
     fn take_held(&mut self) -> Vec<WireError> {
         let mut taken = std::mem::take(&mut self.held);
-        let count = std::mem::take(&mut self.not_kept).len();
+        let count =
+            std::mem::take(&mut self.not_kept).len() + std::mem::take(&mut self.not_kept_beyond);
         if count > 0 {
             taken.push(WireError::from(PluginError::ProblemsNotShown {
                 count,
@@ -149,8 +164,14 @@ impl VolumesState {
     }
 }
 
-/// A hash of what identifies a problem (its `kind`, `message` and `path`,
-/// as the module documentation says a consumer does), to count distinct ones
+/// Whether two problems are the same one: the same `kind`, `message` and
+/// `path`, which is how a consumer tells them apart (see the module
+/// documentation). `details` are not compared.
+fn same_problem(a: &WireError, b: &WireError) -> bool {
+    a.kind == b.kind && a.message == b.message && a.path == b.path
+}
+
+/// A hash of what [`same_problem`] compares, to count distinct problems
 /// without keeping them.
 fn fingerprint(problem: &WireError) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -648,6 +669,69 @@ mod tests {
 
     /// Startup problems a listing has not reported yet are settled by taking
     /// them: the next listing does not repeat what the consumer has.
+    fn problem(message: &str) -> WireError {
+        WireError {
+            kind: "CallbackPanic".to_owned(),
+            message: message.to_owned(),
+            path: None,
+            details: None,
+        }
+    }
+
+    /// Problems that differ only in `details` are one problem, held or not
+    /// kept, as a consumer tells them apart by kind, message and path.
+    #[test]
+    fn details_do_not_tell_two_problems_apart() {
+        let mut state = VolumesState::default();
+        let with_details = WireError {
+            details: Some(Box::new(crate::error::WireDetails::Changed {
+                what: "Modified".to_owned(),
+            })),
+            ..problem("same")
+        };
+        state.hold(&[problem("same"), with_details.clone()]);
+        assert_eq!(state.held.len(), 1);
+
+        let mut full = VolumesState::default();
+        for i in 0..MAX_HELD_PROBLEMS {
+            full.hold(&[problem(&format!("held {i}"))]);
+        }
+        full.hold(&[
+            problem("over"),
+            WireError {
+                details: with_details.details,
+                ..problem("over")
+            },
+        ]);
+        let taken = full.take_held();
+        assert!(taken.last().unwrap().message.contains("1 more not shown"));
+    }
+
+    /// Past MAX_COUNTED_UNKEPT distinct problems the set stops growing and
+    /// each further arrival counts as one.
+    #[test]
+    fn the_unkept_set_is_capped() {
+        let mut state = VolumesState::default();
+        for i in 0..MAX_HELD_PROBLEMS {
+            state.hold(&[problem(&format!("held {i}"))]);
+        }
+        let extra = 10;
+        for i in 0..MAX_COUNTED_UNKEPT + extra {
+            state.hold(&[problem(&format!("over {i}"))]);
+        }
+        assert_eq!(state.not_kept.len(), MAX_COUNTED_UNKEPT);
+        // A repeat of one already counted adds nothing.
+        state.hold(&[problem("over 0")]);
+        let taken = state.take_held();
+        let last = taken.last().unwrap();
+        assert!(
+            last.message
+                .contains(&format!("{} more not shown", MAX_COUNTED_UNKEPT + extra)),
+            "{}",
+            last.message
+        );
+    }
+
     #[test]
     fn taking_settles_unreported_startup_problems() {
         let (_app, kk) = kk();

@@ -279,20 +279,18 @@ fn undo_refused_while_busy() {
     assert!(fs::symlink_metadata(path(&made)).is_err());
 }
 
-// A rename made while a move runs is journalled below the move. If it moved
-// an item the move had already placed, the move's entry could not stamp the
-// item when it was recorded, so its undo stops with Changed (Unverified),
-// does nothing, and is taken off the stack so the entries below it stay
-// undoable (the module documentation of `ops` says so).
+// A rename or create made while a move runs would be journalled below it,
+// and a placed item renamed (or its name reused) would make the move's undo
+// find or act on the wrong file. They are refused with Busy until the move
+// ends, then go ahead, and the move's undo is whole.
 #[test]
-fn rename_of_a_placed_item_during_a_move_makes_its_undo_stop_not_lose() {
+fn rename_and_create_wait_for_a_running_move_then_the_undo_is_whole() {
     let e = env();
     let src = e.dir("src");
     let dest = e.dir("dest");
     fs::write(src.join("a"), "a").unwrap();
     fs::write(src.join("b"), "b").unwrap();
     fs::write(dest.join("b"), "taken").unwrap();
-    let older = e.kk.create_file(w(&src), "older".into()).unwrap();
 
     let op =
         e.kk.start_op(
@@ -305,23 +303,26 @@ fn rename_of_a_placed_item_during_a_move_makes_its_undo_stop_not_lose() {
     // `a` has moved; `b` waits on its name clash.
     let conflict = e.wait_conflict(op);
     assert!(dest.join("a").exists());
-    e.kk.rename(w(&dest.join("a")), "a2".to_owned()).unwrap();
+    let busy = |r: Result<WirePath, kernkraft_tauri::WireError>| r.unwrap_err().kind;
+    assert_eq!(
+        busy(e.kk.rename(w(&dest.join("a")), "a2".to_owned())),
+        "Busy"
+    );
+    assert_eq!(busy(e.kk.create_dir(w(&dest), "d".to_owned())), "Busy");
+    assert_eq!(busy(e.kk.create_file(w(&dest), "a".to_owned())), "Busy");
+    assert!(dest.join("a").exists() && !dest.join("a2").exists() && !dest.join("d").exists());
+
     let id = conflict["conflict"].as_u64().unwrap();
     e.kk.answer_conflict(op, id, "skip", false).unwrap();
     e.wait_done(op);
 
-    // The move's entry is on top and cannot be verified.
-    let err = e.kk.undo().unwrap_err();
-    assert_eq!(err.kind, "Changed");
-    assert_eq!(err.path, Some(w(&dest.join("a"))));
-    // Nothing moved or was lost.
-    assert!(dest.join("a2").exists() && !src.join("a").exists());
-    assert_eq!(fs::read_to_string(dest.join("b")).unwrap(), "taken");
-    // It does not hold back the rename below it, nor the create below that.
+    // With the move over, the edits go ahead...
+    e.kk.create_dir(w(&dest), "d".to_owned()).unwrap();
+    // ...and so does the move's undo, once the newer create is undone.
+    e.kk.undo().unwrap();
     let outcome = e.kk.undo().unwrap();
-    assert_eq!(outcome.done, [w(&dest.join("a"))]);
-    let outcome = e.kk.undo().unwrap();
-    assert_eq!(outcome.done, [older]);
+    assert_eq!(outcome.done, [w(&src.join("a"))]);
+    assert!(src.join("a").exists() && !dest.join("a").exists());
 }
 
 #[test]

@@ -100,7 +100,13 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, FsError> {
 /// `from` and `to` must be on one filesystem: across two, and for a mount
 /// point, the failure is [`FsError::Io`] (`EXDEV`, `EBUSY`), as for
 /// rename(2). A missing `from` is [`FsError::NotFound`] naming it; when
-/// `from` is there and `to` cannot be reached, the missing folder is named.
+/// `from` is there and `to` cannot be reached, the folder `to` is in is
+/// named (its immediate folder, even when several levels are missing).
+/// Moving a folder into its own descendant is refused by the kernel with
+/// `EINVAL`; that is also what a filesystem without the flag answers, so the
+/// folder route is tried: an empty placeholder folder is made at `to` inside
+/// the source, the rename fails again and the placeholder is removed before
+/// the call returns [`FsError::Io`] naming `from`. Nothing is left behind.
 pub fn rename_noreplace(from: &Path, to: &Path) -> Result<(), FsError> {
     renameat_noreplace(from, to).map_err(|e| match e.kind() {
         ErrorKind::AlreadyExists => FsError::Exists {

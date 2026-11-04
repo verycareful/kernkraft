@@ -162,8 +162,9 @@ pub(crate) fn is_mount_point(path: &Path) -> bool {
 /// The answer is `Ok(true)` when both the device number and the mount ID of
 /// the two folders match. A source that is itself a mount point is judged by
 /// the folder it is in; rename(2) does not move a mount point at all
-/// (`EBUSY`), which [`crate::move_items`] reports as
-/// [`FsError::MountPoint`]; it is a failure of the move and not part of this
+/// (`EBUSY` within its mount, `EXDEV` to another filesystem), and
+/// [`crate::move_items`] reports either as [`FsError::MountPoint`] without
+/// copying anything; that is a failure of the move and not part of this
 /// answer.
 /// `dest` is not required to be a folder; this tells where it is, not
 /// whether an item can go in.
@@ -235,6 +236,14 @@ mod tests {
     #[test]
     fn the_proc_mount_is_a_mount_point_and_a_file_in_it_is_not() {
         // procfs is a mount of its own at /proc (proc_pid_mountinfo, proc(5)).
+        // The premise, checked so a host without procfs at /proc fails here
+        // and says so: /proc has a device number of its own.
+        use std::os::unix::fs::MetadataExt;
+        assert_ne!(
+            std::fs::metadata("/proc").unwrap().dev(),
+            std::fs::metadata("/").unwrap().dev(),
+            "this test needs procfs mounted at /proc"
+        );
         assert!(is_mount_point(Path::new("/proc")));
         assert!(!is_mount_point(Path::new("/proc/version")));
         assert!(!is_mount_point(Path::new("/proc/no-such-entry")));

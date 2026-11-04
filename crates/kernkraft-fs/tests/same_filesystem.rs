@@ -45,12 +45,13 @@ use kernkraft_fs::{move_items, same_filesystem, Conflict, FsError, NoProgress};
 /// Set (to `1`) on CI to make the mount namespace with `sudo`.
 const SUDO_ENV: &str = "KERN_TEST_SUDO_MOUNTNS";
 /// Set in the child that runs inside the mount namespace: the folder the
-/// sources are in, the folder on the same mount, and the bind mount of
-/// another folder.
-const CHILD_ENV: [&str; 3] = [
+/// sources are in, the folder on the same mount, the bind mount of another
+/// folder, and a tmpfs mount, which is another filesystem.
+const CHILD_ENV: [&str; 4] = [
     "KERN_TEST_SAMEFS_SRC",
     "KERN_TEST_SAMEFS_SAME",
     "KERN_TEST_SAMEFS_BOUND",
+    "KERN_TEST_SAMEFS_TMPFS",
 ];
 
 struct Tree {
@@ -256,31 +257,43 @@ fn a_name_that_is_not_utf8_is_judged_by_its_bytes() {
 #[test]
 fn a_bind_mount_is_another_filesystem() {
     let vars: Vec<Option<String>> = CHILD_ENV.iter().map(|v| std::env::var(v).ok()).collect();
-    if let [Some(src), Some(same), Some(bound)] = &vars[..] {
-        in_namespace(Path::new(src), Path::new(same), Path::new(bound));
+    if let [Some(src), Some(same), Some(bound), Some(tmpfs)] = &vars[..] {
+        in_namespace(
+            Path::new(src),
+            Path::new(same),
+            Path::new(bound),
+            Path::new(tmpfs),
+        );
         return;
     }
     run_in_namespace();
 }
 
 /// The parent: lays out the folders, then runs this test again in a new
-/// mount namespace in which `bound` is a bind mount of `other`.
+/// mount namespace in which `bound` is a bind mount of `other` and `tmpfs`
+/// is a tmpfs mount.
 fn run_in_namespace() {
     let t = tree();
-    let (src, same, other, bound) = (
+    let (src, same, other, bound, tmpfs) = (
         folder(&t.dir, "src"),
         folder(&t.dir, "same"),
         folder(&t.dir, "other"),
         folder(&t.dir, "bound"),
+        folder(&t.dir, "tmpfs"),
     );
     file(&src, "to-same");
     file(&src, "to-bound");
+    // `other/clash` is made a mount point (a file bind-mounted over it)
+    // before `other` is bound.
+    file(&other, "f");
+    file(&other, "clash");
     let exe = std::env::current_exe().unwrap();
     let meta = fs::metadata(&t.dir).unwrap();
     let sudo = std::env::var(SUDO_ENV).as_deref() == Ok("1");
 
-    // Makes the bind mount, then becomes the command that follows it.
-    let script = r#"mount --bind "$1" "$2" || exit 3; shift 2; exec "$@""#;
+    // Makes the file mount, the bind mount and the tmpfs mount, then becomes
+    // the command that follows them.
+    let script = r#"mount --bind "$1/f" "$1/clash" || exit 5; mount --bind "$1" "$2" || exit 3; mount -t tmpfs tmpfs "$3" || exit 4; shift 3; exec "$@""#;
     let mut cmd = if sudo {
         let mut c = Command::new("sudo");
         c.args(["-n", "unshare", "--mount", "--propagation", "private"]);
@@ -290,7 +303,10 @@ fn run_in_namespace() {
         c.args(["--user", "--map-root-user", "--mount"]);
         c
     };
-    cmd.args(["sh", "-c", script, "sh"]).arg(&other).arg(&bound);
+    cmd.args(["sh", "-c", script, "sh"])
+        .arg(&other)
+        .arg(&bound)
+        .arg(&tmpfs);
     if sudo {
         // The shell is root only to make the mount; the test runs as the
         // invoking user again.
@@ -302,7 +318,7 @@ fn run_in_namespace() {
         ]);
     }
     cmd.arg("env");
-    for (var, dir) in CHILD_ENV.iter().zip([&src, &same, &bound]) {
+    for (var, dir) in CHILD_ENV.iter().zip([&src, &same, &bound, &tmpfs]) {
         let mut assignment = std::ffi::OsString::from(format!("{var}="));
         assignment.push(dir);
         cmd.arg(assignment);
@@ -333,9 +349,10 @@ fn run_in_namespace() {
 }
 
 /// The child, inside the mount namespace: `src` holds `to-same` and
-/// `to-bound`, `same` is a folder of the same mount, and `bound` is a bind
-/// mount of another folder of it.
-fn in_namespace(src: &Path, same_dir: &Path, bound: &Path) {
+/// `to-bound`, `same` is a folder of the same mount, `bound` is a bind
+/// mount of another folder of it, and `tmpfs` is a mount of another
+/// filesystem.
+fn in_namespace(src: &Path, same_dir: &Path, bound: &Path, tmpfs: &Path) {
     // The bind mount has the device number of the mount it came from...
     assert_eq!(
         fs::metadata(src).unwrap().dev(),
@@ -398,6 +415,60 @@ fn in_namespace(src: &Path, same_dir: &Path, bound: &Path) {
     assert!(same_dir.join("plain").exists());
     assert!(bound.join("inside").exists());
     assert!(!same_dir.join("bound").exists());
+
+    // Into another filesystem rename(2) fails with EXDEV before it looks at
+    // the mount point, and a copy and delete would empty the mounted
+    // folder. A mount point is refused there too, nothing copied or deleted.
+    let exdev = fs::rename(bound, tmpfs.join("bound")).unwrap_err();
+    assert_eq!(exdev.kind(), ErrorKind::CrossesDevices, "{exdev}");
+    let plain_two = file(src, "plain-two");
+    let report = move_items(
+        &[bound.to_path_buf(), plain_two.clone()],
+        tmpfs,
+        &|_, _| Conflict::Skip,
+        &NoProgress,
+    )
+    .unwrap();
+    match &report.failed[..] {
+        [(item, FsError::MountPoint { path })] => {
+            assert_eq!(item, bound);
+            assert_eq!(path, bound);
+        }
+        other => panic!("{other:?}"),
+    }
+    // The ordinary item moved across (a copy, then the source removed).
+    assert_eq!(
+        report.done,
+        [(plain_two.clone(), Some(tmpfs.join("plain-two")))]
+    );
+    assert!(tmpfs.join("plain-two").exists() && !plain_two.exists());
+    // Nothing of the mount point was copied, and nothing in it was deleted.
+    assert!(!tmpfs.join("bound").exists());
+    assert!(bound.join("inside").exists());
+    assert_eq!(fs::read_to_string(bound.join("inside")).unwrap(), "x");
+
+    // An EBUSY that is not the source being a mount point stays an I/O
+    // error naming the source: here the target name is a mount point (a
+    // file bind-mounted over it) and a replace is answered, so rename(2)
+    // refuses with EBUSY for the target.
+    let other = bound.parent().unwrap().join("other");
+    let clash = file(src, "clash");
+    let report = move_items(
+        std::slice::from_ref(&clash),
+        &other,
+        &|_, _| Conflict::Replace,
+        &NoProgress,
+    )
+    .unwrap();
+    match &report.failed[..] {
+        [(item, FsError::Io { path, source })] => {
+            assert_eq!(item, &clash);
+            assert_eq!(path, &clash);
+            assert_eq!(source.kind(), ErrorKind::ResourceBusy);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(clash.exists());
 }
 
 /// `BTRFS_SUPER_MAGIC`, the `f_type` of a btrfs filesystem (statfs(2)).

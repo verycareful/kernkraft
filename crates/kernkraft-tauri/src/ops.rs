@@ -32,23 +32,21 @@
 //! Operations may run side by side; each item's failure, a source removed
 //! by another operation included, is in that operation's report.
 //!
-//! A copy, move or trash is journalled when it ends, so an entry for a
-//! rename or create made while it runs sits below it. If that rename moved
-//! an item the operation had already placed, the operation's entry could
-//! not stamp the item when it was recorded: its undo is refused with
-//! `Changed` (`Unverified`, naming the path), changes nothing, and the entry
-//! is taken off the stack, so the entries below it (the rename among them)
-//! stay undoable. Nothing is lost or replaced. A rename or create that
-//! touches nothing the operation placed leaves its undo as it was. Rename and
-//! create are not refused while an operation runs, because renaming an
-//! unrelated file during a long copy is ordinary use, and a refusal that
-//! spared the rare overlap would take that away.
+//! Rename, create_dir and create_file are refused with `Busy` while a
+//! non-reader operation runs (copy, move, trash, delete, empty trash,
+//! properties), as undo and redo are, and the other way round. An operation
+//! is journalled when it ends, with each placed item stamped then, so a
+//! rename of an item it had placed, or a new file at a name it had used,
+//! would make its undo act on something it did not place or find the item
+//! gone. A program outside Kern can still do either; the undo then stops
+//! with `Changed` rather than act on a file that differs from the one
+//! recorded. Search and the Documents walk only read and never block these.
 
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use kernkraft_fs::{
@@ -569,19 +567,29 @@ impl<R: Runtime> Kernkraft<R> {
         Ok(UndoGuard { kk: self.clone() })
     }
 
-    /// `Busy` while an undo or redo runs. A rename or create takes the
-    /// journal, which an undo holds from its check to its last action (a
-    /// move back across filesystems can take minutes), so it is refused at
-    /// once, as a file operation is, instead of waiting that long. An undo
-    /// that starts just after this check still holds the journal first and
-    /// the call waits for it: slow in that one case, never wrong.
-    pub(crate) fn refuse_during_undo(&self) -> Result<(), WireError> {
-        if lock(&self.0.registry).undo_running {
+    /// Admits a rename or a create, which is refused with `Busy` while an
+    /// undo, a redo or any file operation runs (search and the Documents
+    /// walk, which only read, never count). An undo holds the journal from
+    /// its check to its last action, a move back across filesystems can take
+    /// minutes, and an operation is journalled when it ends, so an item
+    /// renamed while the operation runs is not where its entry says it is
+    /// and a name reused meanwhile would be taken for the item the operation
+    /// placed. The registry stays locked for as long as the returned guard
+    /// lives, so no operation, undo or redo can start between the check and
+    /// the rename or create it admits.
+    pub(crate) fn admit_edit(&self) -> Result<MutexGuard<'_, Registry>, WireError> {
+        let registry = lock(&self.0.registry);
+        if registry.undo_running {
             return Err(WireError::from(PluginError::Busy(
-                "an undo or redo is running",
+                "an undo or redo is running; wait for it to finish",
             )));
         }
-        Ok(())
+        if registry.ops.values().any(|h| !h.reader) {
+            return Err(WireError::from(PluginError::Busy(
+                "a file operation is running; wait for it to finish",
+            )));
+        }
+        Ok(registry)
     }
 
     pub(crate) fn spawn(&self, job: Job, origin: Option<String>) -> Result<OpId, WireError> {
@@ -1272,5 +1280,71 @@ mod tests {
         // Nothing was renamed or made.
         assert!(file.exists());
         assert!(!base.join("b").exists() && !base.join("d").exists() && !base.join("f").exists());
+    }
+
+    fn fixture() -> (
+        tauri::App<tauri::test::MockRuntime>,
+        crate::state::Kernkraft<tauri::test::MockRuntime>,
+        tempfile::TempDir,
+        std::path::PathBuf,
+    ) {
+        let app = tauri::test::mock_app();
+        let kk =
+            crate::state::Kernkraft::new(app.handle().clone(), crate::state::Config::default());
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        (app, kk, root, base)
+    }
+
+    /// The kinds the three edits answer with: `Ok` or the error kind.
+    fn edits(
+        kk: &crate::state::Kernkraft<tauri::test::MockRuntime>,
+        base: &std::path::Path,
+        tag: &str,
+    ) -> [String; 3] {
+        use crate::wire::WirePath;
+        let kind = |r: Result<WirePath, crate::error::WireError>| match r {
+            Ok(_) => "Ok".to_owned(),
+            Err(e) => e.kind,
+        };
+        let from = base.join(format!("from-{tag}"));
+        fs::write(&from, "").unwrap();
+        [
+            kind(kk.rename(WirePath::from(from.as_path()), format!("to-{tag}"))),
+            kind(kk.create_dir(WirePath::from(base), format!("dir-{tag}"))),
+            kind(kk.create_file(WirePath::from(base), format!("file-{tag}"))),
+        ]
+    }
+
+    /// A copy, move, trash, delete or properties operation in the registry
+    /// makes rename and create `Busy`, with nothing renamed or made; the
+    /// moment it leaves they go ahead.
+    #[test]
+    fn rename_and_create_are_refused_while_a_file_operation_runs() {
+        let (_app, kk, _root, base) = fixture();
+        let running = kk.register(None).unwrap();
+        assert_eq!(edits(&kk, &base, "busy"), ["Busy", "Busy", "Busy"]);
+        assert!(base.join("from-busy").exists());
+        assert!(!base.join("to-busy").exists());
+        assert!(!base.join("dir-busy").exists() && !base.join("file-busy").exists());
+        let message = kk
+            .rename(
+                crate::wire::WirePath::from(base.join("from-busy").as_path()),
+                "x".to_owned(),
+            )
+            .unwrap_err()
+            .message;
+        assert!(message.contains("wait for it to finish"), "{message}");
+
+        drop(running);
+        assert_eq!(edits(&kk, &base, "free"), ["Ok", "Ok", "Ok"]);
+    }
+
+    /// Search and the Documents walk only read: they never block an edit.
+    #[test]
+    fn rename_and_create_are_not_refused_while_only_a_reader_runs() {
+        let (_app, kk, _root, base) = fixture();
+        let _reader = kk.register_as(None, true).unwrap();
+        assert_eq!(edits(&kk, &base, "reader"), ["Ok", "Ok", "Ok"]);
     }
 }

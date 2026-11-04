@@ -723,6 +723,54 @@ fn ipc_open_default() {
     assert_eq!(err["path"], wp(&path));
 }
 
+// The success answer of open_default as it is serialized: one entry per
+// application with its files and its error (null when it was started).
+#[test]
+fn ipc_open_default_answers_one_entry_per_application() {
+    let (e, v) = setup();
+    let apps = e.xdg.data.join("applications");
+    fs::create_dir_all(&apps).unwrap();
+    fs::write(
+        apps.join("ok.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Ok\nExec=/bin/true %F\nMimeType=text/plain;\n",
+    )
+    .unwrap();
+    fs::write(
+        apps.join("broken.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Broken\nExec=/definitely/not/a/program %F\nMimeType=application/pdf;\n",
+    )
+    .unwrap();
+    fs::create_dir_all(&e.xdg.config).unwrap();
+    fs::write(
+        e.xdg.config.join("mimeapps.list"),
+        "[Default Applications]\ntext/plain=ok.desktop\napplication/pdf=broken.desktop\n",
+    )
+    .unwrap();
+    let dir = e.dir("od");
+    let (text, pdf) = (dir.join("a.txt"), dir.join("b.pdf"));
+    fs::write(&text, "x").unwrap();
+    fs::write(&pdf, "x").unwrap();
+
+    let reply = invoke(
+        &v,
+        "open_default",
+        json!({"paths": [wp(&text), wp(&pdf)], "terminal": null}),
+    )
+    .unwrap();
+
+    let entries = reply.as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    for entry in entries {
+        assert_eq!(keys(entry), ["app", "error", "paths"]);
+    }
+    assert_eq!(entries[0]["app"], "ok.desktop");
+    assert_eq!(entries[0]["paths"], json!([wp(&text)]));
+    assert_eq!(entries[0]["error"], Value::Null);
+    assert_eq!(entries[1]["app"], "broken.desktop");
+    assert_eq!(entries[1]["paths"], json!([wp(&pdf)]));
+    assert_eq!(entries[1]["error"]["kind"], "Launch");
+}
+
 #[test]
 fn ipc_set_default_app() {
     let (_e, v) = setup();

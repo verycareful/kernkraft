@@ -32,7 +32,7 @@ fn try_exec_decides_whether_an_entry_is_installed() {
     fs::set_permissions(bin.join("tools/helper"), fs::Permissions::from_mode(0o755)).unwrap();
     let apps = root.join("data/applications");
     fs::create_dir_all(&apps).unwrap();
-    // In listing order (by ID): a, b, c, d, e, f, g.
+    // In listing order (by ID): a to h.
     let entries = [
         ("a-absent.desktop", "TryExec=absent-program\n"),
         ("b-plain.desktop", "TryExec=plain-file\n"),
@@ -46,6 +46,7 @@ fn try_exec_decides_whether_an_entry_is_installed() {
         // Entry 1.5, TryExec); the working directory is not consulted.
         ("f-relative.desktop", "TryExec=tools/helper\n"),
         ("g-relative-absent.desktop", "TryExec=tools/missing\n"),
+        ("h-cwd-only.desktop", "TryExec=cwdonly/prog\n"),
     ];
     for (id, try_exec) in &entries {
         fs::write(
@@ -57,6 +58,16 @@ fn try_exec_decides_whether_an_entry_is_installed() {
         .unwrap();
     }
     std::env::set_var("PATH", &bin);
+    // A relative TryExec is not looked up in the working directory: this
+    // program exists only there.
+    fs::create_dir_all(root.join("elsewhere/cwdonly")).unwrap();
+    fs::write(root.join("elsewhere/cwdonly/prog"), "#!/bin/sh\n").unwrap();
+    fs::set_permissions(
+        root.join("elsewhere/cwdonly/prog"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::env::set_current_dir(root.join("elsewhere")).unwrap();
     let mut vars: HashMap<&str, OsString> = HashMap::new();
     vars.insert("HOME", root.into());
     vars.insert("XDG_CONFIG_HOME", root.join("config").into());

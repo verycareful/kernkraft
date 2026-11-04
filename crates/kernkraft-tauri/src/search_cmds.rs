@@ -43,8 +43,9 @@ pub const SEARCH_BATCH: usize = 200;
 
 /// The longest a found entry waits for its batch to fill: 100 ms, the
 /// response time within which an interface feels immediate (RAIL), so the
-/// first hits of a slow walk show at once, while the view still renders at
-/// most ten times a second however fast the hits come.
+/// first hits of a slow walk show at once. It bounds the wait, not the
+/// rate: a full batch goes out at once, so a fast walk sends one every time
+/// [`SEARCH_BATCH`] hits are found.
 pub const SEARCH_FLUSH: Duration = Duration::from_millis(100);
 
 /// Payload of [`EVENT_SEARCH_HIT`]: found entries of operation `op`,

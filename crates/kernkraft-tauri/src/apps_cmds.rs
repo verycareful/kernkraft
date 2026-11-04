@@ -148,12 +148,11 @@ impl<R: Runtime> Kernkraft<R> {
         Ok(AppRegistry::load(self.base()?)?)
     }
 
-    /// Applications that open `path`, best first (see
-    /// `AppRegistry::apps_for`). `NoDisplay` entries are left out of the
-    /// list, except the current default. The default is always in it: one
-    /// that `mimeapps.list` names without the application registering the
-    /// type is not an association, and is put first, where the
-    /// most-preferred application would be.
+    /// Applications that open `path`: the default first, then the others as
+    /// `AppRegistry::apps_for` orders them. `NoDisplay` entries are left out
+    /// of the list, except the current default. The default is always in it:
+    /// one that `mimeapps.list` names without the application registering
+    /// the type is not an association, and is added all the same.
     pub fn apps_for(&self, path: WirePath) -> Result<WireAppList, WireError> {
         let path = PathBuf::try_from(path)?;
         let db = self.mime()?;
@@ -168,9 +167,8 @@ impl<R: Runtime> Kernkraft<R> {
             .map(WireApp::from)
             .collect();
         if let Some(default) = default {
-            if !apps.iter().any(|a| a.id == default.id) {
-                apps.insert(0, WireApp::from(default));
-            }
+            apps.retain(|a| a.id != default.id);
+            apps.insert(0, WireApp::from(default));
         }
         Ok(WireAppList {
             apps,

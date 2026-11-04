@@ -321,8 +321,8 @@ fn apps_for_reports_skipped_entries() {
 
     let list = e.kk.apps_for(w(&doc)).unwrap();
     let ids: Vec<&str> = list.apps.iter().map(|a| a.id.as_str()).collect();
-    // Desktop entries naming the type, by ID.
-    assert_eq!(ids, ["notes.desktop", "viewer.desktop"]);
+    // The default first, then the desktop entries naming the type, by ID.
+    assert_eq!(ids, ["viewer.desktop", "notes.desktop"]);
     assert_eq!(list.problems.len(), 1);
     assert_eq!(list.problems[0].kind, "InvalidDesktopEntry");
 
@@ -396,6 +396,30 @@ fn apps_for_shows_a_default_that_is_not_an_association_first() {
         e.kk.app_default(w(&doc)).unwrap().app.unwrap().id,
         "other.desktop"
     );
+}
+
+// A default that is an association too is first as well, whatever the order
+// the associations come in: `a-first.desktop` sorts before `viewer.desktop`,
+// which is the default.
+#[test]
+fn apps_for_puts_the_default_first_among_the_associations() {
+    stubs();
+    let e = env();
+    viewer(&e);
+    desktop(
+        &e,
+        "a-first.desktop",
+        "[Desktop Entry]\nType=Application\nName=First\nExec=rec-open %f\nMimeType=text/plain;\n",
+    );
+    let doc = file(&e.dir("df"), "a.txt", b"x");
+    let ids: Vec<String> =
+        e.kk.apps_for(w(&doc))
+            .unwrap()
+            .apps
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+    assert_eq!(ids, ["viewer.desktop", "a-first.desktop"]);
 }
 
 /// The complete records of stub `name` whose bytes contain `marker`, as

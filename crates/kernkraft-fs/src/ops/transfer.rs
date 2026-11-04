@@ -87,10 +87,12 @@ pub fn copy(
 /// Moves each source into `dest_dir`: a rename where source and destination
 /// share a filesystem, else a copy followed by deleting the source.
 /// Conflicts, progress, cancellation and the `Err` cases are as for
-/// [`copy`]; a source already in `dest_dir` is skipped. A source that is a
-/// mount point cannot be renamed (`EBUSY`) and is never copied and deleted
-/// in its place: it fails with [`FsError::MountPoint`] and stays where it
-/// is.
+/// [`copy`]; a source already in `dest_dir` is skipped. A source that is
+/// itself a mount point cannot be renamed, whether the destination is on its
+/// mount (`EBUSY`) or on another filesystem (`EXDEV`, where a copy and delete
+/// would empty the mounted folder): it fails with [`FsError::MountPoint`],
+/// nothing is copied or deleted, and it stays where it is. A folder that
+/// merely has a mount point somewhere inside it is not refused.
 pub fn move_items(
     sources: &[PathBuf],
     dest_dir: &Path,
@@ -116,6 +118,20 @@ enum Placed {
     /// those entries are already in the report.
     Partial,
     Cancelled,
+}
+
+/// [`FsError::MountPoint`] for `src` when its rename failed with `error`
+/// because it is a mount point: `EBUSY` when the destination is on its own
+/// mount, `EXDEV` when it is on another filesystem (rename(2) compares the
+/// two folders' mounts first and only then reaches the mount point). Any
+/// other failure, and `EBUSY` or `EXDEV` for a source that is not a mount
+/// point, is not this and stays as it is.
+fn mount_point_refusal(src: &Path, error: &io::Error) -> Option<FsError> {
+    let code = error.raw_os_error()?;
+    let busy_or_cross = code == Errno::BUSY.raw_os_error() || code == Errno::XDEV.raw_os_error();
+    (busy_or_cross && is_mount_point(src)).then(|| FsError::MountPoint {
+        path: src.to_path_buf(),
+    })
 }
 
 struct Transfer<'a> {
@@ -228,6 +244,11 @@ impl<'a> Transfer<'a> {
         } else {
             renameat_noreplace(src, target)
         };
+        if let Err(e) = &renamed {
+            if let Some(refusal) = mount_point_refusal(src, e) {
+                return self.fail(src, refusal);
+            }
+        }
         match renamed {
             Ok(()) => {
                 if replace {
@@ -247,16 +268,6 @@ impl<'a> Transfer<'a> {
                     },
                     other => other,
                 }
-            }
-            Err(e)
-                if e.raw_os_error() == Some(Errno::BUSY.raw_os_error()) && is_mount_point(src) =>
-            {
-                self.fail(
-                    src,
-                    FsError::MountPoint {
-                        path: src.to_path_buf(),
-                    },
-                )
             }
             Err(e) if e.kind() == ErrorKind::AlreadyExists => self.fail(
                 src,
@@ -642,4 +653,48 @@ fn tree_size(path: &Path) -> u64 {
     fs::read_dir(path)
         .map(|entries| entries.flatten().map(|e| tree_size(&e.path())).sum())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn os_error(errno: Errno) -> io::Error {
+        io::Error::from_raw_os_error(errno.raw_os_error())
+    }
+
+    #[test]
+    fn busy_and_cross_device_on_a_mount_point_are_the_mount_point_error() {
+        // procfs is a mount of its own at /proc (proc_pid_mountinfo, proc(5)).
+        // The premise, checked so a host without procfs at /proc fails here
+        // and says so: /proc has a device number of its own.
+        use std::os::unix::fs::MetadataExt;
+        assert_ne!(
+            fs::metadata("/proc").unwrap().dev(),
+            fs::metadata("/").unwrap().dev(),
+            "this test needs procfs mounted at /proc"
+        );
+        let proc = Path::new("/proc");
+        for errno in [Errno::BUSY, Errno::XDEV] {
+            match mount_point_refusal(proc, &os_error(errno)) {
+                Some(FsError::MountPoint { path }) => assert_eq!(path, proc),
+                other => panic!("{errno:?}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn busy_on_something_that_is_not_a_mount_point_stays_what_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain");
+        fs::write(&plain, "").unwrap();
+        for errno in [Errno::BUSY, Errno::XDEV] {
+            assert!(mount_point_refusal(&plain, &os_error(errno)).is_none());
+        }
+        // Another failure of a mount point is not a mount point refusal.
+        assert!(mount_point_refusal(Path::new("/proc"), &os_error(Errno::ACCESS)).is_none());
+        assert!(mount_point_refusal(Path::new("/proc"), &io::Error::other("no code")).is_none());
+    }
 }

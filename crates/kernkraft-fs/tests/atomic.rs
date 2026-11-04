@@ -8,7 +8,7 @@ use std::io::Write;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
 
-use kernkraft_fs::{write_atomic, write_bytes_atomic, FileStamp, FsError};
+use kernkraft_fs::{write_atomic, write_bytes_atomic, Expect, FileStamp, FsError};
 
 const TIMESTAMP_TICK_TRIES: u32 = 200;
 const TIMESTAMP_TICK_MS: u64 = 5;
@@ -33,7 +33,7 @@ fn replaces_contents() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.txt");
     fs::write(&path, "old").unwrap();
-    write_bytes_atomic(&path, None, b"new").unwrap();
+    write_bytes_atomic(&path, Expect::Anything, b"new").unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "new");
     assert_eq!(entries(dir.path()), ["f.txt"]);
 }
@@ -42,7 +42,7 @@ fn replaces_contents() {
 fn creates_missing_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("new.txt");
-    write_bytes_atomic(&path, None, b"hello").unwrap();
+    write_bytes_atomic(&path, Expect::Anything, b"hello").unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
 }
 
@@ -50,7 +50,7 @@ fn creates_missing_file() {
 fn new_file_mode_follows_umask() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("new.txt");
-    write_bytes_atomic(&path, None, b"x").unwrap();
+    write_bytes_atomic(&path, Expect::Anything, b"x").unwrap();
     let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o666 & !process_umask());
 }
@@ -61,7 +61,7 @@ fn keeps_permission_bits() {
     let path = dir.path().join("f.txt");
     fs::write(&path, "old").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
-    write_bytes_atomic(&path, None, b"new").unwrap();
+    write_bytes_atomic(&path, Expect::Anything, b"new").unwrap();
     assert_eq!(
         fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
         0o640
@@ -74,7 +74,7 @@ fn keeps_permission_bits_wider_than_umask() {
     let path = dir.path().join("f.sh");
     fs::write(&path, "old").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
-    write_bytes_atomic(&path, None, b"new").unwrap();
+    write_bytes_atomic(&path, Expect::Anything, b"new").unwrap();
     assert_eq!(
         fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
         0o777
@@ -88,7 +88,7 @@ fn writes_through_symlink() {
     let link = dir.path().join("link.txt");
     fs::write(&real, "old").unwrap();
     symlink("real.txt", &link).unwrap();
-    write_bytes_atomic(&link, None, b"new").unwrap();
+    write_bytes_atomic(&link, Expect::Anything, b"new").unwrap();
     assert!(fs::symlink_metadata(&link)
         .unwrap()
         .file_type()
@@ -105,7 +105,7 @@ fn writes_through_symlink_chain_into_other_dir() {
     fs::write(&real, "old").unwrap();
     symlink("real.txt", dir.path().join("sub/hop")).unwrap();
     symlink("sub/hop", dir.path().join("link")).unwrap();
-    write_bytes_atomic(&dir.path().join("link"), None, b"new").unwrap();
+    write_bytes_atomic(&dir.path().join("link"), Expect::Anything, b"new").unwrap();
     assert_eq!(fs::read_to_string(&real).unwrap(), "new");
     assert_eq!(entries(&dir.path().join("sub")), ["hop", "real.txt"]);
 }
@@ -115,7 +115,7 @@ fn dangling_symlink_creates_its_target() {
     let dir = tempfile::tempdir().unwrap();
     let link = dir.path().join("link");
     symlink("target.txt", &link).unwrap();
-    write_bytes_atomic(&link, None, b"made").unwrap();
+    write_bytes_atomic(&link, Expect::Anything, b"made").unwrap();
     assert!(fs::symlink_metadata(&link)
         .unwrap()
         .file_type()
@@ -131,7 +131,7 @@ fn symlink_loop_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     symlink("b", dir.path().join("a")).unwrap();
     symlink("a", dir.path().join("b")).unwrap();
-    let err = write_bytes_atomic(&dir.path().join("a"), None, b"x").unwrap_err();
+    let err = write_bytes_atomic(&dir.path().join("a"), Expect::Anything, b"x").unwrap_err();
     assert!(matches!(err, FsError::Io { .. }), "{err:?}");
     assert_eq!(entries(dir.path()), ["a", "b"]);
 }
@@ -152,7 +152,7 @@ fn stale_stamp_is_refused() {
         }
         std::thread::sleep(std::time::Duration::from_millis(TIMESTAMP_TICK_MS));
     }
-    let err = write_bytes_atomic(&path, Some(&stamp), b"new").unwrap_err();
+    let err = write_bytes_atomic(&path, Expect::Unchanged(&stamp), b"new").unwrap_err();
     assert!(
         matches!(err, FsError::ExternalModification { .. }),
         "{err:?}"
@@ -170,7 +170,7 @@ fn replaced_file_is_refused() {
     let other = dir.path().join("other");
     fs::write(&other, "ext").unwrap();
     fs::rename(&other, &path).unwrap();
-    let err = write_bytes_atomic(&path, Some(&stamp), b"new").unwrap_err();
+    let err = write_bytes_atomic(&path, Expect::Unchanged(&stamp), b"new").unwrap_err();
     assert!(
         matches!(err, FsError::ExternalModification { .. }),
         "{err:?}"
@@ -184,7 +184,7 @@ fn deleted_file_is_refused() {
     fs::write(&path, "old").unwrap();
     let stamp = FileStamp::of(&path).unwrap();
     fs::remove_file(&path).unwrap();
-    let err = write_bytes_atomic(&path, Some(&stamp), b"new").unwrap_err();
+    let err = write_bytes_atomic(&path, Expect::Unchanged(&stamp), b"new").unwrap_err();
     assert!(
         matches!(err, FsError::ExternalModification { .. }),
         "{err:?}"
@@ -198,8 +198,8 @@ fn matching_stamp_is_accepted() {
     let path = dir.path().join("f.txt");
     fs::write(&path, "old").unwrap();
     let stamp = FileStamp::of(&path).unwrap();
-    let next = write_bytes_atomic(&path, Some(&stamp), b"new").unwrap();
-    write_bytes_atomic(&path, Some(&next), b"newer").unwrap();
+    let next = write_bytes_atomic(&path, Expect::Unchanged(&stamp), b"new").unwrap();
+    write_bytes_atomic(&path, Expect::Unchanged(&next), b"newer").unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "newer");
 }
 
@@ -208,7 +208,7 @@ fn failed_writer_leaves_original_and_no_temp() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.txt");
     fs::write(&path, "old").unwrap();
-    let err = write_atomic(&path, None, |w: &mut dyn Write| {
+    let err = write_atomic(&path, Expect::Anything, |w: &mut dyn Write| {
         w.write_all(b"partial")?;
         Err(std::io::Error::other("writer failed"))
     })
@@ -221,7 +221,7 @@ fn failed_writer_leaves_original_and_no_temp() {
 #[test]
 fn missing_directory_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
-    let err = write_bytes_atomic(&dir.path().join("no/f.txt"), None, b"x").unwrap_err();
+    let err = write_bytes_atomic(&dir.path().join("no/f.txt"), Expect::Anything, b"x").unwrap_err();
     assert!(matches!(err, FsError::Io { .. }), "{err:?}");
 }
 
@@ -231,7 +231,7 @@ fn directory_target_is_refused_untouched() {
     let target = dir.path().join("d");
     fs::create_dir(&target).unwrap();
     fs::write(target.join("inner"), "keep").unwrap();
-    let err = write_bytes_atomic(&target, None, b"x").unwrap_err();
+    let err = write_bytes_atomic(&target, Expect::Anything, b"x").unwrap_err();
     assert!(matches!(err, FsError::Io { .. }), "{err:?}");
     assert_eq!(fs::read_to_string(target.join("inner")).unwrap(), "keep");
     assert_eq!(entries(dir.path()), ["d"]);
@@ -241,7 +241,7 @@ fn directory_target_is_refused_untouched() {
 fn returned_stamp_matches_disk() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.txt");
-    let stamp = write_bytes_atomic(&path, None, b"contents").unwrap();
+    let stamp = write_bytes_atomic(&path, Expect::Anything, b"contents").unwrap();
     assert_eq!(FileStamp::of(&path).unwrap(), stamp);
     assert_eq!(stamp.len, 8);
 }
@@ -260,7 +260,7 @@ fn read_only_directory_fails_and_leaves_target() {
     let path = dir.path().join("f");
     fs::write(&path, "old").unwrap();
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
-    let result = write_bytes_atomic(&path, None, b"new");
+    let result = write_bytes_atomic(&path, Expect::Anything, b"new");
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(result, Err(FsError::Io { .. })), "{result:?}");
     assert_eq!(fs::read_to_string(&path).unwrap(), "old");
@@ -274,7 +274,7 @@ fn special_permission_bits_carry_over() {
     let path = dir.path().join("f");
     fs::write(&path, "old").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(SETGID_RWX_RX)).unwrap();
-    write_bytes_atomic(&path, None, b"new").unwrap();
+    write_bytes_atomic(&path, Expect::Anything, b"new").unwrap();
     let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
     assert_eq!(mode, SETGID_RWX_RX);
 }
@@ -285,10 +285,10 @@ fn empty_and_multi_chunk_writes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f");
     fs::write(&path, "old").unwrap();
-    write_bytes_atomic(&path, None, b"").unwrap();
+    write_bytes_atomic(&path, Expect::Anything, b"").unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"");
     let pattern: Vec<u8> = (0..LEN).map(|i| (i % 251) as u8).collect();
-    write_bytes_atomic(&path, None, &pattern).unwrap();
+    write_bytes_atomic(&path, Expect::Anything, &pattern).unwrap();
     assert!(fs::read(&path).unwrap() == pattern);
 }
 
@@ -297,7 +297,7 @@ fn non_utf8_target_name() {
     use std::os::unix::ffi::OsStrExt;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(std::ffi::OsStr::from_bytes(b"\xff.txt"));
-    write_bytes_atomic(&path, None, b"v").unwrap();
+    write_bytes_atomic(&path, Expect::Anything, b"v").unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"v");
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
 }
@@ -337,7 +337,7 @@ fn atomic_save_keeps_user_xattr() {
     if !try_setxattr(&path, USER_XATTR, b"v") {
         return;
     }
-    write_bytes_atomic(&path, None, b"new").unwrap();
+    write_bytes_atomic(&path, Expect::Anything, b"new").unwrap();
     assert_eq!(xattr(&path, USER_XATTR).as_deref(), Some(&b"v"[..]));
 }
 
@@ -382,7 +382,7 @@ fn atomic_save_keeps_posix_acl() {
         return;
     }
     let before = xattr(&path, ACL_XATTR).unwrap();
-    write_bytes_atomic(&path, None, b"new").unwrap();
+    write_bytes_atomic(&path, Expect::Anything, b"new").unwrap();
     assert_eq!(xattr(&path, ACL_XATTR), Some(before));
 }
 
@@ -401,7 +401,100 @@ fn atomic_save_keeps_group() {
     let path = dir.path().join("f");
     fs::write(&path, "old").unwrap();
     rustix::fs::chown(&path, None, Some(other)).unwrap();
-    write_bytes_atomic(&path, None, b"new").unwrap();
+    write_bytes_atomic(&path, Expect::Anything, b"new").unwrap();
     use std::os::unix::fs::MetadataExt;
     assert_eq!(fs::metadata(&path).unwrap().gid(), other.as_raw());
+}
+
+// ---- Expect::Nothing: creates, never replaces ----
+
+#[test]
+fn new_creates_a_file_where_nothing_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("new.txt");
+    let stamp = write_atomic(&path, Expect::Nothing, |w| w.write_all(b"hello")).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+    assert_eq!(stamp, FileStamp::of(&path).unwrap());
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o666 & !process_umask());
+    assert_eq!(entries(dir.path()), ["new.txt"]);
+}
+
+/// Whatever is at the path stays exactly as it was, and no temp file is left.
+fn refused_and_untouched(dir: &Path, path: &Path) {
+    let before = fs::symlink_metadata(path).unwrap();
+    let names = entries(dir);
+    let err = write_atomic(path, Expect::Nothing, |w| w.write_all(b"mine")).unwrap_err();
+    assert!(matches!(err, FsError::Exists { .. }), "{err:?}");
+    let after = fs::symlink_metadata(path).unwrap();
+    assert_eq!(
+        (before.file_type(), before.len()),
+        (after.file_type(), after.len())
+    );
+    assert_eq!(entries(dir), names);
+}
+
+#[test]
+fn new_refuses_an_existing_file_and_leaves_its_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.txt");
+    fs::write(&path, "theirs").unwrap();
+    refused_and_untouched(dir.path(), &path);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "theirs");
+}
+
+#[test]
+fn new_refuses_a_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("d");
+    fs::create_dir(&path).unwrap();
+    refused_and_untouched(dir.path(), &path);
+}
+
+#[test]
+fn new_refuses_a_symlink_even_a_dangling_one() {
+    // A link is something at the path: creating "through" it would write
+    // where the user did not name.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("link");
+    symlink(dir.path().join("nowhere"), &path).unwrap();
+    refused_and_untouched(dir.path(), &path);
+    assert!(!dir.path().join("nowhere").exists());
+}
+
+#[test]
+fn new_failed_writer_leaves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("new.txt");
+    let err = write_atomic(&path, Expect::Nothing, |_| {
+        Err(std::io::Error::other("disk full"))
+    })
+    .unwrap_err();
+    assert!(matches!(err, FsError::Io { .. }), "{err:?}");
+    assert!(entries(dir.path()).is_empty());
+}
+
+#[test]
+fn new_in_a_missing_folder_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gone").join("new.txt");
+    assert!(write_atomic(&path, Expect::Nothing, |w| w.write_all(b"x")).is_err());
+    assert!(entries(dir.path()).is_empty());
+}
+
+#[test]
+fn new_loses_a_race_without_replacing_the_winner() {
+    // Something appears at the path while the contents are written: the
+    // final step refuses it, whatever any check before saw.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("race.txt");
+    let other = path.clone();
+    let err = write_atomic(&path, Expect::Nothing, move |w| {
+        fs::write(&other, "winner")?;
+        w.write_all(b"mine")
+    })
+    .unwrap_err();
+    assert!(matches!(err, FsError::Exists { .. }), "{err:?}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "winner");
+    assert_eq!(entries(dir.path()), ["race.txt"]);
 }

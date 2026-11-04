@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-text-save"
+description = "Enables the text_save command without any pre-configured scope."
+commands.allow = ["text_save"]
+
+[[permission]]
+identifier = "deny-text-save"
+description = "Denies the text_save command without any pre-configured scope."
+commands.deny = ["text_save"]

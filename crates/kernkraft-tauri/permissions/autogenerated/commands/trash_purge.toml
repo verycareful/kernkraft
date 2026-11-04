@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-trash-purge"
+description = "Enables the trash_purge command without any pre-configured scope."
+commands.allow = ["trash_purge"]
+
+[[permission]]
+identifier = "deny-trash-purge"
+description = "Denies the trash_purge command without any pre-configured scope."
+commands.deny = ["trash_purge"]

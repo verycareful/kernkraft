@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+[package]
+name = "kernkraft-theme"
+description = "System theme sources (Hyprland, portal, GTK, fontconfig) and the token resolver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+kernkraft-fs.workspace = true
+zbus.workspace = true
+kernkraft-bus.workspace = true
+inotify.workspace = true
+rustix.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
+# The p2p feature lets tests run a fake portal over a socket pair.
+zbus = { workspace = true, features = ["p2p"] }
+
+[lints]
+workspace = true

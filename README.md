@@ -5,8 +5,25 @@
 [![lopdf](https://img.shields.io/badge/lopdf-0.45-informational?style=flat-square)](https://crates.io/crates/lopdf)
 <!-- MuPDF has no shields.io logo yet; swap this for a logo badge if one appears. -->
 [![mupdf](https://img.shields.io/badge/mupdf-0.6-informational?style=flat-square)](https://crates.io/crates/mupdf)
+[![image](https://img.shields.io/badge/image-0.25-informational?style=flat-square)](https://crates.io/crates/image)
+[![resvg](https://img.shields.io/badge/resvg-0.48-informational?style=flat-square)](https://crates.io/crates/resvg)
+<!-- None of these has a shields.io logo yet; swap each for a logo badge if one appears. -->
+[![zbus](https://img.shields.io/badge/zbus-5-informational?style=flat-square)](https://crates.io/crates/zbus)
+[![inotify](https://img.shields.io/badge/inotify-0.11-informational?style=flat-square)](https://crates.io/crates/inotify)
+[![rustix](https://img.shields.io/badge/rustix-1-informational?style=flat-square)](https://crates.io/crates/rustix)
+[![thiserror](https://img.shields.io/badge/thiserror-2-informational?style=flat-square)](https://crates.io/crates/thiserror)
+[![serde](https://img.shields.io/badge/serde-1-informational?style=flat-square)](https://crates.io/crates/serde)
+[![chrono](https://img.shields.io/badge/chrono-0.4-informational?style=flat-square)](https://crates.io/crates/chrono)
+[![tempfile](https://img.shields.io/badge/tempfile-3-informational?style=flat-square)](https://crates.io/crates/tempfile)
+[![percent-encoding](https://img.shields.io/badge/percent--encoding-2-informational?style=flat-square)](https://crates.io/crates/percent-encoding)
+[![base64](https://img.shields.io/badge/base64-0.22-informational?style=flat-square)](https://crates.io/crates/base64)
+[![png](https://img.shields.io/badge/png-0.18-informational?style=flat-square)](https://crates.io/crates/png)
+[![simplecss](https://img.shields.io/badge/simplecss-0.2-informational?style=flat-square)](https://crates.io/crates/simplecss)
+[![md-5](https://img.shields.io/badge/md--5-0.10-informational?style=flat-square)](https://crates.io/crates/md-5)
+<!-- Adapter -->
+[![Tauri](https://img.shields.io/badge/Tauri-2.12-FFC131?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 <!-- Release -->
-[![Version](https://img.shields.io/badge/Version-0.1.0.2-informational?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/Version-0.1.1.0.54-informational?style=flat-square)](VERSION)
 <!-- Licence and status -->
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)
@@ -24,8 +41,15 @@ kernkraft is in alpha: its public API will change.
 
 | Crate | Kind | Owns |
 |---|---|---|
-| `kernkraft-fs` | core | atomic save, FreeDesktop trash, XDG directories, bulk file operations, scanning |
+| `kernkraft-fs` | core | atomic save, FreeDesktop trash, XDG directories, bulk file operations, scanning and properties totals, undo journal for file operations, and the same-filesystem query that tells a move from a copy (device number and mount ID) |
 | `kernkraft-pdf` | core | PDF load and atomic save, page ranges, page-tree flattening, extract, split, merge, rotate, reorder, remove; MuPDF rendering (`render` feature) |
+| `kernkraft-text` | core | text decode, UTF-8 BOM and line-ending preservation, read-only reasons, atomic save |
+| `kernkraft-xdg-apps` | core | MIME type lookup (Shared MIME-info Database), desktop entries, default applications, launching through `Exec` lines, and terminal discovery |
+| `kernkraft-thumb` | core | image thumbnails (PNG, JPEG, WebP, GIF, SVG) and the freedesktop thumbnail cache shared with other file managers |
+| `kernkraft-bus` | core | D-Bus session and system connections that resolve the bus address themselves and only ever use a Unix socket |
+| `kernkraft-theme` | core | system theme sources (Hyprland `hyprtoolkit.conf`, portal appearance, GTK, fontconfig), Kern's design tokens and the token resolver that emits CSS custom properties |
+| `kernkraft-volumes` | core | mounted volumes from `/proc/self/mountinfo` (labels from udev), UDisks2 mount, unmount and eject over the system bus, and a watcher that reports mounts, unmounts and devices appearing or going away (mountinfo `poll(2)` and UDisks2 signals) |
+| `kernkraft-tauri` | adapter | Tauri 2 plugin `kernkraft`: wire types for paths (`WirePath`, lossless for non-UTF-8 names) and errors (`WireError`); file manager commands (listing, create, rename, background copy, move, trash and delete with progress and conflict prompts, trash view, undo and redo, folder watching through inotify, properties); text open, check and save; a thumbnail queue; the system theme with live updates; applications, default apps and the terminal; volumes, listed with an identity the commands check, and updated live through `kernkraft://volumes-changed` (once-only watcher problems held until `volumes_problems_take`); user folders; the same-filesystem query for drops; streamed name search and the Documents walk |
 
 Core crates never depend on a UI or platform crate (`tauri`, `jni`); CI
 checks every core crate's dependency tree. No crate may depend on an HTTP,

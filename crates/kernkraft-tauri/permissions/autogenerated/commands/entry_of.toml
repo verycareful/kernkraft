@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-entry-of"
+description = "Enables the entry_of command without any pre-configured scope."
+commands.allow = ["entry_of"]
+
+[[permission]]
+identifier = "deny-entry-of"
+description = "Denies the entry_of command without any pre-configured scope."
+commands.deny = ["entry_of"]

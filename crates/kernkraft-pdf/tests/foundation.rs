@@ -6,6 +6,7 @@
 mod common;
 
 use common::*;
+use kernkraft_fs::Expect;
 use kernkraft_pdf::lopdf::{dictionary, Object};
 use kernkraft_pdf::{
     flatten_page_tree, load, load_bytes, page_count, parse_ranges, save, to_bytes, PageRange,
@@ -69,7 +70,7 @@ fn save_round_trips_markers() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.pdf");
     let mut doc = load_bytes(&pdf_n(3)).unwrap();
-    let stamp = save(&mut doc, &path, None).unwrap();
+    let stamp = save(&mut doc, &path, Expect::Anything).unwrap();
     assert_eq!(stamp.len, std::fs::metadata(&path).unwrap().len());
     let back = load(&path).unwrap();
     assert_eq!(markers(&back), ["P1", "P2", "P3"]);
@@ -80,9 +81,9 @@ fn save_refuses_externally_changed_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.pdf");
     let mut doc = load_bytes(&pdf_n(1)).unwrap();
-    let stamp = save(&mut doc, &path, None).unwrap();
+    let stamp = save(&mut doc, &path, Expect::Anything).unwrap();
     std::fs::write(&path, b"someone else").unwrap();
-    let err = save(&mut doc, &path, Some(&stamp)).unwrap_err();
+    let err = save(&mut doc, &path, Expect::Unchanged(&stamp)).unwrap_err();
     assert!(
         matches!(
             err,
@@ -358,4 +359,21 @@ fn trailing_bytes_after_eof_load() {
     let mut bytes = pdf_n(1);
     bytes.extend_from_slice(b"\njunk");
     assert_eq!(page_count(&load_bytes(&bytes).unwrap()), 1);
+}
+
+#[test]
+fn save_expecting_nothing_creates_and_never_replaces() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("new.pdf");
+    let mut doc = load_bytes(&pdf_n(2)).unwrap();
+    save(&mut doc, &path, Expect::Nothing).unwrap();
+    assert_eq!(markers(&load(&path).unwrap()), ["P1", "P2"]);
+
+    std::fs::write(&path, b"someone else").unwrap();
+    let err = save(&mut doc, &path, Expect::Nothing).unwrap_err();
+    assert!(
+        matches!(err, PdfError::Fs(kernkraft_fs::FsError::Exists { .. })),
+        "{err:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"someone else");
 }

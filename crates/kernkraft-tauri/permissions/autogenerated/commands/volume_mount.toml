@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-volume-mount"
+description = "Enables the volume_mount command without any pre-configured scope."
+commands.allow = ["volume_mount"]
+
+[[permission]]
+identifier = "deny-volume-mount"
+description = "Denies the volume_mount command without any pre-configured scope."
+commands.deny = ["volume_mount"]

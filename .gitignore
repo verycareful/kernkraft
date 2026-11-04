@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
 # Rust
 /target/
 
@@ -10,6 +13,8 @@ changes_version.md
 /local/
 # Release scripts (set_version.py, stamp_release.py) are maintainer-local.
 /tools/
+# Local cargo overrides (test temp dir, path patches).
+/.cargo/config.toml
 
 # Editor and OS
 .vscode/

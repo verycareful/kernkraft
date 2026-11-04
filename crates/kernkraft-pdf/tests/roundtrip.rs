@@ -7,6 +7,7 @@
 
 mod common;
 
+use kernkraft_fs::Expect;
 use std::collections::BTreeMap;
 
 use common::corpus::{assert_no_dangling, corpus, page_attrs, with_info, INFO_TITLE};
@@ -99,7 +100,7 @@ fn atomic_save_round_trips_on_disk() {
     let dir = tempfile::tempdir().unwrap();
     for f in corpus() {
         let path = dir.path().join(format!("{}.pdf", f.name));
-        let stamp = save(&mut load_bytes(&f.bytes).unwrap(), &path, None).unwrap();
+        let stamp = save(&mut load_bytes(&f.bytes).unwrap(), &path, Expect::Anything).unwrap();
         assert_eq!(stamp, FileStamp::of(&path).unwrap(), "{}", f.name);
         let back = load(&path).unwrap();
         assert_eq!(page_count(&back), f.pages, "{}", f.name);

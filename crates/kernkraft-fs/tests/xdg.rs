@@ -24,7 +24,48 @@ fn base_with_config(config: &Path) -> BaseDirs {
         cache: PathBuf::from("/h/.cache"),
         state: PathBuf::from("/h/.local/state"),
         data: PathBuf::from("/h/.local/share"),
+        config_dirs: vec![PathBuf::from("/etc/xdg")],
+        data_dirs: vec![
+            PathBuf::from("/usr/local/share"),
+            PathBuf::from("/usr/share"),
+        ],
+        current_desktop: Vec::new(),
     }
+}
+
+#[test]
+fn dir_lists_default_when_unset() {
+    let env = env_of(&[("HOME", "/h")]);
+    let dirs = base_dirs_from(&env).unwrap();
+    assert_eq!(dirs.config_dirs, vec![PathBuf::from("/etc/xdg")]);
+    assert_eq!(
+        dirs.data_dirs,
+        vec![
+            PathBuf::from("/usr/local/share"),
+            PathBuf::from("/usr/share")
+        ]
+    );
+    assert!(dirs.current_desktop.is_empty());
+}
+
+#[test]
+fn dir_lists_keep_order_and_drop_relative_entries() {
+    let env = env_of(&[
+        ("HOME", "/h"),
+        ("XDG_DATA_DIRS", "/a:rel:/b"),
+        ("XDG_CONFIG_DIRS", "/c::/d"),
+        ("XDG_CURRENT_DESKTOP", "Hyprland:GNOME"),
+    ]);
+    let dirs = base_dirs_from(&env).unwrap();
+    assert_eq!(
+        dirs.data_dirs,
+        vec![PathBuf::from("/a"), PathBuf::from("/b")]
+    );
+    assert_eq!(
+        dirs.config_dirs,
+        vec![PathBuf::from("/c"), PathBuf::from("/d")]
+    );
+    assert_eq!(dirs.current_desktop, vec!["Hyprland", "GNOME"]);
 }
 
 #[test]

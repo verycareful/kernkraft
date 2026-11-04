@@ -2,15 +2,40 @@
 # Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
 # kernkraft never touches the network: HTTP clients, async runtimes and raw
-# socket crates are banned outright. tauri and jni are banned here and will be
-# re-allowed only for their adapter crates (kernkraft-tauri, kernkraft-jni)
-# through `wrappers`, so no core crate can pull them in.
+# socket crates are banned outright. tauri is banned except as a dependency of
+# kernkraft-tauri, so no core crate can pull it in; jni is banned outright
+# until kernkraft-jni exists. tokio is banned except as a dependency of tauri,
+# which uses it for the app runtime on the Linux targets and opens no socket;
+# its `net` feature is denied outright below, so no dependency can enable it.
+# `wrappers` names the only crates allowed to depend on a banned crate.
 
+# Linux is the only platform kernkraft ships for. tauri pulls reqwest (and
+# through it hyper, socket2 and tokio's `net`) and jni only for its Android and
+# iOS targets, so the graph is checked for the Linux targets.
+# kernkraft-jni (Android) will need an Android target here, and with it a
+# fresh look at what tauri and jni pull in for that target: revisit this list
+# when that crate is added.
 [graph]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 all-features = true
 
 [advisories]
 yanked = "deny"
+# tauri's Linux runtime is built on the GTK 3 bindings, which are unmaintained
+# and carry unmaintained transitive crates kernkraft cannot replace. Only
+# crates the workspace depends on directly are held to this.
+unmaintained = "workspace"
+# zbus 5 is the newest release whose dependency tree opens no socket crate:
+# zbus 6 folds in zbus_utils and always pulls socket2, which is banned below.
+# zbus's TCP transport code is compiled in but unreachable: connections are
+# only built from a Unix stream that kernkraft-bus opens itself.
+# These three advisories only say that zvariant, zvariant_derive and
+# zbus_names moved into zbus 6; none reports a vulnerability.
+ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is merged into zbus 6, which requires banned socket2" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is merged into zbus 6, which requires banned socket2" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is merged into zbus 6, which requires banned socket2" },
+]
 
 [bans]
 multiple-versions = "allow"
@@ -24,12 +49,16 @@ deny = [
     { name = "isahc" },
     { name = "surf" },
     { name = "attohttpc" },
-    { name = "tokio" },
+    { name = "tokio", wrappers = ["tauri"] },
     { name = "async-std" },
     { name = "socket2" },
-    { name = "tauri" },
+    { name = "tauri", wrappers = ["kernkraft-tauri"] },
     { name = "jni" },
 ]
+
+[[bans.features]]
+crate = "tokio"
+deny = ["net"]
 
 [licenses]
 confidence-threshold = 0.9

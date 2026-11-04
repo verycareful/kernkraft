@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+# Hand-written fixture for a higher-priority data dir (globs2, section 2.4).
+# The NOGLOBS line drops every glob of application/x-high from lower dirs.
+50:application/x-high:__NOGLOBS__

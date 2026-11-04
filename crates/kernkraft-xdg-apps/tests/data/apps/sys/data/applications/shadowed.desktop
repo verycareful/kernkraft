@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+[Desktop Entry]
+Type=Application
+Name=Shadowed
+Exec=shadowed %f
+MimeType=image/tiff;

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-app-default"
+description = "Enables the app_default command without any pre-configured scope."
+commands.allow = ["app_default"]
+
+[[permission]]
+identifier = "deny-app-default"
+description = "Denies the app_default command without any pre-configured scope."
+commands.deny = ["app_default"]

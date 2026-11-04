@@ -31,7 +31,8 @@ use rustix::io::Errno;
 
 use super::names::unique_name_for;
 use super::OpReport;
-use crate::sys::{parent_dir, rename_noreplace};
+use crate::same_fs::is_mount_point;
+use crate::sys::{parent_dir, renameat_noreplace};
 use crate::xattr::copy_all;
 use crate::{FsError, Progress};
 
@@ -86,7 +87,14 @@ pub fn copy(
 /// Moves each source into `dest_dir`: a rename where source and destination
 /// share a filesystem, else a copy followed by deleting the source.
 /// Conflicts, progress, cancellation and the `Err` cases are as for
-/// [`copy`]; a source already in `dest_dir` is skipped.
+/// [`copy`]; a source already in `dest_dir` is skipped. A source that is
+/// itself a mount point is never moved: rename(2) refuses it, with `EBUSY`
+/// when the destination is on its mount and `EXDEV` when it is on another
+/// filesystem (where a copy and delete would empty the mounted folder), and
+/// merging it into a folder of the same name would move its contents out one
+/// by one. It fails with [`FsError::MountPoint`], nothing is copied, merged
+/// or deleted, and it stays where it is. A folder that merely has a mount
+/// point somewhere inside it is not refused.
 pub fn move_items(
     sources: &[PathBuf],
     dest_dir: &Path,
@@ -112,6 +120,20 @@ enum Placed {
     /// those entries are already in the report.
     Partial,
     Cancelled,
+}
+
+/// [`FsError::MountPoint`] for `src` when its rename failed with `error`
+/// because it is a mount point: `EBUSY` when the destination is on its own
+/// mount, `EXDEV` when it is on another filesystem (rename(2) compares the
+/// two folders' mounts first and only then reaches the mount point). Any
+/// other failure, and `EBUSY` or `EXDEV` for a source that is not a mount
+/// point, is not this and stays as it is.
+fn mount_point_refusal(src: &Path, error: &io::Error) -> Option<FsError> {
+    let code = error.raw_os_error()?;
+    let busy_or_cross = code == Errno::BUSY.raw_os_error() || code == Errno::XDEV.raw_os_error();
+    (busy_or_cross && is_mount_point(src)).then(|| FsError::MountPoint {
+        path: src.to_path_buf(),
+    })
 }
 
 struct Transfer<'a> {
@@ -222,10 +244,18 @@ impl<'a> Transfer<'a> {
         let renamed = if replace {
             fs::rename(src, target)
         } else {
-            rename_noreplace(src, target)
+            renameat_noreplace(src, target)
         };
+        if let Err(e) = &renamed {
+            if let Some(refusal) = mount_point_refusal(src, e) {
+                return self.fail(src, refusal);
+            }
+        }
         match renamed {
             Ok(()) => {
+                if replace {
+                    self.report.replaced.push(target.to_path_buf());
+                }
                 self.advance(tree_size(target), target);
                 Placed::Done(target.to_path_buf())
             }
@@ -257,7 +287,12 @@ impl<'a> Transfer<'a> {
             self.copy_file(src, meta, target, replace)
         } else if kind.is_symlink() {
             match copy_symlink(src, target, replace) {
-                Ok(()) => Placed::Done(target.to_path_buf()),
+                Ok(()) => {
+                    if replace {
+                        self.report.replaced.push(target.to_path_buf());
+                    }
+                    Placed::Done(target.to_path_buf())
+                }
                 Err(e) => self.fail(src, e),
             }
         } else if kind.is_dir() {
@@ -326,7 +361,12 @@ impl<'a> Transfer<'a> {
             temp.persist_noclobber(target).map(drop)
         };
         match persisted {
-            Ok(()) => Placed::Done(target.to_path_buf()),
+            Ok(()) => {
+                if replace {
+                    self.report.replaced.push(target.to_path_buf());
+                }
+                Placed::Done(target.to_path_buf())
+            }
             Err(e) if e.error.kind() == ErrorKind::AlreadyExists => self.fail(
                 src,
                 FsError::Exists {
@@ -392,14 +432,28 @@ impl<'a> Transfer<'a> {
 
     /// Copies every entry of `src` into the existing directory `target`.
     fn copy_children(&mut self, src: &Path, target: &Path) -> Placed {
-        self.each_child(Mode::Copy, src, target)
+        self.each_child(Mode::Copy, src, target).0
     }
 
     /// Merges directory `src` into the existing directory `target`, clashes
     /// settled entry by entry. After a move whose every entry went over,
     /// the emptied source directory is removed.
     fn merge(&mut self, mode: Mode, src: &Path, target: &Path) -> Placed {
-        let outcome = self.each_child(mode, src, target);
+        // A mount point is never moved, and merging it would move out what
+        // the mount holds one entry at a time before the last step failed.
+        if mode == Mode::Move && is_mount_point(src) {
+            return self.fail(
+                src,
+                FsError::MountPoint {
+                    path: src.to_path_buf(),
+                },
+            );
+        }
+        let (outcome, placed) = self.each_child(mode, src, target);
+        if placed > 0 {
+            // Mixed with what was there, whatever happens next.
+            self.report.replaced.push(target.to_path_buf());
+        }
         if mode == Mode::Move && matches!(outcome, Placed::Done(_)) {
             if let Err(e) = fs::remove_dir(src) {
                 self.fail(src, FsError::io(src, e));
@@ -409,23 +463,30 @@ impl<'a> Transfer<'a> {
         outcome
     }
 
-    fn each_child(&mut self, mode: Mode, src: &Path, target: &Path) -> Placed {
+    /// Places every entry of `src` into `target`. Also returns how many
+    /// entries went in, whole or in part.
+    fn each_child(&mut self, mode: Mode, src: &Path, target: &Path) -> (Placed, usize) {
         let entries = match read_dir_sorted(src) {
             Ok(entries) => entries,
-            Err(e) => return self.fail(src, e),
+            Err(e) => return (self.fail(src, e), 0),
         };
         let mut complete = true;
+        let mut placed = 0;
         for child in entries {
             match self.place(mode, &child, target, false) {
-                Placed::Done(_) => {}
-                Placed::Skipped | Placed::Failed | Placed::Partial => complete = false,
-                Placed::Cancelled => return Placed::Cancelled,
+                Placed::Done(_) => placed += 1,
+                Placed::Partial => {
+                    placed += 1;
+                    complete = false;
+                }
+                Placed::Skipped | Placed::Failed => complete = false,
+                Placed::Cancelled => return (Placed::Cancelled, placed),
             }
         }
         if complete {
-            Placed::Done(target.to_path_buf())
+            (Placed::Done(target.to_path_buf()), placed)
         } else {
-            Placed::Partial
+            (Placed::Partial, placed)
         }
     }
 
@@ -527,9 +588,48 @@ fn copy_symlink(src: &Path, target: &Path, replace: bool) -> Result<(), FsError>
     })
 }
 
+/// Copies the single entry `src` to the new path `target` as [`copy`]
+/// copies it (contents, permission bits, times and extended attributes;
+/// a symlink recreated, never followed), never replacing anything at
+/// `target`. `progress` is polled for cancellation; its reports count
+/// bytes. Returns the warnings the copy produced.
+///
+/// On failure or cancel nothing is left at `target`: what this call
+/// created there holds only what it copied, and is removed again.
+pub(crate) fn copy_exact(
+    src: &Path,
+    target: &Path,
+    progress: &dyn Progress,
+) -> Result<Vec<(PathBuf, FsError)>, FsError> {
+    let meta = fs::symlink_metadata(src).map_err(|e| FsError::not_found_or_io(src, e))?;
+    let skip = |_: &Path, _: &Path| Conflict::Skip;
+    let mut t = Transfer {
+        resolve: &skip,
+        progress,
+        done_bytes: 0,
+        total_bytes: tree_size(src),
+        report: OpReport::default(),
+    };
+    let placed = t.copy_entry(src, &meta, target, false);
+    let mut report = t.report;
+    let complete = report.failed.is_empty() && report.skipped.is_empty();
+    match placed {
+        Placed::Done(_) if complete => return Ok(report.warnings),
+        Placed::Done(_) | Placed::Partial => delete_tree(target)?,
+        Placed::Skipped | Placed::Failed | Placed::Cancelled => {}
+    }
+    if let Some((_, e)) = report.failed.drain(..).next() {
+        return Err(e);
+    }
+    if let Some(path) = report.skipped.into_iter().next() {
+        return Err(FsError::Exists { path });
+    }
+    Err(FsError::Cancelled)
+}
+
 /// Deletes a moved source after its copy: a directory with its contents,
 /// never following a symlink.
-fn delete_tree(path: &Path) -> Result<(), FsError> {
+pub(crate) fn delete_tree(path: &Path) -> Result<(), FsError> {
     let meta = fs::symlink_metadata(path).map_err(|e| FsError::io(path, e))?;
     let removed = if meta.is_dir() {
         fs::remove_dir_all(path)
@@ -565,4 +665,48 @@ fn tree_size(path: &Path) -> u64 {
     fs::read_dir(path)
         .map(|entries| entries.flatten().map(|e| tree_size(&e.path())).sum())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn os_error(errno: Errno) -> io::Error {
+        io::Error::from_raw_os_error(errno.raw_os_error())
+    }
+
+    #[test]
+    fn busy_and_cross_device_on_a_mount_point_are_the_mount_point_error() {
+        // procfs is a mount of its own at /proc (proc_pid_mountinfo, proc(5)).
+        // The premise, checked so a host without procfs at /proc fails here
+        // and says so: /proc has a device number of its own.
+        use std::os::unix::fs::MetadataExt;
+        assert_ne!(
+            fs::metadata("/proc").unwrap().dev(),
+            fs::metadata("/").unwrap().dev(),
+            "this test needs procfs mounted at /proc"
+        );
+        let proc = Path::new("/proc");
+        for errno in [Errno::BUSY, Errno::XDEV] {
+            match mount_point_refusal(proc, &os_error(errno)) {
+                Some(FsError::MountPoint { path }) => assert_eq!(path, proc),
+                other => panic!("{errno:?}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn busy_on_something_that_is_not_a_mount_point_stays_what_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain");
+        fs::write(&plain, "").unwrap();
+        for errno in [Errno::BUSY, Errno::XDEV] {
+            assert!(mount_point_refusal(&plain, &os_error(errno)).is_none());
+        }
+        // Another failure of a mount point is not a mount point refusal.
+        assert!(mount_point_refusal(Path::new("/proc"), &os_error(Errno::ACCESS)).is_none());
+        assert!(mount_point_refusal(Path::new("/proc"), &io::Error::other("no code")).is_none());
+    }
 }

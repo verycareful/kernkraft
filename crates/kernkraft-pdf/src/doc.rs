@@ -6,7 +6,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
-use kernkraft_fs::{write_bytes_atomic, FileStamp, FsError};
+use kernkraft_fs::{write_bytes_atomic, Expect, FileStamp, FsError};
 use lopdf::{Document, Object};
 
 use crate::tree::{check_and_type_pages, page_ids};
@@ -90,16 +90,12 @@ pub fn to_bytes(doc: &mut Document) -> Result<Vec<u8>, PdfError> {
     Ok(out)
 }
 
-/// Serialises `doc` and writes it to `path` atomically. With
-/// `expected = Some(stamp)` the save is refused if the file changed on disk
-/// since `stamp` was taken. Returns the new stamp.
-pub fn save(
-    doc: &mut Document,
-    path: &Path,
-    expected: Option<&FileStamp>,
-) -> Result<FileStamp, PdfError> {
+/// Serialises `doc` and writes it to `path` atomically, as far as `expect`
+/// allows ([`Expect`]: the file as read, nothing there, or anything).
+/// Returns the new stamp.
+pub fn save(doc: &mut Document, path: &Path, expect: Expect<'_>) -> Result<FileStamp, PdfError> {
     let bytes = to_bytes(doc)?;
-    Ok(write_bytes_atomic(path, expected, &bytes)?)
+    Ok(write_bytes_atomic(path, expect, &bytes)?)
 }
 
 /// Number of pages in the page tree, counted as every operation counts

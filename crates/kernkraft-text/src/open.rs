@@ -1,0 +1,324 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+//! Open a file as text and save it back.
+
+use std::fs::{self, OpenOptions};
+use std::io::{self, ErrorKind, Read};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+
+use kernkraft_fs::{write_bytes_atomic, Expect, FileStamp, FsError};
+use rustix::fs::{access, fcntl_getfl, fcntl_setfl, Access, OFlags};
+
+use crate::decode::{decode, Decoded, LineEnding, ReadOnly};
+use crate::encode::encode;
+use crate::TextError;
+
+/// Largest file opened for editing. Editing stays responsive in CodeMirror
+/// well past this; above it a file is a log or a dump, opened to read.
+pub const EDITABLE_LIMIT: u64 = 10 * 1024 * 1024;
+
+/// Largest file opened at all. Larger files would hold several times their
+/// size in the webview; they are refused with [`TextError::TooLargeToOpen`]
+/// and the UI offers the default app.
+pub const OPEN_LIMIT: u64 = 256 * 1024 * 1024;
+
+/// A file read as text, with the stamp a later [`save`] checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextFile {
+    pub path: PathBuf,
+    pub decoded: Decoded,
+    pub stamp: FileStamp,
+}
+
+/// Reads the file at `path` (symlinks followed).
+///
+/// Anything that is not a regular file (after following symlinks) is refused
+/// as an [`FsError::Io`] of kind `InvalidInput`: no existing [`FsError`]
+/// variant means "wrong file type". The file's metadata is checked first, so
+/// a FIFO or device in plain sight is never opened. The file is then opened
+/// non-blocking and its type checked again on the handle (`fstat`), which is
+/// the check that counts: a FIFO or device swapped in between the two is
+/// refused without blocking and without being read. Opening a device node
+/// can itself have effects some drivers define; that is the one thing the
+/// handle check cannot undo, and the first check makes it need a swap within
+/// that window.
+///
+/// A file above [`OPEN_LIMIT`] is refused without being read. The result's
+/// `read_only` reports one reason; when several apply the order is: size
+/// above [`EDITABLE_LIMIT`] ([`ReadOnly::TooLarge`]), then no write
+/// permission for the current user ([`ReadOnly::NoWritePermission`], any
+/// failure of the `access(2)` check counting as none), then what
+/// [`decode`] found (UTF-16, not UTF-8, mixed line endings).
+///
+/// The stamp is taken from the open handle before the read, so it describes
+/// the file actually read, and a change during the read is caught by the
+/// next [`save`].
+pub fn open(path: &Path) -> Result<TextFile, TextError> {
+    let meta = fs::metadata(path).map_err(|source| not_found_or_io(path, source))?;
+    if !meta.is_file() {
+        return Err(not_regular(path).into());
+    }
+    let (bytes, stamp) = read_regular(path)?;
+
+    let mut decoded = decode(&bytes);
+    if stamp.len > EDITABLE_LIMIT {
+        decoded.read_only = Some(ReadOnly::TooLarge {
+            len: stamp.len,
+            limit: EDITABLE_LIMIT,
+        });
+    } else if access(path, Access::WRITE_OK).is_err() {
+        decoded.read_only = Some(ReadOnly::NoWritePermission);
+    }
+    Ok(TextFile {
+        path: path.to_path_buf(),
+        decoded,
+        stamp,
+    })
+}
+
+fn not_found_or_io(path: &Path, source: io::Error) -> FsError {
+    if source.kind() == ErrorKind::NotFound {
+        FsError::NotFound {
+            path: path.to_path_buf(),
+        }
+    } else {
+        FsError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+}
+
+fn not_regular(path: &Path) -> FsError {
+    FsError::Io {
+        path: path.to_path_buf(),
+        source: io::Error::new(ErrorKind::InvalidInput, "not a regular file"),
+    }
+}
+
+/// Opens `path` without blocking (`O_NONBLOCK`: opening a FIFO with no
+/// writer returns at once instead of waiting; `O_NOCTTY`: a terminal device
+/// does not become the controlling terminal), refuses it unless the handle
+/// is a regular file, then clears `O_NONBLOCK` and reads it whole. Returns
+/// the bytes and the stamp of the handle.
+fn read_regular(path: &Path) -> Result<(Vec<u8>, FileStamp), TextError> {
+    let io = |source| FsError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlags::NONBLOCK | OFlags::NOCTTY).bits() as i32)
+        .open(path)
+        .map_err(|source| not_found_or_io(path, source))?;
+    let meta = file.metadata().map_err(io)?;
+    if !meta.is_file() {
+        return Err(not_regular(path).into());
+    }
+    let stamp = FileStamp::from_metadata(path, &meta)?;
+    if stamp.len > OPEN_LIMIT {
+        return Err(TextError::TooLargeToOpen {
+            len: stamp.len,
+            limit: OPEN_LIMIT,
+        });
+    }
+    // Reads of a regular file never return EAGAIN, but blocking mode is
+    // what every reader of the handle expects.
+    let flags = fcntl_getfl(&file).map_err(|e| io(e.into()))?;
+    fcntl_setfl(&file, flags - OFlags::NONBLOCK).map_err(|e| io(e.into()))?;
+    let mut bytes = Vec::new();
+    (&file)
+        .take(OPEN_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    if bytes.len() as u64 > OPEN_LIMIT {
+        return Err(TextError::TooLargeToOpen {
+            len: bytes.len() as u64,
+            limit: OPEN_LIMIT,
+        });
+    }
+    Ok((bytes, stamp))
+}
+
+/// Encodes `text` and writes it to `path` atomically, as far as `expect`
+/// allows; see [`kernkraft_fs::write_atomic`] and [`Expect`]. Returns the
+/// stamp of the file now on disk.
+///
+/// - [`Expect::Unchanged`]: the file must still match the stamp, else
+///   [`FsError::ExternalModification`] and nothing is written (a file
+///   deleted since counts as changed). An ordinary save.
+/// - [`Expect::Nothing`]: nothing may be at `path`, else [`FsError::Exists`]
+///   and nothing is touched; something appearing there while the text is
+///   written is not replaced either. Save As to a path found free, or a file
+///   written again after it was deleted.
+/// - [`Expect::Anything`]: whatever is there is replaced. An overwrite the
+///   user chose knowing what is there.
+///
+/// With [`Expect::Unchanged`] or [`Expect::Anything`], an existing file at
+/// `path` (symlinks followed) is checked first, and nothing is written when
+/// it fails:
+///
+/// - Anything that is not a regular file is refused from its metadata, as
+///   in [`open`], before it is opened, so a save aimed at a device node
+///   never opens the device; then the same handle-checked read as [`open`]
+///   refuses one swapped in after that check, without blocking.
+/// - With [`Expect::Unchanged`], the stamp of that read must match. The
+///   write checks the stamp again, so a change between the read and the
+///   write is caught too.
+/// - Content that decodes read-only for a content reason
+///   ([`ReadOnly::is_content`]: not UTF-8, UTF-16, mixed line endings) is
+///   refused with [`TextError::ReadOnly`]: the text the caller holds for it
+///   is a lossy copy, and writing it would replace the original bytes.
+/// - A file the current user has no write permission for (`access(2)` with
+///   `W_OK`, the check [`open`] marks [`ReadOnly::NoWritePermission`] with)
+///   is refused with [`TextError::ReadOnly`] and that reason. The atomic
+///   write replaces the file by a rename in its folder, which a writable
+///   folder allows whatever the file's own mode, so without this check a
+///   write-protected file would be replaced.
+/// - A file above [`OPEN_LIMIT`] cannot be read to make these checks, so
+///   it is refused with [`TextError::TooLargeToOpen`], Save As over it
+///   included: replacing a file nothing has checked is what these rules
+///   exist to prevent.
+///
+/// [`ReadOnly::TooLarge`] alone is no reason to refuse: the text of such a
+/// file is exact. A save to a path with nothing there skips every check.
+pub fn save(
+    path: &Path,
+    text: &str,
+    ending: LineEnding,
+    bom: bool,
+    expect: Expect<'_>,
+) -> Result<FileStamp, TextError> {
+    let expected = match expect {
+        Expect::Unchanged(stamp) => Some(stamp),
+        Expect::Anything => None,
+        // The write refuses whatever is there, a dangling symlink included, without reading it.
+        Expect::Nothing => {
+            return Ok(write_bytes_atomic(
+                path,
+                Expect::Nothing,
+                &encode(text, ending, bom),
+            )?)
+        }
+    };
+    match fs::metadata(path) {
+        Ok(meta) => {
+            if !meta.is_file() {
+                return Err(not_regular(path).into());
+            }
+            check_existing(path, expected)?;
+        }
+        // Nothing there: a new file, or (with `expected`) one deleted
+        // since, which the write reports as changed.
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(source) => return Err(not_found_or_io(path, source).into()),
+    }
+    Ok(write_bytes_atomic(
+        path,
+        expected.map_or(Expect::Anything, Expect::Unchanged),
+        &encode(text, ending, bom),
+    )?)
+}
+
+/// The checks [`save`] makes on a regular file already at `path`.
+fn check_existing(path: &Path, expected: Option<&FileStamp>) -> Result<(), TextError> {
+    let (bytes, stamp) = match read_regular(path) {
+        Ok(read) => read,
+        // Removed since the metadata check: as if nothing was there.
+        Err(TextError::Fs(FsError::NotFound { .. })) => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if expected.is_some_and(|e| *e != stamp) {
+        return Err(FsError::ExternalModification {
+            path: path.to_path_buf(),
+        }
+        .into());
+    }
+    let reason = decode(&bytes)
+        .read_only
+        .filter(ReadOnly::is_content)
+        .or_else(|| {
+            access(path, Access::WRITE_OK)
+                .is_err()
+                .then_some(ReadOnly::NoWritePermission)
+        });
+    match reason {
+        Some(reason) => Err(TextError::ReadOnly {
+            path: path.to_path_buf(),
+            reason,
+        }),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::io::ErrorKind;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use kernkraft_fs::FsError;
+
+    use super::read_regular;
+    use crate::TextError;
+
+    /// A FIFO that took the file's place after the metadata check: the
+    /// read through the handle refuses it, and does not block waiting for a
+    /// writer.
+    #[test]
+    fn handle_check_refuses_a_fifo_swapped_in_after_the_stat() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("swapped");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &path,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let thread_path = path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_regular(&thread_path).map(|_| ()));
+        });
+        let result = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("read_regular blocked on a FIFO");
+        match result.unwrap_err() {
+            TextError::Fs(FsError::Io { path: p, source }) => {
+                assert_eq!(p, path);
+                assert_eq!(source.kind(), ErrorKind::InvalidInput);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A character device in the file's place is refused from the handle.
+    #[test]
+    fn handle_check_refuses_a_device() {
+        let err = read_regular(std::path::Path::new("/dev/null"))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            matches!(&err, TextError::Fs(FsError::Io { source, .. }) if source.kind() == ErrorKind::InvalidInput),
+            "{err:?}"
+        );
+    }
+
+    /// A regular file reads in full with the stamp of the handle it was
+    /// read through.
+    #[test]
+    fn regular_file_reads_with_its_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "abc").unwrap();
+        let (bytes, stamp) = read_regular(&path).unwrap();
+        assert_eq!(bytes, b"abc");
+        assert_eq!(stamp, kernkraft_fs::FileStamp::of(&path).unwrap());
+    }
+}

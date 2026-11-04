@@ -16,29 +16,73 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # The step limits are guards against a hang, not measurements, and
+    # nothing is cached between runs. The steps take: checkout 1 s, system
+    # libraries 32 s, toolchain 1 s, format 2 s, clippy 266 s, test 380 s,
+    # release timing 11 s, boundary 2 s, deny 15 s (run 41583328405). The
+    # release timing step builds only kernkraft-xdg-apps and its few small
+    # dependencies in release (`-p`), so a cache would save next to nothing.
+    # The job limit of 60 minutes sits above the slowest run seen, 43
+    # minutes 51 seconds.
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        timeout-minutes: 5
 
-      - name: System libraries for MuPDF
+      # dbus-daemon: the volume watcher tests start a private one.
+      - name: System libraries for MuPDF and Tauri
+        timeout-minutes: 10
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfontconfig1-dev libfreetype-dev libclang-dev
+          sudo apt-get install -y dbus-daemon libfontconfig1-dev libfreetype-dev libclang-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 
       - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 5
         with:
           components: rustfmt, clippy
 
       - name: Format
+        timeout-minutes: 5
         run: cargo fmt --all --check
 
       - name: Clippy
+        timeout-minutes: 10
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # Two tests need a mount namespace of their own to mount in: the volume
+      # watcher's (a tmpfs, mounted and unmounted) and kernkraft-fs's
+      # same_filesystem test (a bind mount). The runner's AppArmor policy
+      # refuses unprivileged user namespaces, so with this variable each runs
+      # `sudo -n unshare --mount --propagation private` for one shell. sudo is
+      # used only to create that private mount namespace and to mount in it.
+      # The watcher test keeps cargo, the test and the watcher the runner user;
+      # the same_filesystem test mounts as root and then drops back to the
+      # runner user with setpriv before any test code runs. The btrfs
+      # subvolume test of same_filesystem is ignored here: this runner is not
+      # on btrfs.
       - name: Test
-        run: cargo test --workspace --all-features
+        timeout-minutes: 15
+        env:
+          KERN_TEST_SUDO_MOUNTNS: "1"
+        run: cargo test --workspace --all-features --no-fail-fast
+
+      - name: Timing budgets (release build)
+        timeout-minutes: 30
+        run: cargo test --release -p kernkraft-xdg-apps --test mime -- --ignored
 
       - name: Core crates never depend on the platform
+        timeout-minutes: 5
         run: scripts/check-boundary.sh
 
+      - name: Source file headers
+        timeout-minutes: 5
+        run: scripts/check-headers.sh
+
+      - name: Header check tests
+        timeout-minutes: 5
+        run: python3 -I scripts/test_check_headers.py
+
       - name: cargo-deny
+        timeout-minutes: 10
         uses: EmbarkStudios/cargo-deny-action@v2

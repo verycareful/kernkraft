@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-apps-for"
+description = "Enables the apps_for command without any pre-configured scope."
+commands.allow = ["apps_for"]
+
+[[permission]]
+identifier = "deny-apps-for"
+description = "Denies the apps_for command without any pre-configured scope."
+commands.deny = ["apps_for"]

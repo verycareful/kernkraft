@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::undo::{Change, IrreversibleReason};
+
 /// Every failure `kernkraft-fs` reports.
 #[derive(Debug, thiserror::Error)]
 pub enum FsError {
@@ -34,6 +36,55 @@ pub enum FsError {
     XattrsNotKept { path: PathBuf, names: Vec<String> },
     #[error("cancelled")]
     Cancelled,
+    /// A move was refused because `path`, the item being moved, is itself a
+    /// mount point: rename(2) fails for one with `EBUSY` when the
+    /// destination is on its mount ("is in use by the system (for example
+    /// as a mount point)") and with `EXDEV` when it is on another
+    /// filesystem, where a copy and delete would empty the mounted folder; a
+    /// mount point that is the source of a merge into a folder of the same
+    /// name is refused too. Nothing is copied, merged or deleted and the item
+    /// stays where it is. Copying it is the alternative.
+    #[error("{path} is a mount point and cannot be moved")]
+    MountPoint { path: PathBuf },
+    /// The kernel did not report a mount ID for `path` (`statx(2)` with
+    /// `STATX_MNT_ID`, which needs Linux 5.8), so whether two places are on
+    /// one mount cannot be told. Never answered by a guess.
+    #[error("{path}: the kernel reports no mount ID for it (statx STATX_MNT_ID needs Linux 5.8)")]
+    MountIdUnavailable { path: PathBuf },
+    /// An undo or redo found `path` different from what the journal
+    /// recorded, before doing anything.
+    #[error("{path} {what}")]
+    Changed { path: PathBuf, what: Change },
+    /// The journal entry on top cannot be reversed. It is reported once and
+    /// taken off the stack.
+    #[error("{what} cannot be undone: {reason}")]
+    Irreversible {
+        what: String,
+        reason: IrreversibleReason,
+    },
+    /// An undo or redo stopped partway. `done` lists the items it reversed
+    /// and `not_done` the items it did not reach, each by its path outside
+    /// the trash (see [`crate::UndoOutcome`]); `cause` says why it stopped.
+    /// `warnings` are those of the items done.
+    #[error("stopped after {} of {} items: {cause}", done.len(), done.len() + not_done.len())]
+    Partial {
+        done: Vec<PathBuf>,
+        not_done: Vec<PathBuf>,
+        cause: Box<FsError>,
+        warnings: Vec<(PathBuf, FsError)>,
+    },
+    /// A move back across filesystems copied the item to `copy` in full,
+    /// but the item at `left` could not then be removed. Both now exist.
+    #[error("{copy} is back in full, but {left} could not be removed: {cause}")]
+    SourceNotRemoved {
+        copy: PathBuf,
+        left: PathBuf,
+        cause: Box<FsError>,
+    },
+    #[error("nothing to undo")]
+    NothingToUndo,
+    #[error("nothing to redo")]
+    NothingToRedo,
 }
 
 impl FsError {

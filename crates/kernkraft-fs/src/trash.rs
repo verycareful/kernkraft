@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 use percent_encoding::{percent_decode_str, percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
 use crate::naming::numbered;
-use crate::sys::{rename_noreplace, uid};
+use crate::sys::{renameat_noreplace, uid};
+use crate::undo::Change;
 use crate::{BaseDirs, FsError};
 
 const FILES_DIR: &str = "files";
@@ -168,7 +169,7 @@ impl Trash {
         );
         let (trash_name, info_path) = reserve_info(&files, &info, &name, meta.is_dir(), &contents)?;
 
-        if let Err(e) = rename_noreplace(&original, &files.join(&trash_name)) {
+        if let Err(e) = renameat_noreplace(&original, &files.join(&trash_name)) {
             let cleanup = fs::remove_file(&info_path);
             return Err(match cleanup {
                 Ok(()) => FsError::io(&original, e),
@@ -243,14 +244,17 @@ impl Trash {
     }
 
     /// Moves `item` back to its original path, creating missing parent
-    /// directories. Refuses with [`FsError::Exists`] if something now
-    /// occupies that path; nothing is replaced.
+    /// directories: restoring from the trash view after its folder was
+    /// deleted is a request to bring the item back, folder and all. (Undo
+    /// refuses in that case instead, since it reverses one recorded step.)
+    /// Refuses with [`FsError::Exists`] if something now occupies that path;
+    /// nothing is replaced.
     pub fn restore(&self, item: &TrashedItem) -> Result<PathBuf, FsError> {
         let (file, info) = item_paths(item);
         if let Some(parent) = item.original.parent() {
             fs::create_dir_all(parent).map_err(|e| FsError::io(parent, e))?;
         }
-        rename_noreplace(&file, &item.original).map_err(|e| {
+        renameat_noreplace(&file, &item.original).map_err(|e| {
             if e.kind() == ErrorKind::AlreadyExists {
                 FsError::Exists {
                     path: item.original.clone(),
@@ -275,6 +279,95 @@ impl Trash {
         };
         removed.map_err(|e| FsError::io(&file, e))?;
         fs::remove_file(&info).map_err(|e| FsError::io(&info, e))
+    }
+}
+
+/// [`Trash::restore`] for undo. Unlike it, a missing parent folder is not
+/// recreated: undo checks beforehand that the folder exists, and a folder
+/// gone since makes the rename fail with [`FsError::NotFound`]. Once the
+/// item is back, a failure to remove its info file does not undo the
+/// restore; it is returned as `Ok(Some(warning))`.
+pub(crate) fn restore_for_undo(item: &TrashedItem) -> Result<Option<FsError>, FsError> {
+    let (file, info) = item_paths(item);
+    renameat_noreplace(&file, &item.original).map_err(|e| {
+        if e.kind() == ErrorKind::AlreadyExists {
+            FsError::Exists {
+                path: item.original.clone(),
+            }
+        } else {
+            FsError::not_found_or_io(&file, e)
+        }
+    })?;
+    Ok(fs::remove_file(&info).err().map(|e| FsError::io(&info, e)))
+}
+
+/// Where `item` is held: `<trash dir>/files/<name>`.
+pub(crate) fn held_path(item: &TrashedItem) -> PathBuf {
+    item_paths(item).0
+}
+
+/// Checks that `item` is still in its trash as the same entry: the file
+/// under `files/` exists, and the info file names the same original path
+/// and deletion date. A trash name is reused once its entry is emptied, so
+/// the name alone does not identify the item. Returns the first difference,
+/// naming the trash file or info file.
+pub(crate) fn verify_entry(item: &TrashedItem) -> Result<Option<(PathBuf, Change)>, FsError> {
+    let (file, info) = item_paths(item);
+    match fs::symlink_metadata(&file) {
+        Ok(_) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Some((file, Change::Missing))),
+        Err(e) => return Err(FsError::io(&file, e)),
+    }
+    let contents = match fs::read_to_string(&info) {
+        Ok(c) => c,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Some((info, Change::Missing))),
+        Err(e) if e.kind() == ErrorKind::InvalidData => return Ok(Some((info, Change::Modified))),
+        Err(e) => return Err(FsError::io(&info, e)),
+    };
+    let Some((raw_path, deleted)) = parse_trashinfo(&contents) else {
+        return Ok(Some((info, Change::Modified)));
+    };
+    let recorded = decode_trash_path(&raw_path);
+    // A mount trash records the path relative to the mount's top directory.
+    let same_path = if recorded.is_absolute() {
+        recorded == item.original
+    } else {
+        !recorded.as_os_str().is_empty() && item.original.ends_with(&recorded)
+    };
+    if same_path && deleted == item.deleted {
+        Ok(None)
+    } else {
+        Ok(Some((info, Change::Modified)))
+    }
+}
+
+/// The [`TrashedItem`] for an item trashed from `original` and now held at
+/// `held`, which is `<trash dir>/files/<name>`. The deletion date is read
+/// from the item's info file and left empty if that cannot be read; the
+/// item then fails [`verify_entry`], so an entry that cannot be identified
+/// is never restored.
+pub(crate) fn item_at(original: &Path, held: &Path) -> TrashedItem {
+    let name = held
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let trash_dir = held
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let info = trash_dir.join(INFO_DIR).join(format!("{name}{INFO_EXT}"));
+    let deleted = fs::read_to_string(info)
+        .ok()
+        .and_then(|c| parse_trashinfo(&c))
+        .map(|(_, date)| date)
+        .unwrap_or_default();
+    TrashedItem {
+        name,
+        original: original.to_path_buf(),
+        deleted,
+        trash_dir,
+        is_dir: fs::symlink_metadata(held).is_ok_and(|m| m.is_dir()),
     }
 }
 

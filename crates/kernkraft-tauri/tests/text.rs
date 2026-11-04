@@ -1,0 +1,254 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+//! Opening, checking and saving text files through the plugin's methods.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
+
+use std::fs;
+
+use common::{env, w};
+use kernkraft_tauri::WireExpect;
+
+#[test]
+fn text_open_save_round_trip_crlf() {
+    let e = env();
+    let path = e.dir("t").join("notes.txt");
+    fs::write(&path, b"one\r\ntwo\r\n").unwrap();
+
+    let opened = e.kk.text_open(w(&path)).unwrap();
+    // The editor sees LF only; the file's CRLF is remembered.
+    assert_eq!(opened.text, "one\ntwo\n");
+    assert_eq!(opened.ending, "crlf");
+    assert!(!opened.bom);
+    assert_eq!(opened.read_only, None);
+    assert_eq!(opened.path, w(&path));
+
+    let saved =
+        e.kk.text_save(
+            w(&path),
+            "one\ntwo\nthree\n".to_owned(),
+            opened.ending.clone(),
+            opened.bom,
+            WireExpect::Unchanged {
+                stamp: opened.stamp.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"one\r\ntwo\r\nthree\r\n");
+
+    // The returned stamp is the file now on disk.
+    let again = e.kk.text_open(w(&path)).unwrap();
+    assert_eq!(again.stamp, saved);
+    assert_eq!(e.kk.text_check(w(&path), saved).unwrap(), "same");
+}
+
+#[test]
+fn text_open_keeps_bom_and_marks_read_only_reasons() {
+    let e = env();
+    let dir = e.dir("t");
+    let bom = dir.join("bom.txt");
+    fs::write(&bom, b"\xEF\xBB\xBFhi\n").unwrap();
+    let opened = e.kk.text_open(w(&bom)).unwrap();
+    assert!(opened.bom);
+    assert_eq!(opened.text, "hi\n");
+    assert_eq!(opened.ending, "lf");
+
+    let latin1 = dir.join("latin1.txt");
+    // 0xE9 alone is not UTF-8 (RFC 3629 section 4): byte 2 is the first
+    // invalid sequence.
+    fs::write(&latin1, b"ab\xE9\n").unwrap();
+    let ro = e.kk.text_open(w(&latin1)).unwrap().read_only.unwrap();
+    assert_eq!(ro.kind, "NotUtf8");
+    assert!(ro.detail.contains('2'), "{}", ro.detail);
+}
+
+#[test]
+fn text_save_stale_stamp_errors() {
+    let e = env();
+    let path = e.dir("t").join("a.txt");
+    fs::write(&path, "mine\n").unwrap();
+    let opened = e.kk.text_open(w(&path)).unwrap();
+
+    // Another program writes the file after it was opened.
+    fs::write(&path, "theirs, longer\n").unwrap();
+    assert_eq!(
+        e.kk.text_check(w(&path), opened.stamp.clone()).unwrap(),
+        "changed"
+    );
+    let err =
+        e.kk.text_save(
+            w(&path),
+            "mine, edited\n".to_owned(),
+            "lf".to_owned(),
+            false,
+            WireExpect::Unchanged {
+                stamp: opened.stamp.clone(),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, "ExternalModification");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "theirs, longer\n");
+
+    // Expecting anything is the user's explicit overwrite.
+    e.kk.text_save(
+        w(&path),
+        "mine, edited\n".to_owned(),
+        "lf".to_owned(),
+        false,
+        WireExpect::Anything,
+    )
+    .unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "mine, edited\n");
+
+    fs::remove_file(&path).unwrap();
+    assert_eq!(e.kk.text_check(w(&path), opened.stamp).unwrap(), "deleted");
+}
+
+#[test]
+fn text_save_refuses_unknown_ending_and_open_refuses_large() {
+    let e = env();
+    let path = e.dir("t").join("a.txt");
+    let err =
+        e.kk.text_save(
+            w(&path),
+            String::new(),
+            "cr".to_owned(),
+            false,
+            WireExpect::Anything,
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, "InvalidArgument");
+    assert!(!path.exists());
+
+    let big = e.dir("t").join("big.txt");
+    let f = fs::File::create(&big).unwrap();
+    // One byte over the open limit, as a sparse file.
+    f.set_len(kernkraft_text::OPEN_LIMIT + 1).unwrap();
+    let err = e.kk.text_open(w(&big)).unwrap_err();
+    assert_eq!(err.kind, "TooLargeToOpen");
+}
+
+#[test]
+fn text_check_refuses_a_forged_stamp() {
+    let e = env();
+    let path = e.dir("t").join("a.txt");
+    fs::write(&path, "x").unwrap();
+    let forged: kernkraft_tauri::WireStamp = serde_json::from_str("\"not a stamp\"").unwrap();
+    let err = e.kk.text_check(w(&path), forged).unwrap_err();
+    assert_eq!(err.kind, "InvalidArgument");
+}
+
+#[test]
+fn text_save_refuses_to_replace_lossy_content() {
+    let e = env();
+    let path = e.dir("t").join("latin1.txt");
+    let original: &[u8] = b"caf\xE9\r\nx\n";
+    fs::write(&path, original).unwrap();
+    let opened = e.kk.text_open(w(&path)).unwrap();
+    assert!(opened.read_only.is_some());
+
+    // Save with the stamp from the open: refused, the bytes stay.
+    let err =
+        e.kk.text_save(
+            w(&path),
+            opened.text.clone(),
+            opened.ending.clone(),
+            opened.bom,
+            WireExpect::Unchanged {
+                stamp: opened.stamp.clone(),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, "ReadOnly");
+    assert_eq!(err.path, Some(w(&path)));
+    // An explicit overwrite of that file is refused too.
+    let err =
+        e.kk.text_save(
+            w(&path),
+            "new\n".to_owned(),
+            "lf".to_owned(),
+            false,
+            WireExpect::Anything,
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, "ReadOnly");
+    assert_eq!(fs::read(&path).unwrap(), original);
+
+    // Save As of the same text to a new path works.
+    let copy = e.dir("t").join("copy.txt");
+    e.kk.text_save(
+        w(&copy),
+        opened.text,
+        "lf".to_owned(),
+        false,
+        WireExpect::Nothing,
+    )
+    .unwrap();
+    assert!(copy.is_file());
+}
+
+#[test]
+fn text_save_refuses_a_write_protected_file() {
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let e = env();
+    let path = e.dir("t").join("ro.txt");
+    fs::write(&path, "keep\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+    let opened = e.kk.text_open(w(&path)).unwrap();
+    assert_eq!(opened.read_only.unwrap().kind, "NoWritePermission");
+    let err =
+        e.kk.text_save(
+            w(&path),
+            "lost\n".to_owned(),
+            "lf".to_owned(),
+            false,
+            WireExpect::Unchanged {
+                stamp: opened.stamp,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, "ReadOnly");
+    assert_eq!(
+        serde_json::to_value(err.details.unwrap()).unwrap(),
+        serde_json::json!({"k": "ReadOnly", "reason": "NoWritePermission"})
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "keep\n");
+}
+
+#[test]
+fn text_save_expecting_nothing_creates_and_never_replaces() {
+    let e = env();
+    let path = e.dir("t").join("new.txt");
+    let stamp =
+        e.kk.text_save(
+            w(&path),
+            "one\n".to_owned(),
+            "crlf".to_owned(),
+            false,
+            WireExpect::Nothing,
+        )
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"one\r\n");
+    // The returned stamp is what an open of the new file gives.
+    assert_eq!(e.kk.text_open(w(&path)).unwrap().stamp, stamp);
+
+    // Something is there now: nothing is written and the reason is Exists.
+    let err =
+        e.kk.text_save(
+            w(&path),
+            "two\n".to_owned(),
+            "lf".to_owned(),
+            false,
+            WireExpect::Nothing,
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, "Exists");
+    assert_eq!(err.path, Some(w(&path)));
+    assert_eq!(fs::read(&path).unwrap(), b"one\r\n");
+}

@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
 //! File-system layer shared by every kernkraft consumer: atomic save,
-//! FreeDesktop trash, XDG directories, bulk file operations and scanning.
+//! FreeDesktop trash, XDG directories, bulk file operations, scanning, and
+//! the undo journal for file operations.
 //!
 //! Every public function is synchronous, takes paths and owned data, and
 //! reports failure as [`FsError`]. Long operations take a [`Progress`].
@@ -13,25 +14,34 @@ mod error;
 mod naming;
 mod ops;
 mod progress;
+mod same_fs;
 mod scan;
 mod sys;
 mod trash;
+mod undo;
 mod version;
 mod xattr;
 mod xdg;
 
-pub use atomic::{write_atomic, write_bytes_atomic, FileStamp};
+pub use atomic::{write_atomic, write_bytes_atomic, Expect, FileStamp};
 pub use cache::PrivateCache;
 pub use error::FsError;
 pub use ops::{
-    copy, create_dir, create_file, delete_permanently, move_items, rename, unique_name,
-    validate_name, Conflict, OpReport,
+    copy, create_dir, create_file, delete_permanently, move_items, rename, rename_noreplace,
+    unique_name, validate_name, Conflict, OpReport,
 };
 pub use progress::{NoProgress, Progress};
-pub use scan::{list_dir, scan, Entry, EntryKind, ScanOptions, ScanReport, DEFAULT_MAX_DEPTH};
+pub use same_fs::same_filesystem;
+pub use scan::{
+    list_dir, measure, scan, Entry, EntryKind, Measure, ScanOptions, ScanReport, DEFAULT_MAX_DEPTH,
+};
 pub use trash::{
     choose_target, decode_trash_path, encode_trash_path, parse_trashinfo, Trash, TrashListing,
     TrashTarget, TrashedItem,
+};
+pub use undo::{
+    undoable_from_report, Change, EntryStamp, IrreversibleReason, Journal, OpKind, PriorStamps,
+    TreeStamp, UndoError, UndoOutcome, Undoable, JOURNAL_DEPTH,
 };
 pub use version::VERSION_LABEL;
 pub use xdg::{base_dirs, base_dirs_from, parse_user_dirs, user_dirs, BaseDirs, UserDirs};

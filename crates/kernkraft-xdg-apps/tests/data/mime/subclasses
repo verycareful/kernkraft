@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+# Hand-written fixture, subclasses format (section 2.4): subclass parent
+application/json application/javascript
+application/javascript text/plain
+# A cycle in a malformed database must terminate.
+application/x-loop-a application/x-loop-b
+application/x-loop-b application/x-loop-a

@@ -2,6 +2,32 @@
 
 All notable changes documented here. Format: [Keep a Changelog](https://keepachangelog.com/), with one deviation: dated release entries are timestamped to the minute with timezone (`YYYY-MM-DD HH:MM (TZ)`).
 
+## [0.1.1.0] - 2026-11-04 23:46 (IST)
+
+The desktop release: seven new crates, among them the Tauri plugin Kern Desktop 0.1.0.0 is built on, and file operations in `kernkraft-fs` that can be undone. Still alpha, and the API changes below break 0.1.0.2 callers.
+
+### Added
+- **`kernkraft-text`**: opens UTF-8 text for editing and saves it atomically with its byte order mark and line endings as they were. A file that could not be saved back byte for byte (not UTF-8, UTF-16, mixed line endings, too large, not writable) opens as a read-only copy that says why, and a save never overwrites such a file.
+- **`kernkraft-xdg-apps`**: MIME type lookup from the Shared MIME-info Database (globs, aliases, subclasses, text detection), desktop entries, default applications per the MIME Applications Associations spec, launching through `Exec` lines (files or a URL), and terminal discovery.
+- **`kernkraft-thumb`**: thumbnails for PNG, JPEG, WebP, GIF and SVG in the freedesktop thumbnail cache that other file managers share, with failure entries so a broken image is not retried on every view.
+- **`kernkraft-bus`**: session and system D-Bus connections that resolve the bus address themselves and only ever open a Unix socket.
+- **`kernkraft-theme`**: the system theme from Hyprland's `hyprtoolkit.conf`, the portal's appearance settings, GTK and fontconfig, resolved against Kern's design tokens into CSS custom properties, with derived colours checked for WCAG contrast, and a watcher that reports changes live.
+- **`kernkraft-volumes`**: mounted volumes from `/proc/self/mountinfo` with udev labels; mount, unmount and eject through UDisks2; a watcher for mounts and devices that come and go. Each volume carries an identity the actions check, so an action never reaches a different disk that took the same place.
+- **`kernkraft-tauri`**: the Tauri 2 plugin (`plugin:kernkraft-tauri|<command>`). Paths cross as `WirePath` (non-UTF-8 names survive) and errors as `WireError` (kind, message, details). File manager commands: listing, create, rename, and copy, move, trash and delete as background operations with progress, cancel and conflict prompts; the trash view; undo and redo; folder watching through inotify; properties. Also text open, check and save, a thumbnail queue, the theme, applications and defaults, the terminal, volumes, user folders, a streamed name search and the Documents walk.
+- **`kernkraft-fs` undo journal**: every copy, move, trash, rename and create is recorded with stamps of what it left, and undo or redo refuses, naming the file, when something has changed there since.
+- **`kernkraft-fs` `same_filesystem`**: whether a move would be a rename, by device number and mount ID (a bind mount shares the device number but not the mount), so a drop moves on one filesystem and copies across.
+- **`kernkraft-fs` `measure`**: totals of size and item counts for a properties view, cancellable.
+- **`kernkraft-fs` errors**: `MountPoint`, `MountIdUnavailable`, `Changed`, `Irreversible`, `Partial`, `SourceNotRemoved`, `NothingToUndo`, `NothingToRedo`.
+
+### Changed
+- **Every save says what it expects at the path** (`Expect`): the file as it was read (`Unchanged`, by stamp), nothing (`Nothing`, so a new file never replaces one that appeared meanwhile), or `Anything`. `write_atomic`, `write_bytes_atomic` and `kernkraft_pdf::save` take it in place of the optional stamp. Breaking.
+- A mount point is never moved: a move or merge of one fails with `FsError::MountPoint` before anything is copied or deleted, at any depth of a merge.
+- Restoring from the trash recreates a missing original folder; undoing a trash does not, and fails instead.
+- In `kernkraft-tauri`, rename and create are refused with `Busy` while a file operation or an undo runs, and an operation or undo is refused while a rename or create runs; search and the Documents walk never conflict with either.
+
+### Results
+- 823 tests across 58 suites, all passed (26.1s, CachyOS x86-64, rustc 1.99.1).
+
 ## [0.1.0.2] - 2026-10-18 21:55 (IST)
 
 The fixes for the seven known issues 0.1.0.1 pinned. All eleven tests that shipped red now pass.

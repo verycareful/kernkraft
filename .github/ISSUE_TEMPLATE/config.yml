@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/verycareful/kernkraft/security/advisories/new
+    about: Report privately. Do not open a public issue.
+  - name: Using Kern, not the library?
+    url: https://github.com/verycareful/kern-desktop/issues/new/choose
+    about: Problems with the Kern Desktop app go on its own issue tracker.
+  - name: Contributing guidelines
+    url: https://github.com/verycareful/kernkraft/blob/main/CONTRIBUTING.md
+    about: How to report problems and send changes.

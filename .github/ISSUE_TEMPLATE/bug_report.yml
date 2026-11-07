@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+name: Bug report
+description: A kernkraft crate gives a wrong result, panics, or changes a file it should not.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please fill in every required field: a report without the crate, version and a reproducer usually needs a round of questions before anyone can look at it.
+        This tracker is for the kernkraft library. A problem you met in the Kern Desktop app belongs on [its issue tracker](https://github.com/verycareful/kern-desktop/issues/new/choose).
+        Security problems go through [SECURITY.md](https://github.com/verycareful/kernkraft/blob/main/SECURITY.md), not here.
+  - type: dropdown
+    id: crate
+    attributes:
+      label: Crate
+      options:
+        - kernkraft-bus
+        - kernkraft-fs
+        - kernkraft-pdf
+        - kernkraft-tauri
+        - kernkraft-text
+        - kernkraft-theme
+        - kernkraft-thumb
+        - kernkraft-volumes
+        - kernkraft-xdg-apps
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: kernkraft version
+      description: The release tag, or the git revision if you build from a commit.
+      placeholder: 0.1.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: consumer
+    attributes:
+      label: Used from
+      options:
+        - Kern Desktop
+        - Other (my own project)
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What went wrong
+      options:
+        - Wrong output
+        - Panic or crash on a malformed file
+        - An edited file differs from the original outside the edit (round trip)
+        - A file was lost or corrupted
+        - Public API problem
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal reproducer
+      description: A few lines of code, or a file that triggers it. Only attach a file you may redistribute; if it is private, describe it instead (size, how it was made, what it contains).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Include the exact text of any error or panic message.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Rust and operating system
+      description: The output of `rustc --version`, and your distribution.
+      placeholder: rustc 1.91.0, Arch Linux

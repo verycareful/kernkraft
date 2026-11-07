@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+name: Feature request
+description: Something kernkraft should do that it does not.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start from the problem, not the solution. "fs: async API" cannot be acted on; "fs: copying a large tree blocks my UI thread and I cannot cancel it" can.
+        kernkraft never opens a network connection, and its core crates never depend on a UI or platform crate. A request that needs either is out of scope.
+        For something the Kern Desktop app should do, use [its tracker](https://github.com/verycareful/kern-desktop/issues/new/choose).
+  - type: dropdown
+    id: crate
+    attributes:
+      label: Crate
+      options:
+        - kernkraft-bus
+        - kernkraft-fs
+        - kernkraft-pdf
+        - kernkraft-tauri
+        - kernkraft-text
+        - kernkraft-theme
+        - kernkraft-thumb
+        - kernkraft-volumes
+        - kernkraft-xdg-apps
+        - A new crate
+    validations:
+      required: true
+  - type: dropdown
+    id: consumer
+    attributes:
+      label: Who needs it
+      options:
+        - Kern Desktop
+        - Other (my own project)
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you were trying to do, and where kernkraft stopped you.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: Optional. How you picture it working, including the API if you have one in mind.

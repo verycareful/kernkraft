@@ -30,9 +30,9 @@ kernkraft-volumes = { path = "crates/kernkraft-volumes" }
 # Default features stay off here: the application chooses its windowing backend.
 tauri = { version = "2.12", default-features = false }
 tauri-plugin = { version = "2.5", features = ["build"] }
-base64 = "0.22"
-lopdf = { version = "0.45", default-features = false }
-mupdf = "0.6"
+base64 = "0.23"
+lopdf = { version = "0.47", default-features = false }
+mupdf = "0.8"
 thiserror = "2"
 tempfile = "3"
 rustix = { version = "1", features = ["fs", "process", "event"] }
@@ -42,15 +42,15 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # No svgz: usvg would gunzip any input starting 1f 8b with no output cap.
 # No memmap-fonts: a mapped font file truncated by another process raises
 # SIGBUS in the thumbnailer; fonts are read into memory instead.
-resvg = { version = "0.48", default-features = false, features = ["text", "system-fonts", "raster-images"] }
+resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts", "raster-images"] }
 png = "0.18"
 simplecss = "0.2"
-md-5 = "0.10"
+md-5 = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # zbus keeps its default async-io backend and is used through the blocking API
 # only; the tokio feature stays off (zero network, and no async runtime).
-zbus = "5"
+zbus = "6"
 inotify = { version = "0.11", default-features = false }
 
 [workspace.lints.clippy]

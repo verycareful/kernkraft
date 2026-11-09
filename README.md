@@ -28,8 +28,8 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)
 
-kernkraft is the shared Rust core behind Kern Desktop, Qyra and, later,
-Android Kern. It owns everything that touches a user's files: reading and
+kernkraft is the shared Rust core behind Kern Desktop, and later, Android Kern. 
+It owns everything that touches a user's files: reading and
 writing document formats, PDF page operations, and the file operations
 around them (atomic save, trash, copy and move). It is a set of plain,
 synchronous library crates with no UI and no network access; each

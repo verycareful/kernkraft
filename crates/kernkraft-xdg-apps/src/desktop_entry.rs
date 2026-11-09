@@ -19,6 +19,9 @@
 //! - "Desktop File ID": the path below an `applications` directory with `/`
 //!   replaced by `-`.
 
+use std::collections::HashSet;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::AppsError;
@@ -72,48 +75,12 @@ pub fn parse_desktop_entry(
         path: source.to_path_buf(),
         reason,
     };
-    let mut any_group = false;
-    let mut in_main = false;
-    let mut found_main = false;
-    let mut keys: Vec<(&str, &str)> = Vec::new();
-    for (index, raw) in contents.lines().enumerate() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix('[') {
-            let name = rest
-                .strip_suffix(']')
-                .ok_or_else(|| invalid(format!("line {}: unterminated group header", index + 1)))?;
-            any_group = true;
-            in_main = name == GROUP;
-            found_main |= in_main;
-            continue;
-        }
-        if !any_group {
-            return Err(invalid(format!(
-                "line {}: key before the first group",
-                index + 1
-            )));
-        }
-        if !in_main {
-            continue;
-        }
-        let (key, value) = line
-            .split_once('=')
-            .ok_or_else(|| invalid(format!("line {}: not Key=Value", index + 1)))?;
-        let (key, value) = (key.trim(), value.trim());
-        // A localized key never replaces the unlocalized one.
-        if key.contains('[') {
-            continue;
-        }
-        keys.push((key, value));
-    }
-    if !found_main {
-        return Err(invalid(format!("no [{GROUP}] group")));
-    }
-    // A key listed twice keeps its first value.
-    let get = |name: &str| keys.iter().find(|(k, _)| *k == name).map(|(_, v)| *v);
+    let groups = read_groups(source, contents, &|name| name == GROUP)?;
+    let main = groups
+        .iter()
+        .find(|g| g.name == GROUP)
+        .ok_or_else(|| invalid(format!("no [{GROUP}] group")))?;
+    let get = |name: &str| main.get(name);
 
     // `Hidden=true` marks the ID as deleted (Desktop Entry Specification 1.5,
     // "Recognized desktop entry keys"), often in an entry that has no `Type`
@@ -169,6 +136,142 @@ pub fn parse_desktop_entry(
             .map(PathBuf::from),
         source: source.to_path_buf(),
     })
+}
+
+/// The `Key=Value` pairs of one group of a desktop entry file.
+pub(crate) struct Group<'a> {
+    pub name: &'a str,
+    keys: Vec<(&'a str, &'a str)>,
+}
+
+impl<'a> Group<'a> {
+    /// The raw value of `key`. A key listed twice keeps its first value, and
+    /// a localized `Key[locale]` line never stands in for the unlocalized
+    /// key.
+    pub fn get(&self, key: &str) -> Option<&'a str> {
+        self.keys.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+    }
+}
+
+/// Reads `contents` line by line and returns the groups for which `wanted`
+/// is true, in file order; a group that appears twice is one group.
+///
+/// Every line is checked for being a comment, blank, a group header, or (in
+/// a wanted group) `Key=Value`; a line of an unwanted group is not looked at,
+/// so a malformed line there does not fail the file. Fails with
+/// [`AppsError::InvalidDesktopEntry`] for an unterminated group header, a key
+/// before the first group, or a line of a wanted group that is not
+/// `Key=Value`.
+pub(crate) fn read_groups<'a>(
+    source: &Path,
+    contents: &'a str,
+    wanted: &dyn Fn(&str) -> bool,
+) -> Result<Vec<Group<'a>>, AppsError> {
+    let invalid = |reason: String| AppsError::InvalidDesktopEntry {
+        path: source.to_path_buf(),
+        reason,
+    };
+    let mut groups: Vec<Group<'a>> = Vec::new();
+    let mut any_group = false;
+    let mut current: Option<usize> = None;
+    for (index, raw) in contents.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('[') {
+            let name = rest
+                .strip_suffix(']')
+                .ok_or_else(|| invalid(format!("line {}: unterminated group header", index + 1)))?;
+            any_group = true;
+            current = wanted(name).then(|| {
+                groups
+                    .iter()
+                    .position(|g| g.name == name)
+                    .unwrap_or_else(|| {
+                        groups.push(Group {
+                            name,
+                            keys: Vec::new(),
+                        });
+                        groups.len() - 1
+                    })
+            });
+            continue;
+        }
+        if !any_group {
+            return Err(invalid(format!(
+                "line {}: key before the first group",
+                index + 1
+            )));
+        }
+        let Some(at) = current else { continue };
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| invalid(format!("line {}: not Key=Value", index + 1)))?;
+        let (key, value) = (key.trim(), value.trim());
+        if key.contains('[') {
+            continue;
+        }
+        groups[at].keys.push((key, value));
+    }
+    Ok(groups)
+}
+
+/// What [`walk_applications`] found.
+pub(crate) enum Walked {
+    /// A `.desktop` file and its desktop file ID.
+    File { id: String, path: PathBuf },
+    /// A path that could not be used: a dangling symlink or an unreadable
+    /// entry.
+    Skipped(AppsError),
+}
+
+/// Calls `visit` for every `.desktop` file below `dir`, which is `root` or
+/// a directory inside it, in path order, descending into subdirectories
+/// (Desktop Entry Specification 1.5, "Desktop File ID").
+///
+/// A missing directory contributes nothing; one that exists but cannot be
+/// listed is an error. A symlink loop is not followed twice, through
+/// `visited`.
+pub(crate) fn walk_applications(
+    root: &Path,
+    dir: &Path,
+    visited: &mut HashSet<PathBuf>,
+    visit: &mut dyn FnMut(Walked),
+) -> Result<(), AppsError> {
+    let listing = match fs::read_dir(dir) {
+        Ok(l) => l,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(AppsError::io(dir, e)),
+    };
+    if let Ok(real) = fs::canonicalize(dir) {
+        if !visited.insert(real) {
+            return Ok(());
+        }
+    }
+    let mut paths = Vec::new();
+    for item in listing {
+        paths.push(item.map_err(|e| AppsError::io(dir, e))?.path());
+    }
+    paths.sort();
+    for path in paths {
+        let meta = match fs::metadata(&path) {
+            Ok(m) => m,
+            Err(e) => {
+                visit(Walked::Skipped(AppsError::io(&path, e)));
+                continue;
+            }
+        };
+        if meta.is_dir() {
+            walk_applications(root, &path, visited, visit)?;
+        } else if path.extension().is_some_and(|e| e == "desktop") {
+            visit(Walked::File {
+                id: desktop_id(root, &path),
+                path,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The desktop file ID of `file`, a file below `applications_dir`: the

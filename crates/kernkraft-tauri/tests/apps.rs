@@ -5,8 +5,8 @@
 //!
 //! Nothing real is ever started. `PATH` holds only a directory of stub
 //! shell scripts made once for this test binary, so every program the
-//! plugin runs (the applications' `Exec` programs, `xdg-mime`,
-//! `xdg-terminal-exec`) is a stub that records its working directory and
+//! plugin runs (the applications' `Exec` programs, `xdg-mime`, the
+//! terminal) is a stub that records its working directory and
 //! arguments and exits. The XDG directories are the test app's temp ones,
 //! so no real `mimeapps.list` is read or written.
 
@@ -33,7 +33,7 @@ const STUBS: &[&str] = &[
     "rec-launch",
     "rec-terminal-app",
     "xdg-mime",
-    "xdg-terminal-exec",
+    "rec-term",
 ];
 
 struct Stubs {
@@ -293,16 +293,24 @@ fn set_default_app_runs_xdg_mime() {
 fn open_terminal_starts_in_dir() {
     stubs();
     let e = env();
+    // The terminal is the one the test app's own data directory installs.
+    let apps = e.xdg.data.join("applications");
+    fs::create_dir_all(&apps).unwrap();
+    fs::write(
+        apps.join("rec-term.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Rec\nExec=rec-term\nCategories=System;TerminalEmulator;\n",
+    )
+    .unwrap();
     let dir = e.dir("term-here");
     e.kk.open_terminal(w(&dir), None).unwrap();
-    let got = records("xdg-terminal-exec", "term-here", 1);
+    let got = records("rec-term", "term-here", 1);
     assert_eq!(got.len(), 1);
     assert_eq!(got[0], [dir.to_string_lossy().into_owned()]);
 
     let missing = e.base.join("term-missing");
     let err = e.kk.open_terminal(w(&missing), None).unwrap_err();
     assert_eq!(err.kind, "NotFound");
-    assert!(no_records("xdg-terminal-exec", "term-missing"));
+    assert!(no_records("rec-term", "term-missing"));
 }
 
 #[test]

@@ -7,7 +7,8 @@
 //! Specifications: Shared MIME-info Database 0.21 (section 2.11 for glob
 //! matching, section 2.4 for `subclasses` and `aliases`) for [`MimeDb`];
 //! Desktop Entry Specification 1.5 for [`DesktopEntry`] and [`expand_exec`];
-//! MIME Applications Associations 1.0.1 for [`AppRegistry`].
+//! MIME Applications Associations 1.0.1 for [`AppRegistry`]; the Default
+//! Terminal Execution Specification (proposed) for the terminal lists.
 //!
 //! Every public function is synchronous, takes paths and owned data, and
 //! reports failure as [`AppsError`].
@@ -20,6 +21,7 @@ mod mime;
 mod mimeapps;
 mod open;
 mod terminal;
+mod terminal_spec;
 
 pub use desktop_entry::{desktop_id, parse_desktop_entry, DesktopEntry};
 pub use error::AppsError;
@@ -28,4 +30,4 @@ pub use launch::{launch, launch_in_terminal, set_default, set_default_command};
 pub use mime::{MimeDb, SNIFF_LEN};
 pub use mimeapps::AppRegistry;
 pub use open::{default_groups, launch_groups, open_default, DefaultGroup, GroupOutcome};
-pub use terminal::{open_terminal, terminal_command, terminal_command_for};
+pub use terminal::{open_terminal, terminal_command, terminal_command_for, TerminalPrefs};

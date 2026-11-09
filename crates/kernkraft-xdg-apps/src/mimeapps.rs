@@ -72,7 +72,9 @@ use std::path::{Path, PathBuf};
 
 use kernkraft_fs::BaseDirs;
 
-use crate::desktop_entry::{desktop_id, parse_desktop_entry, split_list, DesktopEntry};
+use crate::desktop_entry::{
+    parse_desktop_entry, split_list, walk_applications, DesktopEntry, Walked,
+};
 use crate::error::AppsError;
 use crate::mime::MimeDb;
 
@@ -192,8 +194,7 @@ impl AppRegistry {
         let mut app_dirs = vec![base.data.join("applications")];
         app_dirs.extend(base.data_dirs.iter().map(|d| d.join("applications")));
         for (rank, dir) in app_dirs.iter().enumerate() {
-            let mut visited = HashSet::new();
-            registry.scan(dir, dir, rank, &mut visited)?;
+            registry.scan(dir, rank)?;
         }
         let path = std::env::var_os("PATH");
         registry.not_installed = registry
@@ -237,44 +238,13 @@ impl AppRegistry {
         Ok(registry)
     }
 
-    fn scan(
-        &mut self,
-        root: &Path,
-        dir: &Path,
-        rank: usize,
-        visited: &mut HashSet<PathBuf>,
-    ) -> Result<(), AppsError> {
-        let listing = match fs::read_dir(dir) {
-            Ok(l) => l,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(AppsError::io(dir, e)),
-        };
-        // A symlink loop must not recurse forever.
-        if let Ok(real) = fs::canonicalize(dir) {
-            if !visited.insert(real) {
-                return Ok(());
-            }
-        }
-        let mut paths = Vec::new();
-        for item in listing {
-            paths.push(item.map_err(|e| AppsError::io(dir, e))?.path());
-        }
-        paths.sort();
-        for path in paths {
-            let meta = match fs::metadata(&path) {
-                Ok(m) => m,
-                Err(e) => {
-                    // A dangling symlink or an unreadable entry.
-                    self.skipped.push(AppsError::io(&path, e));
-                    continue;
-                }
-            };
-            if meta.is_dir() {
-                self.scan(root, &path, rank, visited)?;
-            } else if path.extension().is_some_and(|e| e == "desktop") {
-                let id = desktop_id(root, &path);
+    fn scan(&mut self, root: &Path, rank: usize) -> Result<(), AppsError> {
+        let mut visited = HashSet::new();
+        walk_applications(root, root, &mut visited, &mut |walked| match walked {
+            Walked::Skipped(e) => self.skipped.push(e),
+            Walked::File { id, path } => {
                 if self.entries.contains_key(&id) || self.shadowed.contains(&id) {
-                    continue;
+                    return;
                 }
                 match fs::read_to_string(&path) {
                     Ok(text) => match parse_desktop_entry(&id, &path, &text) {
@@ -291,8 +261,7 @@ impl AppRegistry {
                     Err(e) => self.skipped.push(AppsError::io(&path, e)),
                 }
             }
-        }
-        Ok(())
+        })
     }
 
     /// The entry with desktop file ID `id`. A `Hidden` entry is never returned.
@@ -466,7 +435,7 @@ impl AppRegistry {
 /// each directory of `path` (Desktop Entry Specification 1.5, `TryExec`: "If
 /// the path is not an absolute path, the file is looked up in the $PATH
 /// environment variable").
-fn program_exists(name: &str, path: Option<&std::ffi::OsStr>) -> bool {
+pub(crate) fn program_exists(name: &str, path: Option<&std::ffi::OsStr>) -> bool {
     let is_exec = |p: &Path| {
         fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     };

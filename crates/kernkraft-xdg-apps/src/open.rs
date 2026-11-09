@@ -22,6 +22,7 @@ use crate::error::AppsError;
 use crate::launch::launch_in_terminal;
 use crate::mime::MimeDb;
 use crate::mimeapps::AppRegistry;
+use crate::terminal::TerminalPrefs;
 use crate::Targets;
 
 /// The files that one default application opens.
@@ -75,10 +76,12 @@ pub fn default_groups<'a>(
 }
 
 /// Starts each group's application with the group's files, as
-/// [`launch_in_terminal`] does with `terminal` as the user's terminal
-/// setting. A group that fails to start does not stop the ones after it:
+/// [`launch_in_terminal`] does with `terminal`. A group that fails to start does not stop the ones after it:
 /// each has its outcome, in the order of `groups`.
-pub fn launch_groups(groups: &[DefaultGroup<'_>], terminal: Option<&str>) -> Vec<GroupOutcome> {
+pub fn launch_groups(
+    groups: &[DefaultGroup<'_>],
+    terminal: &TerminalPrefs<'_>,
+) -> Vec<GroupOutcome> {
     groups
         .iter()
         .map(|g| GroupOutcome {
@@ -99,7 +102,7 @@ pub fn open_default(
     registry: &AppRegistry,
     db: &MimeDb,
     paths: &[PathBuf],
-    terminal: Option<&str>,
+    terminal: &TerminalPrefs<'_>,
 ) -> Result<Vec<GroupOutcome>, AppsError> {
     Ok(launch_groups(
         &default_groups(registry, db, paths)?,

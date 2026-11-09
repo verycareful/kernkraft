@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 use kernkraft_xdg_apps::{
     launch_in_terminal, open_default, open_terminal, set_default, AppRegistry, DesktopEntry,
-    GroupOutcome, MimeDb, Targets,
+    GroupOutcome, MimeDb, Targets, TerminalPrefs,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
@@ -148,6 +148,18 @@ impl<R: Runtime> Kernkraft<R> {
         Ok(AppRegistry::load(self.base()?)?)
     }
 
+    /// The terminal choice for a launch: the user's `setting` and this
+    /// plugin's XDG directories, where the terminal lists are read from.
+    fn terminal_prefs<'a>(
+        &'a self,
+        setting: Option<&'a str>,
+    ) -> Result<TerminalPrefs<'a>, WireError> {
+        Ok(TerminalPrefs {
+            setting,
+            base: Some(self.base()?),
+        })
+    }
+
     /// Applications that open `path`: the default first, then the others as
     /// `AppRegistry::apps_for` orders them. `NoDisplay` entries are left out
     /// of the list, except the current default. The default is always in it:
@@ -202,8 +214,8 @@ impl<R: Runtime> Kernkraft<R> {
 
     /// Starts application `id` with `paths`, detached (see
     /// `kernkraft_xdg_apps::launch_in_terminal`). `terminal` is the user's
-    /// Terminal setting: for a `Terminal=true` application it is the last
-    /// choice of terminal, after `xdg-terminal-exec` and `$TERMINAL`.
+    /// Terminal setting: for a `Terminal=true` application it is the first
+    /// choice of terminal, ahead of the terminal lists and `$TERMINAL`.
     /// `UnknownApp` when no installed application has that ID.
     pub fn launch_app(
         &self,
@@ -216,11 +228,12 @@ impl<R: Runtime> Kernkraft<R> {
         let entry = registry
             .get(&id)
             .ok_or_else(|| PluginError::UnknownApp(id.clone()))?;
+        let prefs = self.terminal_prefs(terminal.as_deref())?;
         Ok(launch_in_terminal(
             entry,
             Targets::Files(&paths),
             None,
-            terminal.as_deref(),
+            &prefs,
         )?)
     }
 
@@ -242,7 +255,8 @@ impl<R: Runtime> Kernkraft<R> {
         let paths = decode(paths)?;
         let db = self.mime()?;
         let registry = self.registry()?;
-        let outcomes = open_default(&registry, db, &paths, terminal.as_deref())?;
+        let prefs = self.terminal_prefs(terminal.as_deref())?;
+        let outcomes = open_default(&registry, db, &paths, &prefs)?;
         Ok(outcomes.into_iter().map(WireOpened::from).collect())
     }
 
@@ -274,12 +288,8 @@ impl<R: Runtime> Kernkraft<R> {
                 scheme: URL_SCHEME.to_owned(),
             }));
         };
-        Ok(launch_in_terminal(
-            app,
-            Targets::Url(&url),
-            None,
-            terminal.as_deref(),
-        )?)
+        let prefs = self.terminal_prefs(terminal.as_deref())?;
+        Ok(launch_in_terminal(app, Targets::Url(&url), None, &prefs)?)
     }
 
     /// Makes application `id` the default for `mime`, through
@@ -294,11 +304,12 @@ impl<R: Runtime> Kernkraft<R> {
     }
 
     /// Opens a terminal in folder `dir`; `setting` is the user's terminal
-    /// preference, the last choice (see `kernkraft_xdg_apps::terminal_command`).
+    /// preference, the first choice (see `kernkraft_xdg_apps::terminal_command`).
     pub fn open_terminal(&self, dir: WirePath, setting: Option<String>) -> Result<(), WireError> {
         let dir = PathBuf::try_from(dir)?;
         check_dest(&dir)?;
-        Ok(open_terminal(&dir, setting.as_deref())?)
+        let prefs = self.terminal_prefs(setting.as_deref())?;
+        Ok(open_terminal(&prefs, &dir)?)
     }
 
     /// The type of `path`, looking at its content when its name says

@@ -16,7 +16,7 @@ use std::process::{Command, Stdio};
 use crate::desktop_entry::DesktopEntry;
 use crate::error::AppsError;
 use crate::exec::{expand_exec, Targets};
-use crate::terminal::terminal_command_for;
+use crate::terminal::{terminal_command_for, TerminalPrefs};
 
 /// Starts `entry` for `targets` (files, or one URL), detached from this
 /// process.
@@ -33,16 +33,25 @@ pub fn launch(
     targets: Targets<'_>,
     cwd: Option<&Path>,
 ) -> Result<(), AppsError> {
-    launch_in_terminal(entry, targets, cwd, None)
+    let base = kernkraft_fs::base_dirs();
+    launch_in_terminal(
+        entry,
+        targets,
+        cwd,
+        &TerminalPrefs {
+            setting: None,
+            base: base.as_ref(),
+        },
+    )
 }
 
-/// As [`launch`], with `terminal_setting` as the last choice of terminal for
-/// a `Terminal=true` entry (see [`crate::terminal_command`]).
+/// As [`launch`], with `terminal` choosing the terminal for a
+/// `Terminal=true` entry (see [`crate::terminal_command`]).
 pub fn launch_in_terminal(
     entry: &DesktopEntry,
     targets: Targets<'_>,
     cwd: Option<&Path>,
-    terminal_setting: Option<&str>,
+    terminal: &TerminalPrefs<'_>,
 ) -> Result<(), AppsError> {
     let launches = expand_exec(entry, targets)?;
     let dir = entry.path.as_deref().or(cwd);
@@ -59,7 +68,7 @@ pub fn launch_in_terminal(
                     &here
                 }
             };
-            terminal_command_for(&|v| std::env::var_os(v), dir, terminal_setting, &argv)?
+            terminal_command_for(&|v| std::env::var_os(v), terminal, dir, &argv)?
         } else {
             let mut cmd = Command::new(&argv[0]);
             cmd.args(&argv[1..]);

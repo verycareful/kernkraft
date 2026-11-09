@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use kernkraft_fs::{base_dirs_from, BaseDirs};
-use kernkraft_xdg_apps::{default_groups, open_default, AppRegistry, AppsError, MimeDb};
+use kernkraft_xdg_apps::{
+    default_groups, open_default, AppRegistry, AppsError, MimeDb, TerminalPrefs,
+};
 
 struct Tree {
     dir: tempfile::TempDir,
@@ -132,7 +134,13 @@ fn a_file_without_a_default_starts_nothing_and_is_named() {
     let nothing = t.path("files/what.xyz");
     fs::write(&nothing, b"\0\0\0").unwrap();
     let registry = AppRegistry::load(&t.base()).unwrap();
-    let err = open_default(&registry, &t.db(), &paths(&[&a, &nothing]), None).unwrap_err();
+    let err = open_default(
+        &registry,
+        &t.db(),
+        &paths(&[&a, &nothing]),
+        &TerminalPrefs::default(),
+    )
+    .unwrap_err();
     match err {
         AppsError::NoDefaultApp { path, mime } => {
             assert_eq!(path, nothing);
@@ -156,7 +164,13 @@ fn each_application_has_its_own_outcome_and_a_failure_stops_no_other() {
         t.file("b.txt"),
     );
     let registry = AppRegistry::load(&t.base()).unwrap();
-    let outcomes = open_default(&registry, &t.db(), &paths(&[&pdf, &a, &p, &b]), None).unwrap();
+    let outcomes = open_default(
+        &registry,
+        &t.db(),
+        &paths(&[&pdf, &a, &p, &b]),
+        &TerminalPrefs::default(),
+    )
+    .unwrap();
 
     let apps: Vec<&str> = outcomes.iter().map(|o| o.app.as_str()).collect();
     assert_eq!(apps, ["broken.desktop", "text.desktop", "image.desktop"]);
@@ -186,7 +200,9 @@ fn each_application_has_its_own_outcome_and_a_failure_stops_no_other() {
 fn no_paths_give_no_outcomes() {
     let t = Tree::new();
     let registry = AppRegistry::load(&t.base()).unwrap();
-    assert!(open_default(&registry, &t.db(), &[], None)
-        .unwrap()
-        .is_empty());
+    assert!(
+        open_default(&registry, &t.db(), &[], &TerminalPrefs::default())
+            .unwrap()
+            .is_empty()
+    );
 }

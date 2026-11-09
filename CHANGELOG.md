@@ -2,6 +2,39 @@
 
 All notable changes documented here. Format: [Keep a Changelog](https://keepachangelog.com/), with one deviation: dated release entries are timestamped to the minute with timezone (`YYYY-MM-DD HH:MM (TZ)`).
 
+## [0.1.3.0] - 2026-11-09 23:16 (IST)
+
+The terminal a user chooses is now the terminal that opens, and kernkraft reads the terminal lists itself instead of running `xdg-terminal-exec`. Still alpha; the terminal functions of `kernkraft-xdg-apps` change signature, so a direct Rust caller must pass the new `TerminalPrefs`.
+
+### Added
+- **The Default Terminal Execution Specification, read natively**: `kernkraft-xdg-apps` reads `xdg-terminals.list` and `${desktop}-xdg-terminals.list` from the config directories, then `xdg-terminal-exec/` under the system data directories, and picks the first listed entry that is an installed terminal (`TerminalEmulator` category, not `Hidden`, `TryExec` present). An entry ID may carry an `:action`, which runs that action's `Exec`; `-` excludes an entry from fallback and `+` protects it from a later exclusion; lines that are not entry IDs are discarded. With no usable list, any installed terminal entry is used, tried in a fixed order (the user's data directory first, then the system ones, by desktop file ID), and `OnlyShowIn` and `NotShowIn` apply to that fallback only.
+- **The terminal's own arguments**: the entry's `Exec`, then its `X-TerminalArgDir` (joined to the value when the key ends in `=`), then the execution argument and the command. The execution argument is `X-TerminalArgExec`, else the older `X-ExecArg` or `ExecArg`, else `-e`; an explicitly empty value omits it.
+- **`TerminalPrefs`**: the user's terminal setting and the XDG directories to read the lists and entries from.
+
+### Changed
+- **The user's terminal setting is now the first choice.** The order is the setting, the terminal lists, `$TERMINAL`, then any other installed terminal. Before, `xdg-terminal-exec` came first and a terminal chosen in Kern's settings was used only when it was absent, so a system with `xdg-terminal-exec` opened its desktop's default terminal whatever the user had chosen.
+- **A setting that names no executable is an error**, not a reason to open another terminal. `NoTerminal` names it. A `$TERMINAL` that names no executable is still skipped.
+- **`xdg-terminal-exec` is no longer run.** Its job is done by the reader above, so a system without it opens a terminal too.
+- **Breaking**: `terminal_command`, `terminal_command_for`, `open_terminal`, `launch_in_terminal`, `launch_groups` and `open_default` take a `TerminalPrefs` where they took the setting as an `Option<&str>`, and the terminal functions of `kernkraft-tauri` read the lists from the directories the plugin was given. Callers that go through the commands are unaffected.
+- `NoTerminal` lists every source it tried, in the new order, with the reason each failed.
+
+### Fixed
+- **Selecting a terminal in Kern's settings could open another one**: on a system with `xdg-terminal-exec` installed, which picks the desktop's default terminal (Konsole on KDE), the setting was never reached.
+- **No terminal opened on a system without `xdg-terminal-exec`** unless `$TERMINAL` or the setting was set, even with a terminal installed.
+
+### Tests
+- `setting_then_lists_then_env_then_installed`: each source beats the ones after it.
+- `a_setting_naming_no_executable_is_an_error_not_a_fallback`, `an_empty_setting_counts_as_not_set`, `a_terminal_variable_naming_no_executable_is_skipped_and_named`.
+- `list_files_are_read_in_decreasing_priority`, `a_list_for_another_desktop_is_not_read`, `list_syntax_comments_blanks_whitespace_and_directives`: list locations, desktop-specific lists in `$XDG_CURRENT_DESKTOP` order, comments, blank lines and directives.
+- `the_first_listed_usable_entry_wins_and_unusable_ones_are_passed_over`, `tryexec_that_is_installed_counts`, `the_notes_say_why_each_listed_entry_was_passed_over`, `a_listed_action_runs_the_actions_exec`.
+- `the_execution_argument_comes_from_the_entry`, `the_directory_argument_follows_the_entrys_key`, `the_entrys_own_arguments_come_before_the_command`.
+- `installed_terminals_are_tried_by_id_and_the_user_directory_first`, `an_entry_hides_the_same_id_in_a_lower_priority_directory`, `ids_of_entries_in_subdirectories_use_a_dash`, `fallback_respects_exclusions_and_protection`, `show_in_conditions_apply_to_fallback_only`.
+- `without_a_usable_home_only_the_setting_and_the_variable_choose`, `a_list_that_cannot_be_read_is_an_error`.
+- `terminal_apps_use_the_terminal_setting` also shows the setting beating an installed terminal entry.
+
+### Results
+- 850 tests across 69 suites, all passed (24.0s, CachyOS x86-64, rustc 1.99.1).
+
 ## [0.1.2.1] - 2026-11-09 18:59 (IST)
 
 A `hyprtoolkit.conf` that writes its colours the way Hyprland's own files do is now read. Still alpha; no API changes.

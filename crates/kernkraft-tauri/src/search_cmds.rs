@@ -176,14 +176,16 @@ impl<R: Runtime> Kernkraft<R> {
     }
 
     /// Starts the Documents walk of `roots`: every text file under them, by
-    /// name, dotfiles left out.
+    /// name; dotfiles and dot-folders (and what is inside them) only with
+    /// `hidden`.
     pub fn documents(
         &self,
         key: String,
         roots: Vec<WirePath>,
+        hidden: bool,
         origin: Option<String>,
     ) -> Result<OpId, WireError> {
-        self.start_scan(key, roots, false, ScanFilter::Documents, origin)
+        self.start_scan(key, roots, hidden, ScanFilter::Documents, origin)
     }
 
     fn start_scan(

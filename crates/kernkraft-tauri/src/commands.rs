@@ -424,8 +424,10 @@ pub(crate) async fn documents<R: Runtime>(
     window: Window<R>,
     key: String,
     roots: Vec<WirePath>,
+    hidden: Option<bool>,
 ) -> Result<OpId, WireError> {
     let kk = window.kernkraft();
     let origin = origin(&window);
-    blocking(move || kk.documents(key, roots, origin)).await
+    // An absent `hidden` is false: no dotfiles.
+    blocking(move || kk.documents(key, roots, hidden.unwrap_or(false), origin)).await
 }

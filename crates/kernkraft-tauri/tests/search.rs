@@ -265,7 +265,7 @@ fn documents_lists_text_only() {
     fs::write(root.join(".hidden.txt"), "").unwrap();
 
     let op =
-        e.kk.documents("docs".to_owned(), vec![w(&root)], None)
+        e.kk.documents("docs".to_owned(), vec![w(&root)], false, None)
             .unwrap();
     let (batches, done) = collect(&e, op);
     // Text by name: text/plain, text/markdown, and a subclass of
@@ -281,6 +281,38 @@ fn documents_lists_text_only() {
         ]
     );
     assert_eq!(done.scan.unwrap().found, 4);
+}
+
+#[test]
+fn documents_reach_dotfiles_and_dot_folders_only_when_asked() {
+    let e = env();
+    let root = e.dir("dot-docs");
+    fs::create_dir(root.join(".config")).unwrap();
+    fs::write(root.join("a.txt"), "").unwrap();
+    fs::write(root.join(".hidden.txt"), "").unwrap();
+    fs::write(root.join(".config/inside.md"), "").unwrap();
+    // Not text, so never a document, hidden or not.
+    fs::write(root.join(".hidden.png"), "").unwrap();
+
+    let walk = |hidden: bool| {
+        let op =
+            e.kk.documents("docs".to_owned(), vec![w(&root)], hidden, None)
+                .unwrap();
+        let (batches, done) = collect(&e, op);
+        (found(&batches), done.scan.unwrap().found)
+    };
+    assert_eq!(walk(false), (vec![root.join("a.txt")], 1));
+    assert_eq!(
+        walk(true),
+        (
+            vec![
+                root.join(".config/inside.md"),
+                root.join(".hidden.txt"),
+                root.join("a.txt"),
+            ],
+            3
+        )
+    );
 }
 
 // Search only reads: a rename or a create goes ahead while one runs.

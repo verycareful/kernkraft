@@ -1088,6 +1088,31 @@ fn ipc_documents() {
     assert_eq!(hit["key"], "docs");
     assert_eq!(hit["entries"].as_array().unwrap().len(), 1);
     assert_eq!(hit["entries"][0]["mime"], "text/markdown");
+    wait_done(&e, &op);
+    // `hidden` is optional and means what it says: a dotfile is a document only when asked for.
+    fs::write(dir.join(".dot.md"), "").unwrap();
+    let op = invoke(&v, "documents", json!({"key": "docs", "roots": [wp(&dir)]})).unwrap();
+    assert_eq!(
+        e.wait_event(EVENT_SEARCH_HIT)["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    wait_done(&e, &op);
+    let op = invoke(
+        &v,
+        "documents",
+        json!({"key": "docs", "roots": [wp(&dir)], "hidden": true}),
+    )
+    .unwrap();
+    assert_eq!(
+        e.wait_event(EVENT_SEARCH_HIT)["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     // A root that is not there is reported, not fatal.
     let missing = e.base.join("missing");
     wait_done(&e, &op);

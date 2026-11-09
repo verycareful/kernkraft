@@ -2,6 +2,23 @@
 
 All notable changes documented here. Format: [Keep a Changelog](https://keepachangelog.com/), with one deviation: dated release entries are timestamped to the minute with timezone (`YYYY-MM-DD HH:MM (TZ)`).
 
+## [0.1.2.0] - 2026-11-09 17:58 (IST)
+
+The Documents walk can reach hidden items when asked. Still alpha; the Rust method's signature changes, so a direct Rust caller of `Kernkraft::documents` must pass the new argument.
+
+### Added
+- **`documents` takes `hidden`**: the Documents walk of `kernkraft-tauri` lists dotfiles, dot-folders and everything inside them only when `hidden` is set, as the name search already does. The `documents` command accepts it as an optional field, and a caller that sends none gets the walk it always got, without hidden items.
+
+### Changed
+- **`Kernkraft::documents(key, roots, hidden, origin)`** takes the new `hidden` argument before `origin`. Breaking for a direct Rust caller; callers that go through the command are unaffected.
+
+### Tests
+- `documents_reach_dotfiles_and_dot_folders_only_when_asked`: a dotfile and a file inside a dot-folder are listed only with the flag, and a hidden file that is not text never is.
+- `ipc_documents` covers the command with no `hidden` field and with `hidden` true.
+
+### Results
+- 824 tests across 58 suites, all passed (24.0s, CachyOS x86-64, rustc 1.99.1).
+
 ## [0.1.1.0] - 2026-11-04 23:46 (IST)
 
 The desktop release: seven new crates, among them the Tauri plugin Kern Desktop 0.1.0.0 is built on, and file operations in `kernkraft-fs` that can be undone. Still alpha, and the API changes below break 0.1.0.2 callers.

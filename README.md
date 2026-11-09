@@ -23,7 +23,7 @@
 <!-- Adapter -->
 [![Tauri](https://img.shields.io/badge/Tauri-2.12-FFC131?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 <!-- Release -->
-[![Version](https://img.shields.io/badge/Version-0.1.1.0-informational?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/Version-0.1.2.0-informational?style=flat-square)](VERSION)
 <!-- Licence and status -->
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)

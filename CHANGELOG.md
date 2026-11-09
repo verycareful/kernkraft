@@ -2,6 +2,23 @@
 
 All notable changes documented here. Format: [Keep a Changelog](https://keepachangelog.com/), with one deviation: dated release entries are timestamped to the minute with timezone (`YYYY-MM-DD HH:MM (TZ)`).
 
+## [0.1.3.1] - 2026-11-09 23:40 (IST)
+
+A program started from an AppImage no longer inherits the AppImage's environment. Still alpha; no API changes.
+
+### Fixed
+- **A terminal, or any other program, started from an AppImage could fail to start**: the AppImage launcher points the environment at the bundle (`PYTHONHOME`, `PYTHONPATH`, `LD_LIBRARY_PATH`, `PERLLIB`, `QT_PLUGIN_PATH`, the GTK, GIO and GStreamer paths, and a bundle entry at the front of `PATH` and `XDG_DATA_DIRS`), and every program started from there inherited it. A program that embeds Python, kitty for one, stopped at start-up with `Failed to import encodings module` because `PYTHONHOME` named a directory with no standard library, while the application reported the launch as done. Programs started by `launch`, `launch_in_terminal`, `launch_groups`, `open_default` and `open_terminal`, and `xdg-mime`, now get the environment without the bundle.
+
+### Changed
+- **How the bundle is left**: when `APPDIR` is set, a variable whose entries all lie inside the bundle is removed, and in a list variable (separated by `:`) the entries inside the bundle are dropped and the rest kept in order, so a path of the user's own survives. `APPDIR`, `APPIMAGE`, `ARGV0` and `OWD` are removed. Nothing else is touched, and outside a bundle `APPDIR` is unset and the environment passes through as it is.
+
+### Tests
+- `a_started_program_does_not_inherit_the_bundle`: a program started under a bundle environment records the environment it got, with the bundle variables gone, `PATH` and `XDG_DATA_DIRS` shortened to the entries outside the bundle, and an unrelated variable kept.
+- Unit tests of the rule: nothing changes outside a bundle; a variable that points only into the bundle is removed, including a path with a doubled `/`; list variables keep their other entries in order; a list left with only empty entries is removed; a directory that only shares the bundle's name as a prefix is not inside it; unrelated variables are left alone; the runtime variables are removed; a non-UTF-8 entry outside the bundle is kept byte for byte.
+
+### Results
+- 859 tests across 70 suites, all passed (23.9s, CachyOS x86-64, rustc 1.99.1).
+
 ## [0.1.3.0] - 2026-11-09 23:16 (IST)
 
 The terminal a user chooses is now the terminal that opens, and kernkraft reads the terminal lists itself instead of running `xdg-terminal-exec`. Still alpha; the terminal functions of `kernkraft-xdg-apps` change signature, so a direct Rust caller must pass the new `TerminalPrefs`.

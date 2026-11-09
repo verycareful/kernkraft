@@ -13,6 +13,7 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::bundle_env::leave_bundle;
 use crate::desktop_entry::DesktopEntry;
 use crate::error::AppsError;
 use crate::exec::{expand_exec, Targets};
@@ -83,7 +84,9 @@ pub fn launch_in_terminal(
 }
 
 /// Starts `cmd` in its own session with stdin, stdout and stderr on
-/// `/dev/null`, so it outlives this process and a closing terminal.
+/// `/dev/null`, so it outlives this process and a closing terminal. When this
+/// process runs from an application bundle the program gets the environment
+/// without the bundle (see [`crate::bundle_env`]).
 ///
 /// A thread waits for the child. Without it the exited child stays a zombie
 /// for as long as this process runs; a double fork would avoid that too but
@@ -91,6 +94,7 @@ pub fn launch_in_terminal(
 /// thread only holds the `Child` and ends when the program does. If the
 /// thread cannot be created the launched process is killed and reaped and the launch fails.
 pub(crate) fn spawn_detached(mut cmd: Command, id: &str) -> Result<(), AppsError> {
+    leave_bundle(&mut cmd);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -163,6 +167,7 @@ pub fn set_default(desktop_id: &str, mime: &str) -> Result<(), AppsError> {
 }
 
 fn run_xdg_mime(mut cmd: Command) -> Result<(), AppsError> {
+    leave_bundle(&mut cmd);
     let output = cmd
         .stdin(Stdio::null())
         .output()

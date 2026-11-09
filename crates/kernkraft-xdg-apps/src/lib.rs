@@ -13,6 +13,7 @@
 //! Every public function is synchronous, takes paths and owned data, and
 //! reports failure as [`AppsError`].
 
+mod bundle_env;
 mod desktop_entry;
 mod error;
 mod exec;

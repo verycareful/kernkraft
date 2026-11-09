@@ -2,6 +2,23 @@
 
 All notable changes documented here. Format: [Keep a Changelog](https://keepachangelog.com/), with one deviation: dated release entries are timestamped to the minute with timezone (`YYYY-MM-DD HH:MM (TZ)`).
 
+## [0.1.2.1] - 2026-11-09 18:59 (IST)
+
+A `hyprtoolkit.conf` that writes its colours the way Hyprland's own files do is now read. Still alpha; no API changes.
+
+### Fixed
+- **`hyprtoolkit.conf` colours in `0xAARRGGBB` and decimal form were ignored**: `Rgba::parse` knew only `rgb(rrggbb)`, `rgba(rrggbbaa)` and `#hex`, so a file written with `0xFF282a36` had every colour line refused and the theme fell through to the portal, GTK and Kern's own tokens. It now also reads `0xAARRGGBB` (alpha first, all eight digits), `rgb(r,g,b)` and `rgba(r,g,b,a)` (decimal channels 0 to 255, alpha a fraction from 0.0 to 1.0). A number out of range, a sign, an exponent, `nan` or `inf` is refused, never clamped. A bare `#rrggbb` in a `.conf` is still a hyprlang comment.
+
+### Tests
+- `parses_argb_hyprtoolkit`: a file written in `0xAARRGGBB` fills every colour and both font families.
+- `argb_colour_has_alpha_first`: `0x40ff8000` is red 255, green 128, blue 0, alpha 0x40, in either case of `x`.
+- `decimal_colour_forms`: `rgb(r,g,b)` and `rgba(r,g,b,a)` with spaces, with alpha 0, .5, 0.933 and 1 rounded to a byte.
+- `malformed_colours_are_refused`: 21 malformed inputs (short or long hex, out-of-range, negative, fractional or missing channels, bad alpha) return nothing.
+- `every_notation_in_one_file`: five colour notations in one file parse with nothing ignored.
+
+### Results
+- 829 tests across 58 suites, all passed (25.0s, CachyOS x86-64, rustc 1.99.1).
+
 ## [0.1.2.0] - 2026-11-09 17:58 (IST)
 
 The Documents walk can reach hidden items when asked. Still alpha; the Rust method's signature changes, so a direct Rust caller of `Kernkraft::documents` must pass the new argument.

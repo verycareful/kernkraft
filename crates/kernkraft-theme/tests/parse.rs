@@ -193,6 +193,122 @@ fn colour_forms() {
     }
 }
 
+/// A `hyprtoolkit.conf` written with Hyprland's `0xAARRGGBB` notation, plus
+/// the keys hyprtoolkit defines beyond the ones Kern maps.
+const ARGB_HYPRTOOLKIT: &str = "\
+# Colours in 0xAARRGGBB, the notation Hyprland's own files use.
+background = 0xFF102030
+base = 0xFF203040
+alternate_base = 0xFF304050
+text = 0xFFe0e0d0
+bright_text = 0xFFffffff
+accent = 0xFF8090f0
+accent_secondary = 0xFFf07090
+
+font_family = Example Sans
+font_family_monospace = Example Mono
+font_size = 11
+
+icon_theme = example-icons
+";
+
+#[test]
+fn parses_argb_hyprtoolkit() {
+    let h = parse_hyprtoolkit(ARGB_HYPRTOOLKIT);
+    assert_eq!(h.background, c(0x10, 0x20, 0x30));
+    assert_eq!(h.base, c(0x20, 0x30, 0x40));
+    assert_eq!(h.alternate_base, c(0x30, 0x40, 0x50));
+    assert_eq!(h.text, c(0xe0, 0xe0, 0xd0));
+    assert_eq!(h.accent, c(0x80, 0x90, 0xf0));
+    assert_eq!(h.accent_secondary, c(0xf0, 0x70, 0x90));
+    assert_eq!(h.font_family.as_deref(), Some("Example Sans"));
+    assert_eq!(h.font_family_monospace.as_deref(), Some("Example Mono"));
+}
+
+/// Hyprland's legacy notation puts alpha first: `0xAARRGGBB`.
+#[test]
+fn argb_colour_has_alpha_first() {
+    let want = Some(Rgba {
+        r: 0xff,
+        g: 0x80,
+        b: 0x00,
+        a: 0x40,
+    });
+    assert_eq!(Rgba::parse("0x40ff8000"), want);
+    assert_eq!(Rgba::parse("0X40FF8000"), want);
+    assert_eq!(Rgba::parse("0xff112233"), c(0x11, 0x22, 0x33));
+}
+
+/// Hyprland's decimal forms: channels 0 to 255, alpha a fraction 0.0 to 1.0.
+#[test]
+fn decimal_colour_forms() {
+    assert_eq!(Rgba::parse("rgb(255,128,0)"), c(255, 128, 0));
+    assert_eq!(Rgba::parse("rgb( 255 , 128 , 0 )"), c(255, 128, 0));
+    assert_eq!(Rgba::parse("RGB(0,0,0)"), c(0, 0, 0));
+    let with_alpha = |a: u8| {
+        Some(Rgba {
+            r: 179,
+            g: 255,
+            b: 26,
+            a,
+        })
+    };
+    assert_eq!(Rgba::parse("rgba(179,255,26,1)"), with_alpha(255));
+    assert_eq!(Rgba::parse("rgba(179,255,26,1.0)"), with_alpha(255));
+    assert_eq!(Rgba::parse("rgba(179,255,26,0)"), with_alpha(0));
+    assert_eq!(Rgba::parse("rgba(179,255,26,0.5)"), with_alpha(128));
+    assert_eq!(Rgba::parse("rgba(179,255,26,.5)"), with_alpha(128));
+    assert_eq!(Rgba::parse("rgba(179,255,26,0.933)"), with_alpha(238));
+    assert_eq!(Rgba::parse("rgba( 179, 255, 26, 0.5 )"), with_alpha(128));
+}
+
+#[test]
+fn malformed_colours_are_refused() {
+    for bad in [
+        "0x",
+        "0xff8000",
+        "0x40ff80000",
+        "0xgg000000",
+        "0x-1000000",
+        "40ff8000",
+        "rgb(256,0,0)",
+        "rgb(-1,0,0)",
+        "rgb(1.5,0,0)",
+        "rgb(1,2)",
+        "rgb(1,2,3,4)",
+        "rgb(1,2,,3)",
+        "rgb(1,2,3,)",
+        "rgba(1,2,3)",
+        "rgba(1,2,3,4,5)",
+        "rgba(1,2,3,1.5)",
+        "rgba(1,2,3,-0.1)",
+        "rgba(1,2,3,nan)",
+        "rgba(1,2,3,inf)",
+        "rgba(1,2,3,)",
+        "rgba(256,2,3,1)",
+    ] {
+        assert_eq!(Rgba::parse(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn every_notation_in_one_file() {
+    let h = parse_hyprtoolkit(
+        "background = rgb(010203)\n\
+         base = rgba(01020380)\n\
+         alternate_base = 0x80010203\n\
+         text = rgb(1,2,3)\n\
+         accent = rgba(1,2,3,0.5) # trailing\n",
+    );
+    let half = |r, g, b| Some(Rgba { r, g, b, a: 0x80 });
+    assert_eq!(h.background, c(1, 2, 3));
+    assert_eq!(h.base, half(1, 2, 3));
+    assert_eq!(h.alternate_base, half(1, 2, 3));
+    assert_eq!(h.text, c(1, 2, 3));
+    assert_eq!(h.accent, half(1, 2, 3));
+    assert!(h.ignored.is_empty(), "{:?}", h.ignored);
+}
+
 #[test]
 fn rgba_serialises_as_hex_string() {
     let v = Rgba {

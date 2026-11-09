@@ -32,29 +32,32 @@ impl Rgba {
         Rgba { r, g, b, a: 255 }
     }
 
-    /// Parses `rgb(rrggbb)` and `rgba(rrggbbaa)` (hyprlang), `#rrggbb` and
-    /// `#rrggbbaa`. Anything else is `None`.
+    /// Parses the colour notations Hyprland accepts, plus `#` hex:
+    ///
+    /// - `rgb(rrggbb)` and `rgba(rrggbbaa)`: hex, alpha last;
+    /// - `rgb(r,g,b)` and `rgba(r,g,b,a)`: decimal channels 0 to 255 and an
+    ///   alpha fraction 0.0 to 1.0, spaces around the numbers allowed;
+    /// - `0xAARRGGBB`: hex, alpha FIRST, all eight digits;
+    /// - `#rrggbb` and `#rrggbbaa`: hex, alpha last.
+    ///
+    /// Anything else, including an out-of-range number, is `None`.
     pub fn parse(s: &str) -> Option<Rgba> {
         let s = s.trim();
-        let (digits, with_alpha) = if let Some(h) = s.strip_prefix('#') {
-            (h, h.len() == 8)
-        } else if let Some(inner) = strip_call(s, "rgba") {
-            (inner, true)
-        } else {
-            (strip_call(s, "rgb")?, false)
-        };
-        let digits = digits.trim();
-        let want = if with_alpha { 8 } else { 6 };
-        if digits.len() != want || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
+        if let Some(h) = s.strip_prefix('#') {
+            return parse_hex(h, h.len() == 8);
         }
-        let byte = |i: usize| u8::from_str_radix(&digits[i * 2..i * 2 + 2], 16).ok();
-        Some(Rgba {
-            r: byte(0)?,
-            g: byte(1)?,
-            b: byte(2)?,
-            a: if with_alpha { byte(3)? } else { 255 },
-        })
+        if let Some(h) = strip_prefix_ignore_case(s, "0x") {
+            return parse_argb(h);
+        }
+        let (inner, with_alpha) = match strip_call(s, "rgba") {
+            Some(inner) => (inner, true),
+            None => (strip_call(s, "rgb")?, false),
+        };
+        if inner.contains(',') {
+            parse_decimal(inner, with_alpha)
+        } else {
+            parse_hex(inner, with_alpha)
+        }
     }
 
     /// `#rrggbbaa`, lower case.
@@ -98,15 +101,80 @@ impl Rgba {
     }
 }
 
+fn strip_prefix_ignore_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = s.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &s[prefix.len()..])
+}
+
 fn strip_call<'a>(s: &'a str, name: &str) -> Option<&'a str> {
-    let head = s.get(..name.len())?;
-    if !head.eq_ignore_ascii_case(name) {
-        return None;
-    }
-    s[name.len()..]
+    strip_prefix_ignore_case(s, name)?
         .trim_start()
         .strip_prefix('(')?
         .strip_suffix(')')
+}
+
+/// Six hex digits, or eight when `with_alpha`, in red, green, blue, alpha
+/// order.
+fn parse_hex(digits: &str, with_alpha: bool) -> Option<Rgba> {
+    let digits = digits.trim();
+    let want = if with_alpha { 8 } else { 6 };
+    if digits.len() != want || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&digits[i * 2..i * 2 + 2], 16).ok();
+    Some(Rgba {
+        r: byte(0)?,
+        g: byte(1)?,
+        b: byte(2)?,
+        a: if with_alpha { byte(3)? } else { 255 },
+    })
+}
+
+/// Exactly eight hex digits, alpha first (`AARRGGBB`).
+fn parse_argb(digits: &str) -> Option<Rgba> {
+    let rgba = parse_hex(digits, true)?;
+    // `parse_hex` read the digits as RRGGBBAA, so each field is one place
+    // early: the first byte it called red is the alpha.
+    Some(Rgba {
+        a: rgba.r,
+        r: rgba.g,
+        g: rgba.b,
+        b: rgba.a,
+    })
+}
+
+/// `r,g,b` (three whole numbers 0 to 255) or, when `with_alpha`, `r,g,b,a`
+/// with `a` a fraction 0.0 to 1.0.
+fn parse_decimal(inner: &str, with_alpha: bool) -> Option<Rgba> {
+    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+    if parts.len() != if with_alpha { 4 } else { 3 } {
+        return None;
+    }
+    let channel = |p: &str| {
+        if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        p.parse::<u8>().ok()
+    };
+    let a = if with_alpha {
+        let p = parts[3];
+        // Digits and a point only: `f64::from_str` would also take `nan`,
+        // `inf`, a sign and an exponent, none of which is a fraction.
+        if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+            return None;
+        }
+        let fraction = p.parse::<f64>().ok().filter(|f| (0.0..=1.0).contains(f))?;
+        (fraction * 255.0).round() as u8
+    } else {
+        255
+    };
+    Some(Rgba {
+        r: channel(parts[0])?,
+        g: channel(parts[1])?,
+        b: channel(parts[2])?,
+        a,
+    })
 }
 
 /// WCAG 2.1 contrast ratio between two colours, 1.0 to 21.0, in either order.

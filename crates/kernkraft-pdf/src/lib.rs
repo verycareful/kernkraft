@@ -9,6 +9,9 @@
 //! writer. Every operation that changes the page tree first flattens it
 //! (see [`flatten_page_tree`]), so pages keep the attributes they inherited
 //! from intermediate page-tree nodes.
+//!
+//! [`Source`] gives random access to a file's bytes, held in memory
+//! ([`MemorySource`]) or read from disk by offset ([`FileSource`]).
 
 mod doc;
 mod error;
@@ -18,6 +21,7 @@ mod pages;
 mod ranges;
 #[cfg(feature = "render")]
 mod render;
+mod source;
 mod split;
 mod tree;
 
@@ -31,5 +35,6 @@ pub use pages::{remove, reorder, rotate, Rotation};
 pub use ranges::{parse_ranges, PageRange};
 #[cfg(feature = "render")]
 pub use render::{page_size_pt, render_page, RenderedPage, Renderer, MAX_RENDER_DIMENSION};
+pub use source::{FileSource, MemorySource, Source};
 pub use split::{extract, split_by_bookmarks, split_per_page, split_ranges, START_PART_TITLE};
 pub use tree::flatten_page_tree;

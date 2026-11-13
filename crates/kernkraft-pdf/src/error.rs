@@ -22,4 +22,8 @@ pub enum PdfError {
     Fs(#[from] kernkraft_fs::FsError),
     #[error("render failed: {0}")]
     Render(String),
+    /// A read that does not lie inside the source: its range starts or ends
+    /// past the last byte, or its end does not fit in a `u64`.
+    #[error("read of {len} bytes at offset {offset} is outside the file's {size} bytes")]
+    OutOfBounds { offset: u64, len: u64, size: u64 },
 }

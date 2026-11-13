@@ -12,7 +12,10 @@
 //!
 //! [`Source`] gives random access to a file's bytes, held in memory
 //! ([`MemorySource`]) or read from disk by offset ([`FileSource`]).
+//! [`syntax`] reads PDF objects from a source and writes them, reporting
+//! what it accepted against the format as [`Diagnostic`]s.
 
+mod diagnostic;
 mod doc;
 mod error;
 mod fields;
@@ -23,12 +26,14 @@ mod ranges;
 mod render;
 mod source;
 mod split;
+pub mod syntax;
 mod tree;
 
 pub use lopdf;
 
+pub use diagnostic::{Diagnostic, DiagnosticKind, Diagnostics, PortableLimit};
 pub use doc::{load, load_bytes, page_count, save, to_bytes};
-pub use error::PdfError;
+pub use error::{Limit, PdfError};
 pub use kernkraft_fs::FileStamp;
 pub use merge::merge;
 pub use pages::{remove, reorder, rotate, Rotation};

@@ -635,6 +635,29 @@ fn copy_keeps_user_xattr() {
 }
 
 #[test]
+fn copy_keeps_an_empty_user_xattr() {
+    const NAME: &str = "user.kernkraft.empty";
+    let root = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let (src, dest) = (root.path().join("src"), root.path().join("dest"));
+    fs::create_dir(&src).unwrap();
+    fs::create_dir(&dest).unwrap();
+    let file = src.join("f");
+    fs::write(&file, "v").unwrap();
+    match rustix::fs::setxattr(&file, NAME, b"", rustix::fs::XattrFlags::empty()) {
+        Ok(()) => {}
+        Err(rustix::io::Errno::OPNOTSUPP) => {
+            eprintln!("skipped: user xattrs unsupported here");
+            return;
+        }
+        Err(e) => panic!("setxattr: {e}"),
+    }
+    copy(std::slice::from_ref(&file), &dest, &never, &NoProgress).unwrap();
+    // An attribute that was not copied is ENODATA; one copied with its
+    // empty value has size 0.
+    assert_eq!(rustix::fs::getxattr_query(dest.join("f"), NAME), Ok(0));
+}
+
+#[test]
 fn copy_keeps_directory_xattr() {
     const NAME: &str = "user.kernkraft.dir";
     let root = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();

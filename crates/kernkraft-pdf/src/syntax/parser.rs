@@ -34,6 +34,10 @@ pub struct IndirectObject {
 /// Reads objects from a [`Source`].
 pub struct Parser<'s> {
     lexer: Lexer<'s>,
+    /// The most array items and dictionary entries one object may hold.
+    max_elements: usize,
+    /// How many the object being read holds so far.
+    elements: usize,
 }
 
 impl<'s> Parser<'s> {
@@ -41,7 +45,20 @@ impl<'s> Parser<'s> {
     pub fn new(source: &'s dyn Source) -> Self {
         Self {
             lexer: Lexer::new(source),
+            max_elements: usize::MAX,
+            elements: 0,
         }
+    }
+
+    /// Sets the most array items and dictionary entries one object may
+    /// hold, nested ones included. An object read by
+    /// [`Self::parse_object`] or [`Self::parse_indirect_object`] that
+    /// holds more is refused with [`Limit::ObjectElements`]. A parsed
+    /// element takes many times the memory of its text, so this bounds
+    /// what one object costs. Without it there is no limit.
+    pub fn with_max_elements(mut self, max_elements: usize) -> Self {
+        self.max_elements = max_elements;
+        self
     }
 
     /// The offset the next object is looked for from.
@@ -62,6 +79,7 @@ impl<'s> Parser<'s> {
     /// One direct object or indirect reference, starting at the position.
     /// The parser is left straight after it.
     pub fn parse_object(&mut self, diagnostics: &mut Diagnostics) -> Result<Object, PdfError> {
+        self.elements = 0;
         self.object(diagnostics, TOP_LEVEL_DEPTH, None)
     }
 
@@ -75,6 +93,7 @@ impl<'s> Parser<'s> {
         &mut self,
         diagnostics: &mut Diagnostics,
     ) -> Result<IndirectObject, PdfError> {
+        self.elements = 0;
         let mark = diagnostics.len();
         let number = self.lexer.next_token(diagnostics)?;
         let start = number.span.start;
@@ -304,6 +323,22 @@ impl<'s> Parser<'s> {
         }
     }
 
+    /// Counts one more array item or dictionary entry of the object being
+    /// read. `open` is where the array or dictionary it belongs to starts.
+    fn count_element(&mut self, open: u64) -> Result<(), PdfError> {
+        if self.elements >= self.max_elements {
+            return Err(PdfError::LimitExceeded {
+                offset: open,
+                // A usize is at most 64 bits wide on every supported target.
+                limit: Limit::ObjectElements {
+                    max: self.max_elements as u64,
+                },
+            });
+        }
+        self.elements += 1;
+        Ok(())
+    }
+
     /// 7.3.6: the objects up to the closing bracket. `open` is the offset
     /// of the opening one, which has been read.
     fn array(
@@ -324,6 +359,7 @@ impl<'s> Parser<'s> {
                 };
                 return Ok(Object::parsed(Value::Array(items), span));
             }
+            self.count_element(open)?;
             items.push(self.object_from(token, mark, diagnostics, depth + 1, Some(open))?);
         }
     }
@@ -352,6 +388,7 @@ impl<'s> Parser<'s> {
                 TokenKind::End => return Err(PdfError::UnexpectedEnd { offset: open }),
                 ref other => return Err(unexpected(token.span.start, &token_text(other))),
             };
+            self.count_element(open)?;
             let value = self.object(diagnostics, depth + 1, Some(open))?;
             if dictionary.insert(key.clone(), value).is_some() {
                 diagnostics.push(DiagnosticKind::DuplicateKey { key }, token.span.start);

@@ -666,3 +666,48 @@ fn parses_through_a_file_source() {
     assert_eq!(file_spans, memory_spans);
     assert!(file_spans.iter().all(Option::is_some));
 }
+
+/// The elements of `[[1 2] <</A 3 /B [4]>>]`: two items of the outer
+/// array, two of the first inner array, two entries of the dictionary
+/// and one item of its array.
+const SEVEN_ELEMENTS: &[u8] = b"[[1 2] <</A 3 /B [4]>>]";
+
+#[test]
+fn elements_are_counted_through_arrays_and_dictionaries() {
+    let source = memory(SEVEN_ELEMENTS);
+    let limited = |max| {
+        Parser::new(&source)
+            .with_max_elements(max)
+            .parse_object(&mut Diagnostics::new())
+    };
+    assert!(limited(7).is_ok());
+    // The seventh element is the item of the innermost array.
+    let innermost = SEVEN_ELEMENTS.iter().rposition(|&b| b == b'[').unwrap() as u64;
+    assert_limit(limited(6), innermost, Limit::ObjectElements { max: 6 });
+    // The first element of all belongs to the outer array.
+    assert_limit(limited(0), 0, Limit::ObjectElements { max: 0 });
+    // An object that is no array or dictionary has no elements.
+    let scalar = memory(b"(a string)");
+    let result = Parser::new(&scalar)
+        .with_max_elements(0)
+        .parse_object(&mut Diagnostics::new());
+    assert!(result.is_ok());
+}
+
+#[test]
+fn the_element_count_starts_again_with_each_object() {
+    let source = memory(b"[1 2] [3 4] 5 0 obj [6 7] endobj");
+    let mut parser = Parser::new(&source).with_max_elements(2);
+    let mut diagnostics = Diagnostics::new();
+    assert!(parser.parse_object(&mut diagnostics).is_ok());
+    assert!(parser.parse_object(&mut diagnostics).is_ok());
+    assert!(parser.parse_indirect_object(&mut diagnostics).is_ok());
+}
+
+#[test]
+fn a_parser_given_no_limit_counts_none() {
+    let source = memory(SEVEN_ELEMENTS);
+    assert!(Parser::new(&source)
+        .parse_object(&mut Diagnostics::new())
+        .is_ok());
+}

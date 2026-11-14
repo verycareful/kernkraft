@@ -67,6 +67,36 @@ pub enum DiagnosticKind {
     /// The bytes decoded before that point are kept, and the result is
     /// marked incomplete.
     FilterDataDamaged { filter: FilterKind },
+    /// Bytes before the `%PDF-` header. Offsets in the file are read as
+    /// written, counted from the first byte of the file.
+    HeaderNotAtStart,
+    /// No `%%EOF` after the `startxref` offset. The offset is used.
+    MissingEofMarker,
+    /// White space at the offset where the cross-reference or `startxref`
+    /// places an object or a cross-reference section. What follows the
+    /// white space is read.
+    WhitespaceAtOffset,
+    /// A cross-reference table entry that is not laid out as the 20 bytes
+    /// of 7.5.4. Its three fields are read as tokens. Raised once for a
+    /// section, at the first such entry.
+    XrefEntryLayout,
+    /// A cross-reference section with an entry for an object number at or
+    /// past its trailer's `Size`, which Table 15 says to take as missing.
+    /// The entry is kept: writers leave `Size` too low, the catalog's own
+    /// number among those past it. Raised once for a section.
+    EntryPastSize,
+    /// A stream whose `Length` is absent, is not a whole number of bytes
+    /// inside the file, or is not followed by `endstream`. The data is
+    /// taken to end before the first `endstream` after its start, less
+    /// one end-of-line.
+    StreamLength,
+    /// The cross-reference could not be read and was rebuilt from the
+    /// objects found by reading the file through. The offset is where the
+    /// cross-reference data was at fault.
+    XrefRebuilt,
+    /// An object stream that could not be read while the cross-reference
+    /// was rebuilt. The objects in it are missing.
+    ObjectStreamUnreadable { stream: u32 },
 }
 
 /// One tolerant decision.

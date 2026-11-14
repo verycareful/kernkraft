@@ -21,6 +21,13 @@ pub enum Limit {
     StringBytes,
     /// The filters one stream chains.
     FilterCount,
+    /// The array items and dictionary entries of one object, nested ones
+    /// included. The caller sets `max`
+    /// ([`ReadLimits`](crate::file::ReadLimits)).
+    ObjectElements { max: u64 },
+    /// The cross-reference entries of one file, over all its sections. The
+    /// caller sets `max` ([`ReadLimits`](crate::file::ReadLimits)).
+    XrefEntries { max: u64 },
 }
 
 impl Limit {
@@ -32,6 +39,7 @@ impl Limit {
             Limit::TokenBytes => MAX_TOKEN_BYTES,
             Limit::StringBytes => MAX_STRING_BYTES,
             Limit::FilterCount => MAX_FILTERS,
+            Limit::ObjectElements { max } | Limit::XrefEntries { max } => return max,
         };
         // A usize is at most 64 bits wide on every supported target.
         max as u64
@@ -46,6 +54,8 @@ impl fmt::Display for Limit {
             Limit::TokenBytes => "token length",
             Limit::StringBytes => "string length",
             Limit::FilterCount => "filter count",
+            Limit::ObjectElements { .. } => "element count of an object",
+            Limit::XrefEntries { .. } => "cross-reference entry count",
         })
     }
 }
@@ -103,4 +113,29 @@ pub enum PdfError {
     /// Decoding a stream would give more bytes than the caller allowed.
     #[error("decoded data is larger than the {cap} bytes allowed")]
     DecodedTooLarge { cap: u64 },
+    /// No `%PDF-` header with a version number in the first bytes of the
+    /// file, where a reader looks for one.
+    #[error("the file has no PDF header")]
+    MissingHeader,
+    /// Cross-reference data that cannot be read: `offset` is where the
+    /// fault lies. Opening a file answers this by rebuilding the
+    /// cross-reference, so it is returned only where that is not done.
+    #[error("the cross-reference data at offset {offset} is not valid")]
+    BadXref { offset: u64 },
+    /// The cross-reference places an object at an offset where another
+    /// object, or none, starts.
+    #[error("object {number} {generation} is not at offset {offset}, where the cross-reference places it")]
+    XrefMismatch {
+        number: u32,
+        generation: u16,
+        offset: u64,
+    },
+    /// An object stream (7.5.7) whose dictionary or data cannot be read, or
+    /// that does not hold the object the cross-reference places in it.
+    #[error("object stream {stream} is not valid")]
+    ObjectStream { stream: u32 },
+    /// The cross-reference had to be rebuilt and nothing in the file names
+    /// or is a document catalog.
+    #[error("the PDF has no document catalog")]
+    NoCatalog,
 }

@@ -14,12 +14,15 @@
 //! ([`MemorySource`]) or read from disk by offset ([`FileSource`]).
 //! [`syntax`] reads PDF objects from a source and writes them, reporting
 //! what it accepted against the format as [`Diagnostic`]s. [`filter`]
-//! decodes stream data, never past the size the caller allows.
+//! decodes stream data, never past the size the caller allows. [`file`]
+//! reads a file's header and cross-reference and loads its objects one at
+//! a time, within the limits the caller sets.
 
 mod diagnostic;
 mod doc;
 mod error;
 mod fields;
+pub mod file;
 pub mod filter;
 mod merge;
 mod pages;

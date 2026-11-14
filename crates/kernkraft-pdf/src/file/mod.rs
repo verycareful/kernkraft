@@ -16,7 +16,12 @@
 //! [`PdfFile::xref_rebuilt`] say so.
 //!
 //! Objects are returned as the file holds them. Stream data is not
-//! decoded and nothing is decrypted.
+//! decoded, and the strings and streams of an encrypted file (7.6) stay
+//! encrypted. One thing needs a key: an object stream is encrypted as a
+//! whole, so the objects in it cannot be read until its data is
+//! decrypted. [`PdfFile::decrypting`] gives the file a [`StreamDecrypt`]
+//! for that, which [`crypt`](crate::crypt) provides once a password is
+//! accepted.
 
 mod chain;
 mod header;
@@ -42,6 +47,22 @@ use crate::{Limit, PdfError, Source};
 use load::Reader;
 
 const ROOT_KEY: &[u8] = b"Root";
+
+/// Decrypts the data of a stream of an encrypted file (7.6.2). The file
+/// layer calls it for object streams, which it has to decode.
+pub trait StreamDecrypt: Send + Sync {
+    /// The data of stream `id` decrypted, still encoded by the filters of
+    /// `dictionary`. `data` is as the file holds it and `offset` is where
+    /// it starts in the file, for diagnostics.
+    fn decrypt_stream<'a>(
+        &self,
+        id: ObjectId,
+        dictionary: &Dictionary,
+        data: &'a [u8],
+        offset: u64,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<Cow<'a, [u8]>, PdfError>;
+}
 
 /// The limits a caller sets on what reading one file may cost in memory.
 /// The format sets none of them, and what is reasonable depends on the
@@ -70,6 +91,8 @@ pub struct PdfFile {
     header_offset: u64,
     /// The cross-reference sections, the newest first. Never empty.
     sections: Vec<Section>,
+    /// What decrypts the object streams of an encrypted file.
+    decrypt: Option<Arc<dyn StreamDecrypt>>,
 }
 
 impl fmt::Debug for PdfFile {
@@ -80,6 +103,7 @@ impl fmt::Debug for PdfFile {
             .field("version", &self.version)
             .field("header_offset", &self.header_offset)
             .field("sections", &self.sections)
+            .field("decrypting", &self.decrypt.is_some())
             .finish()
     }
 }
@@ -106,6 +130,7 @@ impl PdfFile {
                         version: header.version,
                         header_offset: header.offset,
                         sections,
+                        decrypt: None,
                     });
                 }
                 newest => newest.map_or(header.offset, Section::offset),
@@ -136,6 +161,37 @@ impl PdfFile {
         Self::rebuilt(source, limits, header, header.offset, diagnostics)
     }
 
+    /// The same file, reading its object streams through `decrypt`: an
+    /// encrypted file stores them encrypted (7.6.1), and until this is
+    /// called an object in one cannot be loaded.
+    ///
+    /// A cross-reference that was rebuilt is rebuilt again, because the
+    /// first reading could not see into the object streams. `diagnostics`
+    /// is the collector the file was opened with: every
+    /// [`ObjectStreamUnreadable`](DiagnosticKind::ObjectStreamUnreadable)
+    /// in it is taken back, and raised again for a stream that still
+    /// cannot be read.
+    pub fn decrypting(
+        mut self,
+        decrypt: Arc<dyn StreamDecrypt>,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<Self, PdfError> {
+        if self.xref_rebuilt() {
+            diagnostics
+                .retain(|kind| !matches!(kind, DiagnosticKind::ObjectStreamUnreadable { .. }));
+            let section = repair::rebuild(
+                &*self.source,
+                self.header_offset,
+                &self.limits,
+                Some(&*decrypt),
+                diagnostics,
+            )?;
+            self.sections = vec![section];
+        }
+        self.decrypt = Some(decrypt);
+        Ok(self)
+    }
+
     fn rebuilt(
         source: Arc<dyn Source>,
         limits: ReadLimits,
@@ -144,13 +200,14 @@ impl PdfFile {
         diagnostics: &mut Diagnostics,
     ) -> Result<Self, PdfError> {
         diagnostics.push(DiagnosticKind::XrefRebuilt, fault);
-        let section = repair::rebuild(&*source, header.offset, &limits, diagnostics)?;
+        let section = repair::rebuild(&*source, header.offset, &limits, None, diagnostics)?;
         Ok(Self {
             source,
             limits,
             version: header.version,
             header_offset: header.offset,
             sections: vec![section],
+            decrypt: None,
         })
     }
 
@@ -215,6 +272,11 @@ impl PdfFile {
     /// Reads object `id`. `None` when the file has no such object in use:
     /// a reference to it is the null object (7.3.10).
     ///
+    /// In an encrypted file, an object read from the file itself
+    /// ([`Location::File`]) has its strings still encrypted, and an object
+    /// read from an object stream is plain, since it was encrypted with
+    /// its stream (7.6.1).
+    ///
     /// An object that is not where the cross-reference places it is
     /// [`PdfError::XrefMismatch`]; [`Self::rebuild`] opens such a file.
     pub fn load(
@@ -263,6 +325,7 @@ impl PdfFile {
             source: &*self.source,
             sections: &self.sections,
             limits: &self.limits,
+            decrypt: None,
         }
         .stream_data(stream)
     }
@@ -272,6 +335,7 @@ impl PdfFile {
             source: &*self.source,
             sections: self.sections.get(section..).filter(|s| !s.is_empty())?,
             limits: &self.limits,
+            decrypt: self.decrypt.as_deref(),
         })
     }
 }
@@ -298,6 +362,7 @@ pub(crate) fn is_damage(error: &PdfError) -> bool {
             | PdfError::ObjectStream { .. }
             | PdfError::UnknownFilter { .. }
             | PdfError::FilterParameters { .. }
+            | PdfError::UnsupportedCryptFilter { .. }
     )
 }
 

@@ -84,14 +84,7 @@ fn all_five_names() {
 
 #[test]
 fn names_not_decoded_here() {
-    for name in [
-        "DCTDecode",
-        "Crypt",
-        "Fl",
-        "Bogus",
-        "flatedecode",
-        "FlateDecodeX",
-    ] {
+    for name in ["DCTDecode", "Fl", "Bogus", "flatedecode", "FlateDecodeX"] {
         match pipeline(&format!("<</Filter [/ASCIIHexDecode /{name}]>>")) {
             Err(PdfError::UnknownFilter { name: found }) => assert_eq!(found, name),
             other => panic!("expected UnknownFilter {name}, got {other:?}"),

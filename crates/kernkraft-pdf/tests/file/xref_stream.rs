@@ -309,7 +309,7 @@ fn a_chain_of_streams_follows_prev() {
 fn a_stream_that_cannot_be_read_gives_way_to_a_rebuilt_table() {
     type Data = fn(&[u8]) -> Vec<u8>;
     let whole: Data = |data| data.to_vec();
-    let cases: [(&str, &str, Data); 16] = [
+    let cases: [(&str, &str, Data); 17] = [
         ("no Type", "/Size 4 /W [1 2 2] /Root 1 0 R", whole),
         (
             "another Type",
@@ -375,6 +375,11 @@ fn a_stream_that_cannot_be_read_gives_way_to_a_rebuilt_table() {
         ),
         (
             "a filter that is not known",
+            "/Type /XRef /Size 4 /W [1 2 2] /Root 1 0 R /Filter /Bogus",
+            whole,
+        ),
+        (
+            "a Crypt filter, which 7.5.8.2 forbids here",
             "/Type /XRef /Size 4 /W [1 2 2] /Root 1 0 R /Filter /Crypt",
             whole,
         ),

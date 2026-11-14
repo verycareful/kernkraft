@@ -15,10 +15,16 @@ publish.workspace = true
 render = ["dep:mupdf"]
 
 [dependencies]
+aes.workspace = true
+cbc.workspace = true
 flate2.workspace = true
 kernkraft-fs.workspace = true
 lopdf.workspace = true
+md-5.workspace = true
 mupdf = { workspace = true, optional = true }
+rc4.workspace = true
+sha2.workspace = true
+stringprep.workspace = true
 thiserror.workspace = true
 weezl.workspace = true
 

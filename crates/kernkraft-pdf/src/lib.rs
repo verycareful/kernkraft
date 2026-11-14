@@ -16,8 +16,11 @@
 //! what it accepted against the format as [`Diagnostic`]s. [`filter`]
 //! decodes stream data, never past the size the caller allows. [`file`]
 //! reads a file's header and cross-reference and loads its objects one at
-//! a time, within the limits the caller sets.
+//! a time, within the limits the caller sets. [`crypt`] reads the
+//! encryption dictionary of an encrypted file, checks a password against
+//! it and decrypts the file's strings and streams.
 
+pub mod crypt;
 mod diagnostic;
 mod doc;
 mod error;

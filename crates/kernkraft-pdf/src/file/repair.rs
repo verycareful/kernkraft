@@ -10,14 +10,16 @@
 //! (7.5.5). Of two objects with one number, the later in the file
 //! counts, as it would after an incremental update (7.5.6). The objects
 //! of every object stream found (7.5.7) count as defined where their
-//! stream lies.
+//! stream lies. In an encrypted file (7.6) the object streams are
+//! encrypted, so their objects are found only once the file's key is
+//! known.
 
 use std::collections::{BTreeMap, HashMap};
 
 use crate::diagnostic::{DiagnosticKind, Diagnostics};
 use crate::file::load::{Body, FileObject, LengthFrom, Location, Reader};
 use crate::file::xref::{Budget, Entries, Section, SectionForm, Subsection, XrefEntry};
-use crate::file::{is_damage, is_not_syntax, names_root, ReadLimits, ROOT_KEY};
+use crate::file::{is_damage, is_not_syntax, names_root, ReadLimits, StreamDecrypt, ROOT_KEY};
 use crate::syntax::chars::{is_regular, is_whitespace};
 use crate::syntax::{Cursor, Dictionary, Name, Object, ObjectId, Value};
 use crate::{PdfError, Source};
@@ -61,11 +63,14 @@ struct Number {
 }
 
 /// Builds the one section of a file whose cross-reference is not used.
-/// `start` is where the header is.
+/// `start` is where the header is. Object streams are read through
+/// `decrypt` when there is one; without it those of an encrypted file
+/// cannot be read and are reported.
 pub(crate) fn rebuild(
     source: &dyn Source,
     start: u64,
     limits: &ReadLimits,
+    decrypt: Option<&dyn StreamDecrypt>,
     diagnostics: &mut Diagnostics,
 ) -> Result<Section, PdfError> {
     let mut budget = Budget::new(limits.max_xref_entries);
@@ -82,6 +87,7 @@ pub(crate) fn rebuild(
         source,
         sections: &provisional,
         limits,
+        decrypt,
     };
 
     let rooted = survey.trailers.iter().rev().find(|t| names_root(t));
@@ -255,6 +261,7 @@ fn survey(
         source,
         sections: &[],
         limits,
+        decrypt: None,
     };
     let mut survey = Survey::default();
     let mut cursor = Cursor::new(source);

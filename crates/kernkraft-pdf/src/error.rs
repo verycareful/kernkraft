@@ -138,4 +138,28 @@ pub enum PdfError {
     /// or is a document catalog.
     #[error("the PDF has no document catalog")]
     NoCatalog,
+    /// The file is encrypted by a security handler other than the standard
+    /// one (7.6.3), a public-key handler (7.6.4) among them. `name` holds
+    /// the start of the handler's name as text.
+    #[error("the PDF is encrypted by the security handler {name}, which is not supported")]
+    UnsupportedSecurityHandler { name: String },
+    /// The file is encrypted by the standard security handler with an
+    /// algorithm (`V`) and revision (`R`) this library does not read
+    /// together.
+    #[error("the PDF is encrypted with algorithm {version} of revision {revision}, which is not supported")]
+    UnsupportedEncryption { version: i64, revision: i64 },
+    /// A crypt filter (7.6.5) that the encryption dictionary does not
+    /// define, or whose method is not one the file's algorithm allows.
+    /// `name` holds the start of the filter's name as text.
+    #[error("the crypt filter {name} is not supported")]
+    UnsupportedCryptFilter { name: String },
+    /// An entry of the encryption dictionary (Tables 20 and 21), or the
+    /// trailer's `Encrypt` itself, that is missing or is not what its
+    /// table defines.
+    #[error("the {key} of the encryption dictionary is not valid")]
+    EncryptionDictionary { key: &'static str },
+    /// The password is neither the user password nor the owner password
+    /// of the file.
+    #[error("the password does not open the PDF")]
+    WrongPassword,
 }

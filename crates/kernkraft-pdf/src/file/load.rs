@@ -12,7 +12,7 @@ use crate::diagnostic::{DiagnosticKind, Diagnostics};
 use crate::file::object_stream::ObjectStream;
 use crate::file::scan::find_forward;
 use crate::file::xref::{lookup, Section, XrefEntry};
-use crate::file::{is_damage, is_not_syntax, ReadLimits};
+use crate::file::{is_damage, is_not_syntax, ReadLimits, StreamDecrypt};
 use crate::filter::Pipeline;
 use crate::syntax::lexer::unexpected;
 use crate::syntax::{
@@ -80,6 +80,9 @@ pub(crate) struct Reader<'a> {
     pub source: &'a dyn Source,
     pub sections: &'a [Section],
     pub limits: &'a ReadLimits,
+    /// What decrypts an object stream before it is decoded, in an
+    /// encrypted file whose key is known.
+    pub decrypt: Option<&'a dyn StreamDecrypt>,
 }
 
 impl<'a> Reader<'a> {
@@ -149,7 +152,17 @@ impl<'a> Reader<'a> {
         let Body::Stream(stream) = &object.body else {
             return Err(PdfError::ObjectStream { stream: number });
         };
-        let encoded = self.stream_data(stream)?;
+        let stored = self.stream_data(stream)?;
+        let encoded = match self.decrypt {
+            Some(decrypt) => decrypt.decrypt_stream(
+                object.id,
+                &stream.dictionary,
+                &stored,
+                stream.data.start,
+                diagnostics,
+            )?,
+            None => Cow::Borrowed(&*stored),
+        };
         let pipeline = Pipeline::from_dictionary(&stream.dictionary)?;
         diagnostics.set_object(Some(object.id));
         let decoded = pipeline.decode(

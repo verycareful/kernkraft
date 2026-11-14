@@ -149,6 +149,12 @@ impl Object {
         self.value
     }
 
+    /// The value and the span, each for changing, for a caller that drops
+    /// the span itself when it changes the value or anything inside it.
+    pub(crate) fn parts_mut(&mut self) -> (&mut Value, &mut Option<Span>) {
+        (&mut self.value, &mut self.span)
+    }
+
     /// The bytes the object was read from, when they still describe it.
     pub fn span(&self) -> Option<Span> {
         self.span
@@ -237,6 +243,12 @@ impl Dictionary {
     /// The entries in the order they were inserted.
     pub fn iter(&self) -> impl Iterator<Item = (&Name, &Object)> {
         self.entries.iter().map(|(key, value)| (key, value))
+    }
+
+    /// The entries in the order they were inserted, each value for
+    /// changing.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&Name, &mut Object)> {
+        self.entries.iter_mut().map(|(key, value)| (&*key, value))
     }
 }
 

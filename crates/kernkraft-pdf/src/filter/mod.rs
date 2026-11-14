@@ -14,6 +14,11 @@
 //! module, LZWDecode, whose codes the `weezl` crate decodes, and
 //! FlateDecode, whose DEFLATE blocks the `flate2` crate decodes.
 //!
+//! The Crypt filter (7.4.10) is read and changes no data here: it names
+//! how the security handler decrypts the stream, which
+//! [`crypt`](crate::crypt) does before the data reaches a pipeline.
+//! [`crypt_filter_name`] reads that name.
+//!
 //! Data that ends without its end-of-data marker, or that cannot be decoded
 //! past some point, is not refused: what was decoded is returned, the fault
 //! is reported through [`Diagnostics`], and [`Decoded::complete`] says
@@ -34,7 +39,7 @@ pub use predictor::{Predictor, PredictorFunction};
 
 use crate::syntax::lexer::shown;
 use crate::syntax::limits::MAX_FILTERS;
-use crate::syntax::{Dictionary, Object, Value};
+use crate::syntax::{Dictionary, Name, Object, Value};
 use crate::{DiagnosticKind, Diagnostics, Limit, PdfError};
 use output::Output;
 
@@ -44,6 +49,10 @@ const THE_STREAM: &str = "the stream";
 const FILTER_KEY: &str = "Filter";
 const PARMS_KEY: &str = "DecodeParms";
 const EARLY_CHANGE_KEY: &str = "EarlyChange";
+const NAME_KEY: &str = "Name";
+/// The crypt filter of a Crypt filter that names none (Table 14), which
+/// passes data through unchanged (Table 26).
+const IDENTITY: &[u8] = b"Identity";
 
 /// A filter this module decodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,15 +62,18 @@ pub enum FilterKind {
     Lzw,
     Flate,
     RunLength,
+    /// Decrypted by the security handler, not decoded (7.4.10).
+    Crypt,
 }
 
 impl FilterKind {
-    const ALL: [FilterKind; 5] = [
+    const ALL: [FilterKind; 6] = [
         FilterKind::AsciiHex,
         FilterKind::Ascii85,
         FilterKind::Lzw,
         FilterKind::Flate,
         FilterKind::RunLength,
+        FilterKind::Crypt,
     ];
 
     /// The filter's name in Table 6.
@@ -72,6 +84,7 @@ impl FilterKind {
             FilterKind::Lzw => "LZWDecode",
             FilterKind::Flate => "FlateDecode",
             FilterKind::RunLength => "RunLengthDecode",
+            FilterKind::Crypt => "Crypt",
         }
     }
 
@@ -103,6 +116,9 @@ pub enum Filter {
     Flate {
         predictor: Predictor,
     },
+    /// The data was decrypted before it came to the pipeline, which
+    /// passes it on as it is.
+    Crypt,
 }
 
 impl Filter {
@@ -113,13 +129,14 @@ impl Filter {
             Filter::RunLength => FilterKind::RunLength,
             Filter::Lzw { .. } => FilterKind::Lzw,
             Filter::Flate { .. } => FilterKind::Flate,
+            Filter::Crypt => FilterKind::Crypt,
         }
     }
 
     fn predictor(&self) -> Option<&Predictor> {
         match self {
             Filter::Lzw { predictor, .. } | Filter::Flate { predictor } => Some(predictor),
-            Filter::AsciiHex | Filter::Ascii85 | Filter::RunLength => None,
+            Filter::AsciiHex | Filter::Ascii85 | Filter::RunLength | Filter::Crypt => None,
         }
     }
 
@@ -136,6 +153,7 @@ impl Filter {
             FilterKind::AsciiHex => Filter::AsciiHex,
             FilterKind::Ascii85 => Filter::Ascii85,
             FilterKind::RunLength => Filter::RunLength,
+            FilterKind::Crypt => Filter::Crypt,
             FilterKind::Flate => Filter::Flate {
                 predictor: predictor()?,
             },
@@ -209,49 +227,20 @@ impl Pipeline {
     /// (Table 5). Both are read as direct objects: an indirect reference in
     /// either is refused, so the caller resolves them first.
     pub fn from_objects(filter: Option<&Object>, parms: Option<&Object>) -> Result<Self, PdfError> {
-        let invalid = |key| PdfError::FilterParameters {
-            filter: THE_STREAM,
-            key,
-        };
-
-        let names: Vec<&[u8]> = match filter.map(Object::value) {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Name(name)) => vec![name.as_bytes()],
-            Some(Value::Array(items)) => {
-                if items.len() > MAX_FILTERS {
-                    return Err(PdfError::LimitExceeded {
-                        offset: filter.and_then(Object::span).map_or(0, |span| span.start),
-                        limit: Limit::FilterCount,
-                    });
-                }
-                items
-                    .iter()
-                    .map(|item| match item.value() {
-                        Value::Name(name) => Ok(name.as_bytes()),
-                        _ => Err(invalid(FILTER_KEY)),
-                    })
-                    .collect::<Result<_, _>>()?
-            }
-            Some(_) => return Err(invalid(FILTER_KEY)),
-        };
-
-        let parms: Vec<Option<&Dictionary>> = match parms.map(Object::value) {
-            None | Some(Value::Null) => vec![None; names.len()],
-            Some(Value::Dictionary(dictionary)) if names.len() == 1 => vec![Some(dictionary)],
-            Some(Value::Array(items)) if items.len() == names.len() => items
-                .iter()
-                .map(|item| match item.value() {
-                    Value::Null => Ok(None),
-                    Value::Dictionary(dictionary) => Ok(Some(dictionary)),
-                    _ => Err(invalid(PARMS_KEY)),
-                })
-                .collect::<Result<_, _>>()?,
-            Some(_) => return Err(invalid(PARMS_KEY)),
-        };
-
-        let filters = names
+        let stages = stages(filter, parms)?;
+        // 7.4.10: the Crypt filter is the first of the array.
+        if stages
+            .iter()
+            .skip(1)
+            .any(|(name, _)| *name == FilterKind::Crypt.name().as_bytes())
+        {
+            return Err(PdfError::FilterParameters {
+                filter: FilterKind::Crypt.name(),
+                key: FILTER_KEY,
+            });
+        }
+        let filters = stages
             .into_iter()
-            .zip(parms)
             .map(|(name, parms)| Filter::read(name, parms))
             .collect::<Result<_, _>>()?;
         Ok(Self { filters })
@@ -274,17 +263,100 @@ impl Pipeline {
         offset: u64,
         diagnostics: &mut Diagnostics,
     ) -> Result<Decoded<'a>, PdfError> {
-        if data.len() > max_output && self.filters.is_empty() {
+        let mut decoding = self
+            .filters
+            .iter()
+            .filter(|filter| !matches!(filter, Filter::Crypt))
+            .peekable();
+        if data.len() > max_output && decoding.peek().is_none() {
             return Err(output::too_large(max_output));
         }
         let mut data = Cow::Borrowed(data);
         let mut complete = true;
-        for filter in &self.filters {
+        for filter in decoding {
             let (decoded, stage_complete) = run(filter, &data, max_output, offset, diagnostics)?;
             data = Cow::Owned(decoded);
             complete &= stage_complete;
         }
         Ok(Decoded { data, complete })
+    }
+}
+
+/// A filter's name and its parameters, as a stream dictionary gives them.
+type Stage<'a> = (&'a [u8], Option<&'a Dictionary>);
+
+/// The filter names of a stream with the parameters of each, in the order
+/// they decode: the values of `Filter` and `DecodeParms` (Table 5).
+fn stages<'a>(
+    filter: Option<&'a Object>,
+    parms: Option<&'a Object>,
+) -> Result<Vec<Stage<'a>>, PdfError> {
+    let invalid = |key| PdfError::FilterParameters {
+        filter: THE_STREAM,
+        key,
+    };
+
+    let names: Vec<&[u8]> = match filter.map(Object::value) {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Name(name)) => vec![name.as_bytes()],
+        Some(Value::Array(items)) => {
+            if items.len() > MAX_FILTERS {
+                return Err(PdfError::LimitExceeded {
+                    offset: filter.and_then(Object::span).map_or(0, |span| span.start),
+                    limit: Limit::FilterCount,
+                });
+            }
+            items
+                .iter()
+                .map(|item| match item.value() {
+                    Value::Name(name) => Ok(name.as_bytes()),
+                    _ => Err(invalid(FILTER_KEY)),
+                })
+                .collect::<Result<_, _>>()?
+        }
+        Some(_) => return Err(invalid(FILTER_KEY)),
+    };
+
+    let parms: Vec<Option<&Dictionary>> = match parms.map(Object::value) {
+        None | Some(Value::Null) => vec![None; names.len()],
+        Some(Value::Dictionary(dictionary)) if names.len() == 1 => vec![Some(dictionary)],
+        Some(Value::Array(items)) if items.len() == names.len() => items
+            .iter()
+            .map(|item| match item.value() {
+                Value::Null => Ok(None),
+                Value::Dictionary(dictionary) => Ok(Some(dictionary)),
+                _ => Err(invalid(PARMS_KEY)),
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err(invalid(PARMS_KEY)),
+    };
+    Ok(names.into_iter().zip(parms).collect())
+}
+
+/// The crypt filter a stream names for its own data: the `Name` of the
+/// Crypt filter that heads its `Filter` (7.4.10, Table 14), `Identity`
+/// when the filter gives no name. `None` for a stream with no Crypt
+/// filter, which the document's default crypt filter decrypts.
+///
+/// `Filter` and `DecodeParms` are read as direct objects, as
+/// [`Pipeline::from_objects`] reads them.
+pub fn crypt_filter_name(dictionary: &Dictionary) -> Result<Option<Name>, PdfError> {
+    let stages = stages(
+        dictionary.get(FILTER_KEY.as_bytes()),
+        dictionary.get(PARMS_KEY.as_bytes()),
+    )?;
+    let crypt = FilterKind::Crypt.name();
+    let Some((_, parms)) = stages.first().filter(|(name, _)| *name == crypt.as_bytes()) else {
+        return Ok(None);
+    };
+    let name = parms.and_then(|parms| parms.get(NAME_KEY.as_bytes()));
+    match name.map(Object::value) {
+        None | Some(Value::Null) => Ok(Some(Name::new(IDENTITY))),
+        Some(Value::Name(name)) => Ok(Some(name.clone())),
+        Some(_) => Err(PdfError::FilterParameters {
+            filter: crypt,
+            key: NAME_KEY,
+        }),
     }
 }
 
@@ -308,6 +380,8 @@ fn run(
         Filter::RunLength => run_length::decode(input, &mut out)?,
         Filter::Lzw { early_change, .. } => lzw::decode(input, *early_change, &mut out)?,
         Filter::Flate { .. } => flate::decode(input, &mut out)?,
+        // `Pipeline::decode` runs no Crypt filter: its data is passed on.
+        Filter::Crypt => return Ok((input.to_vec(), true)),
     };
     let mut complete = true;
     match stop {

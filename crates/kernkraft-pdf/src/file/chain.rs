@@ -15,7 +15,7 @@ use crate::file::xref::{
     read_table, size, unsigned, Budget, Entries, Section, SectionForm, StreamLayout,
 };
 use crate::file::ReadLimits;
-use crate::filter::Pipeline;
+use crate::filter::{FilterKind, Pipeline};
 use crate::syntax::chars::is_whitespace;
 use crate::syntax::{Dictionary, Lexer, TokenKind};
 use crate::{PdfError, Source};
@@ -45,6 +45,7 @@ pub(crate) fn read_chain(
         source,
         sections: &[],
         limits,
+        decrypt: None,
     };
     let mut budget = Budget::new(limits.max_xref_entries);
     let mut sections = Vec::new();
@@ -188,7 +189,16 @@ fn read_stream(
     let encoded = reader.stream_data(&stream)?;
     // 7.5.8.2: `Filter` and `DecodeParms` are direct objects here, which
     // is how the pipeline reads them.
+    // It is never encrypted and shall not name a Crypt filter.
     let pipeline = match Pipeline::from_dictionary(&stream.dictionary) {
+        Ok(pipeline)
+            if pipeline
+                .filters()
+                .iter()
+                .any(|filter| filter.kind() == FilterKind::Crypt) =>
+        {
+            return Err(bad())
+        }
         Ok(pipeline) => pipeline,
         Err(PdfError::UnknownFilter { .. } | PdfError::FilterParameters { .. }) => {
             return Err(bad())

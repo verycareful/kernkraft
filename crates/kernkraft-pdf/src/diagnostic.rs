@@ -97,6 +97,22 @@ pub enum DiagnosticKind {
     /// An object stream that could not be read while the cross-reference
     /// was rebuilt. The objects in it are missing.
     ObjectStreamUnreadable { stream: u32 },
+    /// An encrypted file with no file identifier, which the key of
+    /// security handler revisions 2 to 4 is computed from (7.6.3.3). An
+    /// empty identifier is used.
+    MissingFileId,
+    /// A password that was accepted as its UTF-8 bytes and not in the form
+    /// the security handler defines: PDFDocEncoding for revisions 2 to 4
+    /// (7.6.3.3), the SASLprep form for revisions 5 and 6.
+    PasswordEncoding,
+    /// The `Perms` entry of an encryption dictionary of revision 5 or 6
+    /// does not decrypt to the permissions and the `EncryptMetadata` the
+    /// dictionary states. The stated values are used.
+    PermissionsUnverified,
+    /// AES-encrypted data that is not an initialization vector and whole
+    /// blocks ending in padding (7.6.2). The whole blocks are decrypted
+    /// and kept, with what stands where the padding should be.
+    EncryptedDataDamaged,
 }
 
 /// One tolerant decision.
@@ -156,6 +172,11 @@ impl Diagnostics {
 
     pub(crate) fn truncate(&mut self, len: usize) {
         self.list.truncate(len);
+    }
+
+    /// Takes back every diagnostic whose kind `keep` refuses.
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&DiagnosticKind) -> bool) {
+        self.list.retain(|diagnostic| keep(&diagnostic.kind));
     }
 }
 

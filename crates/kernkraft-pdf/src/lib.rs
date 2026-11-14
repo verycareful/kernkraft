@@ -13,12 +13,14 @@
 //! [`Source`] gives random access to a file's bytes, held in memory
 //! ([`MemorySource`]) or read from disk by offset ([`FileSource`]).
 //! [`syntax`] reads PDF objects from a source and writes them, reporting
-//! what it accepted against the format as [`Diagnostic`]s.
+//! what it accepted against the format as [`Diagnostic`]s. [`filter`]
+//! decodes stream data, never past the size the caller allows.
 
 mod diagnostic;
 mod doc;
 mod error;
 mod fields;
+pub mod filter;
 mod merge;
 mod pages;
 mod ranges;

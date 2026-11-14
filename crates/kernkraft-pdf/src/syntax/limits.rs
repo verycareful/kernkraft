@@ -33,6 +33,12 @@ pub const MAX_TOKEN_BYTES: usize = u16::MAX as usize;
 /// streams.
 pub const MAX_STRING_BYTES: usize = 1 << 26;
 
+/// The filters one stream may chain. Each filter is a pass over the whole
+/// stream, so this bounds the work a `Filter` array can ask for. Streams in
+/// practice chain at most three (an ASCII filter, a compression filter and
+/// an image filter).
+pub const MAX_FILTERS: usize = 16;
+
 /// Table C.1, integer: the largest integer value.
 pub const PORTABLE_INTEGER_MAX: i64 = i32::MAX as i64;
 

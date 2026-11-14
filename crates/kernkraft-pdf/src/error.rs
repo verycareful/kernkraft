@@ -3,7 +3,9 @@
 
 use std::fmt;
 
-use crate::syntax::limits::{MAX_NAME_BYTES, MAX_NESTING_DEPTH, MAX_STRING_BYTES, MAX_TOKEN_BYTES};
+use crate::syntax::limits::{
+    MAX_FILTERS, MAX_NAME_BYTES, MAX_NESTING_DEPTH, MAX_STRING_BYTES, MAX_TOKEN_BYTES,
+};
 
 /// A hard limit of the reader and the writer. Input that passes one is
 /// refused with [`PdfError::LimitExceeded`].
@@ -17,6 +19,8 @@ pub enum Limit {
     TokenBytes,
     /// The bytes of one string.
     StringBytes,
+    /// The filters one stream chains.
+    FilterCount,
 }
 
 impl Limit {
@@ -27,6 +31,7 @@ impl Limit {
             Limit::NameBytes => MAX_NAME_BYTES,
             Limit::TokenBytes => MAX_TOKEN_BYTES,
             Limit::StringBytes => MAX_STRING_BYTES,
+            Limit::FilterCount => MAX_FILTERS,
         };
         // A usize is at most 64 bits wide on every supported target.
         max as u64
@@ -40,6 +45,7 @@ impl fmt::Display for Limit {
             Limit::NameBytes => "name length",
             Limit::TokenBytes => "token length",
             Limit::StringBytes => "string length",
+            Limit::FilterCount => "filter count",
         })
     }
 }
@@ -82,4 +88,19 @@ pub enum PdfError {
     /// limit was passed while writing.
     #[error("{limit} at offset {offset} is above the limit of {}", .limit.max())]
     LimitExceeded { offset: u64, limit: Limit },
+    /// A filter name that is not one this library decodes. `name` holds
+    /// the start of the name as text.
+    #[error("{name} is not a filter this library decodes")]
+    UnknownFilter { name: String },
+    /// A `Filter` or `DecodeParms` entry of the wrong shape, or a filter
+    /// parameter outside the values its filter defines. `filter` is the
+    /// filter's name, or `the stream` for the two entries themselves.
+    #[error("the {key} of {filter} is not valid")]
+    FilterParameters {
+        filter: &'static str,
+        key: &'static str,
+    },
+    /// Decoding a stream would give more bytes than the caller allowed.
+    #[error("decoded data is larger than the {cap} bytes allowed")]
+    DecodedTooLarge { cap: u64 },
 }

@@ -15,10 +15,12 @@ publish.workspace = true
 render = ["dep:mupdf"]
 
 [dependencies]
+flate2.workspace = true
 kernkraft-fs.workspace = true
 lopdf.workspace = true
 mupdf = { workspace = true, optional = true }
 thiserror.workspace = true
+weezl.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

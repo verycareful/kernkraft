@@ -15,9 +15,9 @@
 //! data: where the data ends is given by the dictionary's `Length`, which
 //! may be an indirect reference and so cannot be resolved by this layer.
 
-mod chars;
+pub(crate) mod chars;
 mod cursor;
-mod lexer;
+pub(crate) mod lexer;
 pub mod limits;
 mod object;
 mod parser;

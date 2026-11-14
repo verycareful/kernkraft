@@ -15,8 +15,8 @@ use crate::syntax::limits::{
 use crate::syntax::{Cursor, Name, PdfString, Real, Span};
 use crate::{PdfError, Source};
 
-/// How many bytes of a token an [`PdfError::UnexpectedToken`] quotes: enough
-/// to recognise the token, short enough for one line of a message.
+/// How many bytes of a token an error message quotes: enough to recognise
+/// the token, short enough for one line of a message.
 const FOUND_BYTES: usize = 32;
 
 /// The octal digits a `\ddd` escape holds at most (7.3.4.2).
@@ -52,12 +52,17 @@ pub struct Token {
     pub span: Span,
 }
 
+/// The start of a token as text, for an error message.
+pub(crate) fn shown(token: &[u8]) -> String {
+    let start = token.get(..FOUND_BYTES).unwrap_or(token);
+    String::from_utf8_lossy(start).into_owned()
+}
+
 /// The error for a token that cannot stand where it was found.
 pub(crate) fn unexpected(offset: u64, token: &[u8]) -> PdfError {
-    let shown = token.get(..FOUND_BYTES).unwrap_or(token);
     PdfError::UnexpectedToken {
         offset,
-        found: String::from_utf8_lossy(shown).into_owned(),
+        found: shown(token),
     }
 }
 

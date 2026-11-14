@@ -8,6 +8,7 @@
 //! naming what was found, the object it was found in and the byte offset.
 //! The portable limits are those of ISO 32000-1:2008, Annex C, Table C.1.
 
+use crate::filter::FilterKind;
 use crate::syntax::{Name, ObjectId};
 
 /// A limit of Table C.1 that a conforming reader on a 32-bit machine should
@@ -56,6 +57,16 @@ pub enum DiagnosticKind {
     /// end-of-line. The data starts after the carriage return, or straight
     /// after the keyword.
     StreamKeywordEol,
+    /// Encoded stream data that ends without its filter's end-of-data
+    /// marker. Everything before the end is decoded and nothing is missing.
+    MissingEndOfData { filter: FilterKind },
+    /// Flate data whose Adler-32 checksum is absent or differs from the
+    /// decoded bytes. Every block was decoded and all of it is kept.
+    FlateChecksum,
+    /// Encoded stream data that its filter cannot decode past some point.
+    /// The bytes decoded before that point are kept, and the result is
+    /// marked incomplete.
+    FilterDataDamaged { filter: FilterKind },
 }
 
 /// One tolerant decision.

@@ -164,6 +164,13 @@ pub enum PdfError {
     /// of the file.
     #[error("the password does not open the PDF")]
     WrongPassword,
+    /// Data of a file that encrypts only its embedded files, opened
+    /// without a password, that cannot be read without one: an embedded
+    /// file, or anything else not left plain. The application asks for the
+    /// password and calls
+    /// [`Document::unlock_attachments`](crate::doc::Document::unlock_attachments).
+    #[error("the attachments of the PDF need its password")]
+    AttachmentsLocked,
     /// An entry of a document structure (the catalog, a page, a tree
     /// node, the trailer) that is missing where the format requires it,
     /// or is not of the type its table defines. `object` is the indirect
@@ -193,6 +200,16 @@ pub enum PdfError {
     /// largest a cross-reference can hold.
     #[error("no object number is left")]
     ObjectNumbersExhausted,
+    /// An attachment whose data could not all be decoded, or does not
+    /// agree with the size or checksum its parameters state (7.11.4,
+    /// Table 46), asked to be saved to a file.
+    #[error("the attachment in stream {} {} is damaged", .stream.number, .stream.generation)]
+    AttachmentDamaged { stream: ObjectId },
+    /// An earlier revision whose trailer names other encryption than the
+    /// file's newest trailer, which the key the file was opened with does
+    /// not read.
+    #[error("revision {revision} is encrypted otherwise than the file")]
+    RevisionEncryption { revision: usize },
     /// The operation was cancelled through its progress handle.
     #[error("the operation was cancelled")]
     Cancelled,

@@ -32,6 +32,11 @@ const STMF_KEY: &str = "StmF";
 const STRF_KEY: &str = "StrF";
 const EFF_KEY: &str = "EFF";
 const CFM_KEY: &[u8] = b"CFM";
+const AUTH_EVENT_KEY: &str = "AuthEvent";
+/// The values of Table 25, `AuthEvent`: authorization when the document
+/// is opened (the default), or when an embedded file is.
+const DOC_OPEN: &[u8] = b"DocOpen";
+const EF_OPEN: &[u8] = b"EFOpen";
 
 /// The name of the standard security handler (Table 20, `Filter`).
 const STANDARD: &[u8] = b"Standard";
@@ -130,6 +135,10 @@ pub struct Encryption {
     pub(crate) strings: CryptMethod,
     /// `EFF`, for embedded files with no crypt filter of their own.
     pub(crate) embedded_files: Option<CryptMethod>,
+    /// Whether the `AuthEvent` of the `EFF` filter is `EFOpen`: a
+    /// password is asked for when an embedded file is opened, not when the
+    /// document is (Table 25).
+    pub(crate) embedded_files_on_open: bool,
     /// The encryption dictionary's own object, whose strings are never
     /// encrypted (7.6.1).
     pub(crate) dictionary_id: Option<ObjectId>,
@@ -258,7 +267,7 @@ impl Encryption {
             _ => KEY_BYTES_256,
         };
 
-        let (filters, streams, strings, embedded_files) = if uses_filters {
+        let (filters, streams, strings, embedded_files, embedded_files_on_open) = if uses_filters {
             let filters = crypt_filters(dictionary, version, key_length)?;
             let method = |key| -> Result<Option<CryptMethod>, PdfError> {
                 match name(dictionary, key)? {
@@ -270,9 +279,19 @@ impl Encryption {
             let streams = method(STMF_KEY)?.unwrap_or(CryptMethod::Identity);
             let strings = method(STRF_KEY)?.unwrap_or(CryptMethod::Identity);
             let embedded_files = method(EFF_KEY)?;
-            (filters, streams, strings, embedded_files)
+            let on_open = match name(dictionary, EFF_KEY)? {
+                Some(filter) => auth_event_is_ef_open(dictionary, &filter)?,
+                None => false,
+            };
+            (filters, streams, strings, embedded_files, on_open)
         } else {
-            (HashMap::new(), CryptMethod::Rc4, CryptMethod::Rc4, None)
+            (
+                HashMap::new(),
+                CryptMethod::Rc4,
+                CryptMethod::Rc4,
+                None,
+                false,
+            )
         };
 
         Ok(Self {
@@ -291,6 +310,7 @@ impl Encryption {
             streams,
             strings,
             embedded_files,
+            embedded_files_on_open,
             dictionary_id: None,
             offset: 0,
         })
@@ -325,6 +345,20 @@ impl Encryption {
     /// `EncryptMetadata`).
     pub fn encrypt_metadata(&self) -> bool {
         self.encrypt_metadata
+    }
+
+    /// Whether the file encrypts its embedded files and nothing else, and
+    /// asks for their password only when one is opened: `StmF` and `StrF`
+    /// are Identity, `EFF` is not, and the `EFF` filter's `AuthEvent` is
+    /// `EFOpen` (Tables 20 and 25). Such a file is read without a
+    /// password, but for its embedded files.
+    pub fn encrypts_only_attachments(&self) -> bool {
+        self.streams == CryptMethod::Identity
+            && self.strings == CryptMethod::Identity
+            && self
+                .embedded_files
+                .is_some_and(|method| method != CryptMethod::Identity)
+            && self.embedded_files_on_open
     }
 
     /// The method of crypt filter `name`: the Identity filter, or one of
@@ -521,6 +555,23 @@ fn crypt_filters(
         methods.insert(filter_name.clone(), method);
     }
     Ok(methods)
+}
+
+/// Whether the `AuthEvent` of crypt filter `filter` in `CF` is `EFOpen`.
+/// The Identity filter, and one `CF` does not define, have none.
+fn auth_event_is_ef_open(dictionary: &Dictionary, filter: &Name) -> Result<bool, PdfError> {
+    let Some(Value::Dictionary(filters)) = entry(dictionary, CF_KEY) else {
+        return Ok(false);
+    };
+    let Some(Value::Dictionary(filter)) = filters.get(filter.as_bytes()).map(Object::value) else {
+        return Ok(false);
+    };
+    match name(filter, AUTH_EVENT_KEY)? {
+        None => Ok(false),
+        Some(event) if event.as_bytes() == DOC_OPEN => Ok(false),
+        Some(event) if event.as_bytes() == EF_OPEN => Ok(true),
+        Some(_) => Err(invalid(AUTH_EVENT_KEY)),
+    }
 }
 
 fn resolve(

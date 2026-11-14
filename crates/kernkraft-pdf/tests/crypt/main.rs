@@ -9,6 +9,7 @@
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
+mod attachments_only;
 mod decryptor;
 mod dictionary;
 mod fixtures;

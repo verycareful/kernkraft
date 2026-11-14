@@ -103,6 +103,22 @@ impl Encryption {
         Err(PdfError::WrongPassword)
     }
 
+    /// The decryptor of a file that encrypts only its embedded files
+    /// ([`Self::encrypts_only_attachments`]), opened without a password:
+    /// it has no key, reads what the Identity filter leaves as it is, and
+    /// refuses the rest with [`PdfError::AttachmentsLocked`] (7.6.5:
+    /// access to a stream whose authorization failed is an error). `None`
+    /// for any other file.
+    pub fn without_password(&self) -> Option<Decryptor> {
+        self.encrypts_only_attachments().then(|| Decryptor {
+            file_key: Vec::new(),
+            access: Access::Locked,
+            permissions: Permissions::new(self.permissions, self.revision),
+            encryption: self.clone(),
+            metadata: OnceLock::new(),
+        })
+    }
+
     /// Whether `Perms` decrypts to `P` and `EncryptMetadata` as the
     /// dictionary states them. A missing `Perms` does not agree.
     fn perms_agree(&self, file_key: &[u8]) -> bool {
@@ -190,9 +206,27 @@ fn document_metadata(file: &PdfFile) -> Result<Option<ObjectId>, PdfError> {
 }
 
 impl Decryptor {
+    /// The same key, for another reading of the file it belongs to (an
+    /// earlier revision), which [`decrypt_file`] tells its metadata stream
+    /// anew.
+    pub(crate) fn reopened(&self) -> Self {
+        Self {
+            file_key: self.file_key.clone(),
+            access: self.access,
+            permissions: self.permissions,
+            encryption: self.encryption.clone(),
+            metadata: OnceLock::new(),
+        }
+    }
+
     /// Which password opened the file.
     pub fn access(&self) -> Access {
         self.access
+    }
+
+    /// Whether the decryptor has no key ([`Access::Locked`]).
+    pub fn is_locked(&self) -> bool {
+        self.access == Access::Locked
     }
 
     /// What the file allows someone who opened it with the user password.
@@ -315,6 +349,9 @@ impl Decryptor {
         offset: u64,
         diagnostics: &mut Diagnostics,
     ) -> Result<Cow<'a, [u8]>, PdfError> {
+        if self.is_locked() && method != CryptMethod::Identity {
+            return Err(PdfError::AttachmentsLocked);
+        }
         let aes_key = match method {
             CryptMethod::Identity => return Ok(Cow::Borrowed(data)),
             CryptMethod::Rc4 => {
@@ -463,6 +500,9 @@ impl Decryptor {
         data: &[u8],
         ivs: &mut IvSource,
     ) -> Result<Vec<u8>, PdfError> {
+        if self.is_locked() && method != CryptMethod::Identity {
+            return Err(PdfError::AttachmentsLocked);
+        }
         let aes_key = match method {
             CryptMethod::Identity => return Ok(data.to_vec()),
             CryptMethod::Rc4 => {

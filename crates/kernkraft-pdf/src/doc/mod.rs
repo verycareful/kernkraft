@@ -191,7 +191,9 @@ struct Base {
     options: OpenOptions,
     objects: Mutex<Lru<ObjectId, Arc<DocObject>>>,
     object_streams: Mutex<Lru<u32, Arc<ObjectStream>>>,
-    log: Mutex<Log>,
+    /// Shared with the snapshot [`Document::unlock_attachments`] makes,
+    /// which reads the same file.
+    log: Arc<Mutex<Log>>,
 }
 
 /// What a snapshot holds beyond the file: the objects its edits set or
@@ -260,6 +262,12 @@ impl Document {
     /// user password. A password that opens neither is
     /// [`PdfError::WrongPassword`], and the caller asks for another. The
     /// password of a file that is not encrypted is not looked at.
+    ///
+    /// A file that encrypts only its embedded files and asks for their
+    /// password when one is opened
+    /// ([`Encryption::encrypts_only_attachments`]) opens with the empty
+    /// string, with its embedded files locked
+    /// ([`Self::unlock_attachments`]).
     pub fn from_source(
         source: Arc<dyn Source>,
         options: &OpenOptions,
@@ -296,6 +304,17 @@ impl Document {
         ))
     }
 
+    /// A document of `file`, as [`Self::open`] gives one once the file is
+    /// read and unlocked.
+    pub(crate) fn from_parts(
+        file: PdfFile,
+        decryptor: Option<Arc<Decryptor>>,
+        options: &OpenOptions,
+        diagnostics: Diagnostics,
+    ) -> Self {
+        Self::new(file, decryptor, options, diagnostics)
+    }
+
     fn new(
         file: PdfFile,
         decryptor: Option<Arc<Decryptor>>,
@@ -313,7 +332,7 @@ impl Document {
                 options: *options,
                 objects: Mutex::new(Lru::new(options.cached_objects)),
                 object_streams: Mutex::new(Lru::new(options.cached_object_streams)),
-                log: Mutex::new(log),
+                log: Arc::new(Mutex::new(log)),
             }),
             edits: Arc::new(Edits {
                 objects: HashMap::new(),
@@ -322,6 +341,49 @@ impl Document {
             }),
             pages: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Whether the file encrypts only its embedded files and was opened
+    /// without their password: reading one is
+    /// [`PdfError::AttachmentsLocked`].
+    pub fn attachments_locked(&self) -> bool {
+        self.base
+            .decryptor
+            .as_ref()
+            .is_some_and(|decryptor| decryptor.is_locked())
+    }
+
+    /// This snapshot, its edits kept, with the embedded files of a file
+    /// opened with them locked ([`Self::attachments_locked`]) readable
+    /// through `password`, the file's user or owner password. A password
+    /// that is neither is [`PdfError::WrongPassword`]. A document whose
+    /// attachments are not locked is given back as it is.
+    pub fn unlock_attachments(&self, password: &str) -> Result<Self, PdfError> {
+        if !self.attachments_locked() {
+            return Ok(self.clone());
+        }
+        let base = &self.base;
+        // What reading the encryption dictionary raises was raised when
+        // the file was opened, and is in the shared log already.
+        let encryption = Encryption::read(&base.file, &mut Diagnostics::new())?
+            .ok_or(PdfError::WrongPassword)?;
+        let mut diagnostics = Diagnostics::new();
+        let decryptor = Arc::new(encryption.authenticate(password, &mut diagnostics)?);
+        let file = base.file.as_of(0).ok_or(PdfError::WrongPassword)?;
+        let file = decrypt_file(file, decryptor.clone(), &mut diagnostics)?;
+        lock(&base.log).record(diagnostics);
+        Ok(Self {
+            base: Arc::new(Base {
+                file,
+                decryptor: Some(decryptor),
+                options: base.options,
+                objects: Mutex::new(Lru::new(base.options.cached_objects)),
+                object_streams: Mutex::new(Lru::new(base.options.cached_object_streams)),
+                log: base.log.clone(),
+            }),
+            edits: self.edits.clone(),
+            pages: Arc::new(Mutex::new(None)),
+        })
     }
 
     /// The file the document was read from.
@@ -348,6 +410,31 @@ impl Document {
     /// more of the document may add to them.
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
         lock(&self.base.log).kept().to_vec()
+    }
+
+    /// Where object `id` starts in the file, for a diagnostic about it: 0
+    /// for no object, for one in an object stream, and for one an edit
+    /// gave.
+    pub(crate) fn offset_of(&self, id: Option<ObjectId>) -> u64 {
+        let Some(id) = id else {
+            return 0;
+        };
+        match self.object(id) {
+            Ok(Some(object)) => match object.origin {
+                Origin::File {
+                    location: Location::File(span),
+                    ..
+                } => span.start,
+                _ => 0,
+            },
+            _ => 0,
+        }
+    }
+
+    /// Records what reading a document structure raised. A diagnostic
+    /// equal to one recorded this way before is not recorded again.
+    pub(crate) fn record_diagnostics(&self, diagnostics: Diagnostics) {
+        lock(&self.base.log).record_structure(diagnostics);
     }
 
     /// How many diagnostics were raised past [`OpenOptions::max_diagnostics`].
@@ -657,7 +744,14 @@ fn unlock(
     let Some(encryption) = Encryption::read(&file, diagnostics)? else {
         return Ok((file, None));
     };
-    let decryptor = Arc::new(encryption.authenticate(password, diagnostics)?);
+    let decryptor = match encryption.authenticate(password, diagnostics) {
+        Ok(decryptor) => decryptor,
+        Err(PdfError::WrongPassword) if password.is_empty() => encryption
+            .without_password()
+            .ok_or(PdfError::WrongPassword)?,
+        Err(error) => return Err(error),
+    };
+    let decryptor = Arc::new(decryptor);
     let file = decrypt_file(file, decryptor.clone(), diagnostics)?;
     Ok((file, Some(decryptor)))
 }

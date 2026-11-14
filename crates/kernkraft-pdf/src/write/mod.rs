@@ -36,7 +36,8 @@ use crate::doc::Document;
 use crate::file::{SectionForm, XrefEntry};
 use crate::syntax::{Dictionary, Name, Object, ObjectId, PdfString, Value};
 use crate::PdfError;
-use objects::{reachable, Placement, Writer};
+pub(crate) use objects::reachable;
+use objects::{Placement, Writer};
 
 const ID_KEY: &[u8] = b"ID";
 const ENCRYPT_KEY: &[u8] = b"Encrypt";

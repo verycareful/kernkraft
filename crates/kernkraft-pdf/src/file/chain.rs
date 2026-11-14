@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use crate::diagnostic::{DiagnosticKind, Diagnostics};
 use crate::file::load::{Body, LengthFrom, Reader};
-use crate::file::scan::find_last_in;
+use crate::file::scan::{find_forward, find_last_in};
 use crate::file::xref::{
     read_table, size, unsigned, Budget, Entries, Section, SectionForm, StreamLayout,
 };
@@ -97,6 +97,62 @@ fn find_startxref(source: &dyn Source, diagnostics: &mut Diagnostics) -> Result<
         }
     }
     Ok(offset)
+}
+
+/// Where the file ends as the update that added the section at `section`
+/// wrote it (7.5.5, 7.5.6): just past the `%%EOF` marker after the first
+/// `startxref` that follows the section and gives its offset, and past
+/// the end-of-line after the marker. Without the marker, just past the
+/// end-of-line after the offset. `None` when no `startxref` after the
+/// section gives its offset.
+///
+/// A `startxref` that gives another offset is passed over: the first-page
+/// trailer of a linearized file ends with one that is to be ignored
+/// (Annex F.3.4), and the one that gives the first-page section's offset
+/// follows the main section at the end of the file (F.3.11).
+pub(crate) fn update_end(source: &dyn Source, section: u64) -> Result<Option<u64>, PdfError> {
+    let mut from = section;
+    while let Some(keyword) = find_forward(source, STARTXREF, from)? {
+        from = keyword + STARTXREF.len() as u64;
+        let mut lexer = Lexer::new(source);
+        lexer.seek(from)?;
+        let token = match lexer.next_token(&mut Diagnostics::new()) {
+            Ok(token) => token,
+            Err(PdfError::UnexpectedEnd { .. } | PdfError::UnexpectedToken { .. }) => continue,
+            Err(error) => return Err(error),
+        };
+        match token.kind {
+            TokenKind::Integer(offset) if u64::try_from(offset) == Ok(section) => {}
+            _ => continue,
+        }
+        let cursor = lexer.cursor();
+        let mut end = token.span.end;
+        let mut at = 0;
+        while cursor.peek_ahead(at)?.is_some_and(is_whitespace) {
+            at += 1;
+        }
+        let mut marked = true;
+        for (ahead, expected) in (at..).zip(EOF_MARKER) {
+            if cursor.peek_ahead(ahead)? != Some(*expected) {
+                marked = false;
+                break;
+            }
+        }
+        if marked {
+            end = cursor.position() + at + EOF_MARKER.len() as u64;
+        }
+        cursor.seek(end)?;
+        // 7.5.1: an end-of-line is a carriage return, a line feed, or both.
+        if cursor.peek()? == Some(b'\r') {
+            cursor.advance(1);
+            end += 1;
+        }
+        if cursor.peek()? == Some(b'\n') {
+            end += 1;
+        }
+        return Ok(Some(end));
+    }
+    Ok(None)
 }
 
 /// The cross-reference section at `offset`: a table with its trailer, or

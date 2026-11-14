@@ -24,6 +24,9 @@ pub(crate) struct Log {
     decrypted: HashSet<ObjectId>,
     /// The streams whose data's decoding has been recorded.
     decoded: HashSet<ObjectId>,
+    /// What reading a document structure (labels, outlines, signatures)
+    /// has raised, each kept once however often the structure is read.
+    structures: Vec<Diagnostic>,
 }
 
 impl Log {
@@ -35,6 +38,7 @@ impl Log {
             read: HashSet::new(),
             decrypted: HashSet::new(),
             decoded: HashSet::new(),
+            structures: Vec::new(),
         }
     }
 
@@ -74,6 +78,20 @@ impl Log {
         }
     }
 
+    /// Records what reading a document structure raised, but for any
+    /// diagnostic already recorded this way.
+    pub(crate) fn record_structure(&mut self, diagnostics: Diagnostics) {
+        let mut fresh = Diagnostics::new();
+        for diagnostic in diagnostics.into_vec() {
+            if !self.structures.contains(&diagnostic) {
+                self.structures.push(diagnostic.clone());
+                fresh.set_object(diagnostic.object);
+                fresh.push(diagnostic.kind, diagnostic.offset);
+            }
+        }
+        self.record(fresh);
+    }
+
     pub(crate) fn kept(&self) -> &[Diagnostic] {
         &self.kept
     }
@@ -108,6 +126,18 @@ mod tests {
         log.record_read(ID, one(5));
         assert_eq!(log.kept().len(), 1);
         assert_eq!(log.dropped(), 0);
+    }
+
+    #[test]
+    fn a_structure_diagnostic_is_recorded_once() {
+        let mut log = Log::new(10);
+        log.record_structure(one(5));
+        log.record_structure(one(5));
+        log.record_structure(one(6));
+        assert_eq!(
+            log.kept().iter().map(|d| d.offset).collect::<Vec<_>>(),
+            [5, 6]
+        );
     }
 
     #[test]

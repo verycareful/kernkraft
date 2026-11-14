@@ -13,8 +13,15 @@ holds from the constants below, so a change here is a change there.
 qpdf is run with a fixed file identifier and a fixed AES initialisation
 vector, so the same qpdf version writes the same bytes again. The files in
 the repository were written by qpdf 12.4.2.
+
+qpdf cannot write a file that encrypts only its embedded files (ISO
+32000-1:2008, Table 20 EFF, Table 25 AuthEvent EFOpen), so
+attachments-only.pdf is written here: the same document, its embedded file
+encrypted with RC4 128 (V 4, R 4; 7.6.3.3 Algorithms 2, 3 and 5 for the
+keys, 7.6.2 Algorithm 1 for the object's key), everything else plain.
 """
 
+import hashlib
 import pathlib
 import subprocess
 import sys
@@ -77,12 +84,84 @@ VARIANTS = {
 }
 
 
+# Algorithm 2, step a.
+PADDING = bytes.fromhex(
+    "28BF4E5E4E758A4164004E56FFFA01082E2E00B6D0683E802F0CA9FE6453697A"
+)
+# The fixed file identifier of attachments-only.pdf.
+FILE_ID = bytes(range(16))
+# Table 22: every permission granted, bits 7 and 8 and 13 to 32 set.
+PERMISSIONS = -4
+KEY_BYTES = 16
+REHASHES = 50
+RC4_PASSES = 19
+
+
+def rc4(key: bytes, data: bytes) -> bytes:
+    state = list(range(256))
+    j = 0
+    for i in range(256):
+        j = (j + state[i] + key[i % len(key)]) % 256
+        state[i], state[j] = state[j], state[i]
+    i = j = 0
+    out = bytearray()
+    for byte in data:
+        i = (i + 1) % 256
+        j = (j + state[i]) % 256
+        state[i], state[j] = state[j], state[i]
+        out.append(byte ^ state[(state[i] + state[j]) % 256])
+    return bytes(out)
+
+
+def pad(password: bytes) -> bytes:
+    return (password + PADDING)[:32]
+
+
+def rc4_passes(key: bytes, data: bytes) -> bytes:
+    for counter in range(1, RC4_PASSES + 1):
+        data = rc4(bytes(byte ^ counter for byte in key), data)
+    return data
+
+
+def owner_entry(owner: bytes, user: bytes) -> bytes:
+    """Algorithm 3, revision 3 or greater."""
+    digest = hashlib.md5(pad(owner)).digest()
+    for _ in range(REHASHES):
+        digest = hashlib.md5(digest).digest()
+    key = digest[:KEY_BYTES]
+    return rc4_passes(key, rc4(key, pad(user)))
+
+
+def file_key(user: bytes, owner_value: bytes) -> bytes:
+    """Algorithm 2, revision 4, metadata encrypted."""
+    digest = hashlib.md5(
+        pad(user) + owner_value + PERMISSIONS.to_bytes(4, "little", signed=True) + FILE_ID
+    ).digest()
+    for _ in range(REHASHES):
+        digest = hashlib.md5(digest[:KEY_BYTES]).digest()
+    return digest[:KEY_BYTES]
+
+
+def user_entry(key: bytes) -> bytes:
+    """Algorithm 5: 16 bytes, then 16 of padding."""
+    value = rc4(key, hashlib.md5(PADDING + FILE_ID).digest())
+    return rc4_passes(key, value) + bytes(16)
+
+
+def object_key(key: bytes, number: int, generation: int) -> bytes:
+    """Algorithm 1 for RC4."""
+    digest = hashlib.md5(
+        key + number.to_bytes(3, "little") + generation.to_bytes(2, "little")
+    ).digest()
+    return digest[: min(len(key) + 5, 16)]
+
+
 def stream(entries: bytes, data: bytes) -> bytes:
     return b"<<" + entries + b" /Length %d>>\nstream\n" % len(data) + data + b"\nendstream"
 
 
-def plain() -> bytes:
-    objects = [
+def document(attachment: bytes) -> list:
+    return [
         b"<</Type /Catalog /Pages 2 0 R /Metadata 6 0 R"
         b" /Names <</EmbeddedFiles <</Names [(" + ATTACHMENT_NAME + b") 8 0 R]>>>>>>",
         b"<</Type /Pages /Kids [3 0 R] /Count 1>>",
@@ -93,8 +172,11 @@ def plain() -> bytes:
         stream(b"/Type /Metadata /Subtype /XML", METADATA),
         b"<</Title (" + TITLE + b") /Author <" + AUTHOR_HEX + b">>>",
         b"<</Type /Filespec /F (" + ATTACHMENT_NAME + b") /EF <</F 9 0 R>>>>",
-        stream(b"/Type /EmbeddedFile", ATTACHMENT),
+        stream(b"/Type /EmbeddedFile", attachment),
     ]
+
+
+def write(objects: list, trailer: bytes) -> bytes:
     out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
     offsets = []
     for number, body in enumerate(objects, start=1):
@@ -105,15 +187,43 @@ def plain() -> bytes:
     out += b"0000000000 65535 f \n"
     for offset in offsets:
         out += b"%010d 00000 n \n" % offset
-    out += b"trailer\n<</Size %d /Root 1 0 R /Info 7 0 R>>\n" % (len(objects) + 1)
+    out += b"trailer\n<</Size %d " % (len(objects) + 1) + trailer + b">>\n"
     out += b"startxref\n%d\n%%%%EOF\n" % xref
     return bytes(out)
+
+
+def plain() -> bytes:
+    return write(document(ATTACHMENT), b"/Root 1 0 R /Info 7 0 R")
+
+
+# The object number of the embedded file stream in document().
+EMBEDDED_FILE_OBJECT = 9
+
+
+def attachments_only() -> bytes:
+    owner_value = owner_entry(OWNER.encode(), USER.encode())
+    key = file_key(USER.encode(), owner_value)
+    encrypted = rc4(object_key(key, EMBEDDED_FILE_OBJECT, 0), ATTACHMENT)
+    objects = document(encrypted)
+    objects.append(
+        b"<</Filter /Standard /V 4 /R 4 /Length 128 /P %d" % PERMISSIONS
+        + b" /O <" + owner_value.hex().encode() + b"> /U <" + user_entry(key).hex().encode()
+        + b"> /CF <</StdCF <</CFM /V2 /AuthEvent /EFOpen /Length 16>>>>"
+        b" /StmF /Identity /StrF /Identity /EFF /StdCF>>"
+    )
+    identifier = b"<" + FILE_ID.hex().encode() + b">"
+    return write(
+        objects,
+        b"/Root 1 0 R /Info 7 0 R /Encrypt %d 0 R /ID [" % len(objects)
+        + identifier + b" " + identifier + b"]",
+    )
 
 
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     source = OUT / "plain.pdf"
     source.write_bytes(plain())
+    (OUT / "attachments-only.pdf").write_bytes(attachments_only())
     for name, (user, owner, bits, inside, outside) in VARIANTS.items():
         command = [
             "qpdf",

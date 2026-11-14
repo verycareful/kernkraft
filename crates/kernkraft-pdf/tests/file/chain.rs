@@ -276,3 +276,38 @@ fn an_xrefstm_that_names_no_stream_gives_way_to_a_rebuilt_table() {
     b.startxref(xref);
     b.open().rebuilt(catalog);
 }
+
+/// Each update ends just past the `%%EOF` line after the `startxref` that
+/// gives its section's offset.
+#[test]
+fn where_each_update_ends() {
+    let u = updated();
+    let file = u.b.open().clean();
+    let marker = b"%%EOF\n";
+    let ends: Vec<u64> =
+        u.b.bytes
+            .windows(marker.len())
+            .enumerate()
+            .filter(|(_, window)| *window == marker)
+            .map(|(at, _)| (at + marker.len()) as u64)
+            .collect();
+    // In file order: the original, the first update, the second.
+    assert_eq!(ends.len(), 3);
+    assert_eq!(ends[2], u.b.bytes.len() as u64);
+    let found: Vec<Option<u64>> = (0..4)
+        .map(|section| file.update_end(section).unwrap())
+        .collect();
+    assert_eq!(found, [Some(ends[2]), Some(ends[1]), Some(ends[0]), None]);
+}
+
+/// The file as of a section has that section and the older ones.
+#[test]
+fn the_file_as_of_a_section() {
+    let u = updated();
+    let file = u.b.open().clean();
+    let older = file.as_of(1).unwrap();
+    assert_eq!(older.sections(), &file.sections()[1..]);
+    assert_eq!(older.trailer(), file.sections()[1].trailer());
+    assert_eq!(string_as_of(&older, 0, 4), Some(b"Toves".to_vec()));
+    assert!(file.as_of(3).is_none());
+}

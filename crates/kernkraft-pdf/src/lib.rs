@@ -22,23 +22,36 @@
 //! document's objects as they are used, its pages and its trees, and
 //! gives a new snapshot for each edit; [`build`] makes the objects and
 //! content streams of an edit; [`write`] writes a document as a new file
-//! that keeps every untouched object as its original bytes.
+//! that keeps every untouched object as its original bytes. A
+//! [`Document`](doc::Document) also gives its revisions and an earlier
+//! one opened, its signatures and what their byte ranges cover, a report
+//! of what in it could run or reach outside it, its page labels, its
+//! outline and its attachments.
 
+mod action;
+mod active;
+mod attachments;
 pub mod build;
 pub mod crypt;
+mod destination;
 mod diagnostic;
 pub mod doc;
 mod error;
 mod fields;
 pub mod file;
+mod filespec;
 pub mod filter;
+mod labels;
 mod lopdf_io;
 mod merge;
+mod outline;
 mod pages;
 mod pdf_doc;
 mod ranges;
 #[cfg(feature = "render")]
 mod render;
+mod revisions;
+mod signatures;
 mod source;
 mod split;
 pub mod syntax;
@@ -47,15 +60,24 @@ pub mod write;
 
 pub use lopdf;
 
+pub use action::{Action, ActionKind};
+pub use active::{ActiveAction, ActiveContent};
+pub use attachments::{Attachment, AttachmentPlace, Check, Extracted};
+pub use destination::{Destination, DestinationPage, View};
 pub use diagnostic::{Diagnostic, DiagnosticKind, Diagnostics, PortableLimit};
 pub use error::{Limit, PdfError};
+pub use filespec::FileSpec;
 pub use kernkraft_fs::FileStamp;
+pub use labels::{LabelStyle, PageLabel};
 pub use lopdf_io::{load, load_bytes, page_count, save, to_bytes};
 pub use merge::merge;
+pub use outline::OutlineItem;
 pub use pages::{remove, reorder, rotate, Rotation};
 pub use ranges::{parse_ranges, PageRange};
 #[cfg(feature = "render")]
 pub use render::{page_size_pt, render_page, RenderedPage, Renderer, MAX_RENDER_DIMENSION};
+pub use revisions::Revision;
+pub use signatures::{Coverage, Signature, SignatureKind};
 pub use source::{FileSource, MemorySource, Source};
 pub use split::{extract, split_by_bookmarks, split_per_page, split_ranges, START_PART_TITLE};
 pub use tree::flatten_page_tree;

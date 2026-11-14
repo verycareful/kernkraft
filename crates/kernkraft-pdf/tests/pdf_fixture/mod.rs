@@ -223,3 +223,117 @@ pub fn encrypted_fixture(name: &str) -> Vec<u8> {
         .join(format!("{name}.pdf"));
     std::fs::read(path).expect("fixture")
 }
+
+/// The offset the last `startxref` of `bytes` gives.
+pub fn last_startxref(bytes: &[u8]) -> usize {
+    let keyword = b"startxref";
+    let at = bytes
+        .windows(keyword.len())
+        .rposition(|window| window == keyword)
+        .expect("a startxref");
+    let digits: String = bytes[at + keyword.len()..]
+        .iter()
+        .skip_while(|byte| byte.is_ascii_whitespace())
+        .take_while(|byte| byte.is_ascii_digit())
+        .map(|byte| char::from(*byte))
+        .collect();
+    digits.parse().expect("an offset")
+}
+
+/// `base` with an incremental update appended (7.5.6): `objects`, then a
+/// cross-reference table of their entries alone, and a trailer of
+/// `trailer`'s entries, `Size` and `Prev`. The update's section starts at
+/// the returned offset.
+pub fn append_update(base: &Fixture, objects: &[(u32, &[u8])], trailer: &str) -> (Fixture, usize) {
+    let mut out = base.bytes.clone();
+    let mut spans = base.spans.clone();
+    let prev = last_startxref(&base.bytes);
+    for (number, body) in objects {
+        write_object(&mut out, &mut spans, *number, body);
+    }
+    let size = spans.keys().map(|n| n + 1).max().unwrap_or(1);
+    let xref = out.len();
+    out.extend_from_slice(b"xref\n");
+    for (number, _) in objects {
+        let (start, _) = spans[number];
+        let _ = write!(out, "{number} 1\n{start:010} 00000 n\r\n");
+    }
+    let _ = write!(
+        out,
+        "trailer\n<<{trailer} /Size {size} /Prev {prev}>>\nstartxref\n{xref}\n%%EOF\n"
+    );
+    (Fixture { bytes: out, spans }, xref)
+}
+
+/// A file laid out as Annex F lays out a linearized one, as far as its
+/// cross-reference goes: object `first` (the linearization parameter
+/// dictionary when `linearized` holds, a plain dictionary otherwise) and
+/// then the first-page section, with the trailer of `trailer`'s entries
+/// and a `Prev` naming the main section; then `rest`, and the main
+/// section, whose trailer has `Size` alone. The final `startxref` gives
+/// the first-page section (F.3.11). Returns the file and the offsets of
+/// the two sections.
+pub fn linearized_file(
+    first: u32,
+    linearized: bool,
+    early: &[(u32, &[u8])],
+    rest: &[(u32, &[u8])],
+    trailer: &str,
+) -> (Fixture, usize, usize) {
+    // The first-page section's offsets are written with a fixed width, so
+    // the main section's offset can be filled in once it is known.
+    const WIDTH: usize = 10;
+    let mut out = HEADER.to_vec();
+    let mut spans = BTreeMap::new();
+    let parameters: &[u8] = if linearized {
+        b"<< /Linearized 1 /L 0 /H [0 0] /O 0 /E 0 /N 1 /T 0 >>"
+    } else {
+        b"<< /Producer (not linearized) >>"
+    };
+    write_object(&mut out, &mut spans, first, parameters);
+    let first_page = out.len();
+    let mut numbers: Vec<u32> = std::iter::once(first)
+        .chain(early.iter().map(|(n, _)| *n))
+        .collect();
+    numbers.sort_unstable();
+    let size = numbers
+        .iter()
+        .chain(rest.iter().map(|(n, _)| n))
+        .map(|n| n + 1)
+        .max()
+        .unwrap_or(1);
+    // The table is written with placeholders, objects after it.
+    out.extend_from_slice(b"xref\n");
+    let mut placeholders = Vec::new();
+    for number in &numbers {
+        let _ = writeln!(out, "{number} 1");
+        placeholders.push((*number, out.len()));
+        out.extend_from_slice(b"0000000000 00000 n\r\n");
+    }
+    let _ = write!(out, "trailer\n<<{trailer} /Size {size} /Prev ");
+    let prev_at = out.len();
+    out.extend_from_slice(&[b'0'; WIDTH]);
+    out.extend_from_slice(b">>\nstartxref\n0\n%%EOF\n");
+    for (number, body) in early {
+        write_object(&mut out, &mut spans, *number, body);
+    }
+    for (number, body) in rest {
+        write_object(&mut out, &mut spans, *number, body);
+    }
+    let main = out.len();
+    let _ = write!(out, "xref\n0 1\n0000000000 65535 f\r\n");
+    for (number, _) in rest {
+        let (start, _) = spans[number];
+        let _ = write!(out, "{number} 1\n{start:010} 00000 n\r\n");
+    }
+    let _ = write!(
+        out,
+        "trailer\n<< /Size {size} >>\nstartxref\n{first_page}\n%%EOF\n"
+    );
+    for (number, at) in placeholders {
+        let (start, _) = spans[&number];
+        out[at..at + WIDTH].copy_from_slice(format!("{start:010}").as_bytes());
+    }
+    out[prev_at..prev_at + WIDTH].copy_from_slice(format!("{main:010}").as_bytes());
+    (Fixture { bytes: out, spans }, first_page, main)
+}

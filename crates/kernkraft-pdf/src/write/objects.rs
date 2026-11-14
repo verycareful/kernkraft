@@ -46,7 +46,7 @@ pub(super) enum Placement {
 /// the trailer's entries (but those that describe the file's sections),
 /// in order of object number. A reference to an object the document does
 /// not have is null and leads nowhere.
-pub(super) fn reachable(
+pub(crate) fn reachable(
     document: &Document,
     trailer: &Dictionary,
     progress: &dyn Progress,

@@ -148,6 +148,10 @@ pub enum Access {
     Owner,
     /// The user password, or the empty one when the file has none.
     User,
+    /// No password: the file encrypts only its embedded files
+    /// ([`Encryption::encrypts_only_attachments`]), which cannot be read
+    /// until one is given.
+    Locked,
 }
 
 /// The file key `password` gives, and which password it is; `None` when

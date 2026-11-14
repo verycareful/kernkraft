@@ -16,7 +16,8 @@
 //! single numbering. Each node is visited once, so the walk ends within
 //! the file's cross-reference entries.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use super::{Document, Origin, Resolved};
 use crate::diagnostic::{DiagnosticKind, Diagnostics};
@@ -45,6 +46,8 @@ type Inherited = [Option<ObjectId>; 4];
 #[derive(Debug)]
 pub(crate) struct PageList {
     pub(crate) pages: Vec<(ObjectId, Inherited)>,
+    /// The number of each page, counted from 1, built when first asked.
+    numbers: OnceLock<HashMap<ObjectId, u32>>,
 }
 
 impl PageList {
@@ -109,7 +112,23 @@ impl PageList {
                 stack.push((*kid, inherited));
             }
         }
-        Ok(Self { pages })
+        Ok(Self {
+            pages,
+            numbers: OnceLock::new(),
+        })
+    }
+
+    /// The number of the page `id`, counted from 1.
+    pub(crate) fn number(&self, id: ObjectId) -> Option<u32> {
+        self.numbers
+            .get_or_init(|| {
+                (1..)
+                    .zip(&self.pages)
+                    .map(|(number, (id, _))| (*id, number))
+                    .collect()
+            })
+            .get(&id)
+            .copied()
     }
 }
 
@@ -209,6 +228,12 @@ impl Document {
     /// The object of page `number`, counted from 1.
     pub fn page_id(&self, number: u32) -> Result<ObjectId, PdfError> {
         Ok(self.page_entry(number)?.0)
+    }
+
+    /// The number, counted from 1, of the page whose object is `id`, or
+    /// `None` when `id` is not a page of the document.
+    pub fn page_number(&self, id: ObjectId) -> Result<Option<u32>, PdfError> {
+        Ok(self.page_list()?.number(id))
     }
 
     /// Page `number`, counted from 1, with its inherited attributes.

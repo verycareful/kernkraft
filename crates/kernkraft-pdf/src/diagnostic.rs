@@ -122,6 +122,32 @@ pub enum DiagnosticKind {
     /// with `Kids`, `Page` for one without (7.7.3). It is read as what its
     /// `Kids` make it.
     PageTreeType { expected: Name },
+    /// A `PageLabels` number tree with no range starting at page index 0,
+    /// which 12.4.2 requires. The pages before its first range have no
+    /// label.
+    PageLabelsStartLate,
+    /// An outline item reached a second time along the `First` and `Next`
+    /// chains (12.3.3), so that the outline is no tree. The chain it was
+    /// reached along ends there. The diagnostic's object is the item, or
+    /// the outline dictionary, whose entry reached it.
+    OutlineLoop,
+    /// An entry of a document structure (an outline item, an embedded
+    /// file's parameters) that is not of the type or within the values
+    /// its table defines. The entry is left out of what is read; the
+    /// module reading the structure says what that leaves.
+    IgnoredEntry { key: Name },
+    /// A file specification in the `EmbeddedFiles` name tree or a file
+    /// attachment annotation that embeds no file (7.11.4). It is not
+    /// listed as an attachment.
+    AttachmentNotEmbedded,
+    /// A named destination (12.3.2.3) that neither the catalog's `Dests`
+    /// nor the `Dests` name tree defines, or a destination that is neither
+    /// a name, a string nor an array. It leads nowhere.
+    UnknownDestination,
+    /// A destination that is not one of the forms of Table 151: a page,
+    /// a view name and as many numbers as the view takes. It leads
+    /// nowhere.
+    InvalidDestination,
 }
 
 /// One tolerant decision.

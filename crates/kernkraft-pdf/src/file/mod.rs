@@ -256,6 +256,37 @@ impl PdfFile {
         }
     }
 
+    /// The file as it was when section `section` of [`Self::sections`]
+    /// was its newest: that section and those before it. `None` for a
+    /// section the file does not have.
+    pub fn as_of(&self, section: usize) -> Option<Self> {
+        let sections = self.sections.get(section..)?;
+        if sections.is_empty() {
+            return None;
+        }
+        Some(Self {
+            source: self.source.clone(),
+            limits: self.limits,
+            version: self.version,
+            header_offset: self.header_offset,
+            sections: sections.to_vec(),
+            decrypt: self.decrypt.clone(),
+        })
+    }
+
+    /// Where the file ended once the update that added section `section`
+    /// was written: past the `%%EOF` that closes it (7.5.5). `None` for a
+    /// section the file does not have, for a rebuilt one, and when no
+    /// `startxref` after the section gives its offset.
+    pub fn update_end(&self, section: usize) -> Result<Option<u64>, PdfError> {
+        match self.sections.get(section) {
+            Some(found) if found.form() != SectionForm::Rebuilt => {
+                chain::update_end(&*self.source, found.offset())
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// What the cross-reference says of object `number`: the entry of the
     /// newest section that has one (7.5.6). `None` for a number no
     /// section has.

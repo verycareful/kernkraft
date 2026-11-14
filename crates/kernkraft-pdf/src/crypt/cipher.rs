@@ -51,11 +51,32 @@ pub(crate) fn cbc_decrypt(key: &AesKey, iv: [u8; AES_BLOCK], data: &mut [u8]) {
     }
 }
 
-/// Encrypts the whole blocks of `data` in place with AES-128, chained
-/// from `iv`.
-pub(crate) fn cbc_encrypt_128(key: [u8; 16], iv: [u8; AES_BLOCK], data: &mut [u8]) {
+/// Encrypts the whole blocks of `data` in place, chained from `iv`. Bytes
+/// after the last whole block are left as they are.
+pub(crate) fn cbc_encrypt(key: &AesKey, iv: [u8; AES_BLOCK], data: &mut [u8]) {
     let (blocks, _) = Array::slice_as_chunks_mut(data);
-    cbc::Encryptor::<aes::Aes128>::new(&key.into(), &iv.into()).encrypt_blocks(blocks);
+    match key {
+        AesKey::Aes128(key) => {
+            cbc::Encryptor::<aes::Aes128>::new(&(*key).into(), &iv.into()).encrypt_blocks(blocks);
+        }
+        AesKey::Aes256(key) => {
+            cbc::Encryptor::<aes::Aes256>::new(&(*key).into(), &iv.into()).encrypt_blocks(blocks);
+        }
+    }
+}
+
+/// Encrypts `plain` as 7.6.2 frames it: `iv`, then the blocks of `plain`
+/// padded as RFC 2898 says (1 to 16 bytes, each holding their count, a
+/// whole block when `plain` is a multiple of 16 bytes), chained from `iv`.
+pub(crate) fn encrypt_message(key: &AesKey, iv: [u8; AES_BLOCK], plain: &[u8]) -> Vec<u8> {
+    let padding = AES_BLOCK - plain.len() % AES_BLOCK;
+    let mut message = Vec::with_capacity(AES_BLOCK + plain.len() + padding);
+    message.extend_from_slice(&iv);
+    message.extend_from_slice(plain);
+    // `padding` is 1 to 16, which fits in a byte.
+    message.extend(std::iter::repeat_n(padding as u8, padding));
+    cbc_encrypt(key, iv, &mut message[AES_BLOCK..]);
+    message
 }
 
 /// Decrypts one block with AES-256 and no chaining.
@@ -157,14 +178,33 @@ mod tests {
     #[test]
     fn cbc_matches_sp_800_38a() {
         let mut data = hex(PLAIN);
-        cbc_encrypt_128(array(KEY_128), array(IV), &mut data);
+        cbc_encrypt(&AesKey::Aes128(array(KEY_128)), array(IV), &mut data);
         assert_eq!(data, hex(CIPHER_128));
         cbc_decrypt(&AesKey::Aes128(array(KEY_128)), array(IV), &mut data);
         assert_eq!(data, hex(PLAIN));
 
-        let mut data = hex(CIPHER_256);
+        let mut data = hex(PLAIN);
+        cbc_encrypt(&AesKey::Aes256(array(KEY_256)), array(IV), &mut data);
+        assert_eq!(data, hex(CIPHER_256));
         cbc_decrypt(&AesKey::Aes256(array(KEY_256)), array(IV), &mut data);
         assert_eq!(data, hex(PLAIN));
+    }
+
+    /// A message encrypted for every length up to two blocks is framed as
+    /// the test's own framing does, and decrypts back, with either key.
+    #[test]
+    fn encrypt_message_frames_and_decrypts_back() {
+        for length in 0..=2 * AES_BLOCK {
+            let plain: Vec<u8> = (0..length as u8).collect();
+            let key = AesKey::Aes128(array(KEY_128));
+            let message = encrypt_message(&key, array(IV), &plain);
+            assert_eq!(message, framed(&plain), "{length} bytes");
+            for key in [key, AesKey::Aes256(array(KEY_256))] {
+                let message = encrypt_message(&key, array(IV), &plain);
+                assert_eq!(message.len(), AES_BLOCK * (2 + length / AES_BLOCK));
+                assert_eq!(decrypt_message(&key, &message), (plain.clone(), true));
+            }
+        }
     }
 
     /// With a zero vector the first block of a chain is the block cipher
@@ -184,7 +224,7 @@ mod tests {
         let padding = AES_BLOCK - plain.len() % AES_BLOCK;
         let mut body = plain.to_vec();
         body.extend(std::iter::repeat_n(padding as u8, padding));
-        cbc_encrypt_128(array(KEY_128), array(IV), &mut body);
+        cbc_encrypt(&AesKey::Aes128(array(KEY_128)), array(IV), &mut body);
         let mut message = hex(IV);
         message.extend(body);
         message
@@ -237,7 +277,7 @@ mod tests {
             let mut body = [3u8; AES_BLOCK];
             body[AES_BLOCK - 1] = last;
             let expected = body.to_vec();
-            cbc_encrypt_128(array(KEY_128), array(IV), &mut body);
+            cbc_encrypt(&AesKey::Aes128(array(KEY_128)), array(IV), &mut body);
             let mut message = hex(IV);
             message.extend(body);
             assert_eq!(decrypt_message(&key, &message), (expected, false));
@@ -246,7 +286,7 @@ mod tests {
         let mut body = [3u8; AES_BLOCK];
         body[AES_BLOCK - 1] = 4;
         let expected = body.to_vec();
-        cbc_encrypt_128(array(KEY_128), array(IV), &mut body);
+        cbc_encrypt(&AesKey::Aes128(array(KEY_128)), array(IV), &mut body);
         let mut message = hex(IV);
         message.extend(body);
         assert_eq!(decrypt_message(&key, &message), (expected, false));

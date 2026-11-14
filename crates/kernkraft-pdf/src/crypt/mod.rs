@@ -24,6 +24,8 @@ mod dictionary;
 mod key;
 mod password;
 mod permissions;
+mod saslprep;
+mod saslprep_tables;
 
 use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
@@ -37,7 +39,7 @@ use crate::file::{Body, FileObject, Location, PdfFile, StreamDecrypt};
 use crate::filter::crypt_filter_name;
 use crate::syntax::{Dictionary, Object, ObjectId, Value};
 use crate::PdfError;
-use cipher::{decrypt_block_256, decrypt_message, rc4, AesKey};
+use cipher::{decrypt_block_256, decrypt_message, encrypt_message, rc4, AesKey, AES_BLOCK};
 use dictionary::KEY_BYTES_256;
 
 const TYPE_KEY: &[u8] = b"Type";
@@ -252,32 +254,49 @@ impl Decryptor {
         offset: u64,
         diagnostics: &mut Diagnostics,
     ) -> Result<Cow<'a, [u8]>, PdfError> {
-        let method = self.stream_method(id, dictionary)?;
+        let (method, named) = self.stream_method(id, dictionary)?;
         diagnostics.set_object(Some(id));
+        if named && matches!(method, CryptMethod::Rc4 | CryptMethod::Aes128) {
+            diagnostics.push(DiagnosticKind::CryptFilterObjectKey, offset);
+        }
         let result = self.apply(method, id, data, offset, diagnostics);
         diagnostics.set_object(None);
         result
     }
 
+    /// The method that decrypts stream `id`, and whether the stream
+    /// names it with a crypt filter (7.4.10).
     fn stream_method(
         &self,
         id: ObjectId,
         dictionary: &Dictionary,
-    ) -> Result<CryptMethod, PdfError> {
+    ) -> Result<(CryptMethod, bool), PdfError> {
+        self.method_for_stream(id, dictionary, self.metadata.get().copied().flatten())
+    }
+
+    /// As [`Self::stream_method`], with `metadata` the document's metadata
+    /// stream.
+    fn method_for_stream(
+        &self,
+        id: ObjectId,
+        dictionary: &Dictionary,
+        metadata: Option<ObjectId>,
+    ) -> Result<(CryptMethod, bool), PdfError> {
         let encryption = &self.encryption;
         if has_type(dictionary, XREF_TYPE) {
-            return Ok(CryptMethod::Identity);
+            return Ok((CryptMethod::Identity, false));
         }
         if let Some(name) = crypt_filter_name(dictionary)? {
-            return encryption.filter(&name);
+            return Ok((encryption.filter(&name)?, true));
         }
-        if !encryption.encrypt_metadata && self.metadata.get() == Some(&Some(id)) {
-            return Ok(CryptMethod::Identity);
+        if !encryption.encrypt_metadata && metadata == Some(id) {
+            return Ok((CryptMethod::Identity, false));
         }
-        match encryption.embedded_files {
-            Some(method) if has_type(dictionary, EMBEDDED_FILE_TYPE) => Ok(method),
-            _ => Ok(encryption.streams),
-        }
+        let method = match encryption.embedded_files {
+            Some(method) if has_type(dictionary, EMBEDDED_FILE_TYPE) => method,
+            _ => encryption.streams,
+        };
+        Ok((method, false))
     }
 
     /// Decrypts `data`, a string or the data of a stream of object `id`.
@@ -286,7 +305,8 @@ impl Decryptor {
     /// whether the method comes from the default or from a crypt filter
     /// the stream names: 7.4.10 says a named filter takes the file key as
     /// it is, but files written with crypt filters are encrypted with the
-    /// key of each object.
+    /// key of each object, and qpdf, MuPDF and pdf.js decrypt them so.
+    /// [`DiagnosticKind::CryptFilterObjectKey`] reports each such stream.
     fn apply<'a>(
         &self,
         method: CryptMethod,
@@ -380,6 +400,160 @@ impl Decryptor {
             changed |= self.decrypt_strings(value, id, method, offset, diagnostics)?;
         }
         Ok(changed)
+    }
+}
+
+/// The writer's side: what [`Decryptor::decrypt_object`] and
+/// [`Decryptor::decrypt_stream`] undo, done with the same key and the same
+/// exceptions.
+impl Decryptor {
+    /// Encrypts every string of `object`, the value of object `id`, in
+    /// place, but for those [`Self::decrypt_object`] leaves alone: none
+    /// of the encryption dictionary, and not the `Contents` of a
+    /// signature dictionary.
+    pub(crate) fn encrypt_object(
+        &self,
+        id: ObjectId,
+        object: &mut Object,
+        ivs: &mut IvSource,
+    ) -> Result<(), PdfError> {
+        if Some(id) == self.encryption.dictionary_id {
+            return Ok(());
+        }
+        let method = self.encryption.strings;
+        self.encrypt_strings(object, id, method, ivs)
+    }
+
+    /// Encrypts the strings of the dictionary of stream `id` in place; a
+    /// cross-reference stream's are left alone (7.5.8.2).
+    pub(crate) fn encrypt_stream_dictionary(
+        &self,
+        id: ObjectId,
+        dictionary: &mut Dictionary,
+        ivs: &mut IvSource,
+    ) -> Result<(), PdfError> {
+        if has_type(dictionary, XREF_TYPE) {
+            return Ok(());
+        }
+        let method = self.encryption.strings;
+        self.encrypt_entries(dictionary, id, method, ivs)
+    }
+
+    /// The data of stream `id`, still encoded by its filters, encrypted
+    /// with the method [`Self::decrypt_stream`] would decrypt it with.
+    /// `metadata` is the document's metadata stream, which stays plain
+    /// when `EncryptMetadata` is false. `dictionary` is the stream's
+    /// dictionary before its strings are encrypted.
+    pub(crate) fn encrypt_stream(
+        &self,
+        id: ObjectId,
+        dictionary: &Dictionary,
+        data: &[u8],
+        metadata: Option<ObjectId>,
+        ivs: &mut IvSource,
+    ) -> Result<Vec<u8>, PdfError> {
+        let (method, _) = self.method_for_stream(id, dictionary, metadata)?;
+        self.encrypt_bytes(method, id, data, ivs)
+    }
+
+    fn encrypt_bytes(
+        &self,
+        method: CryptMethod,
+        id: ObjectId,
+        data: &[u8],
+        ivs: &mut IvSource,
+    ) -> Result<Vec<u8>, PdfError> {
+        let aes_key = match method {
+            CryptMethod::Identity => return Ok(data.to_vec()),
+            CryptMethod::Rc4 => {
+                let mut encrypted = data.to_vec();
+                rc4(&key::object_key(&self.file_key, id, false), &mut encrypted)?;
+                return Ok(encrypted);
+            }
+            CryptMethod::Aes128 => AesKey::Aes128(
+                key::object_key(&self.file_key, id, true)
+                    .try_into()
+                    .map_err(|_| PdfError::EncryptionDictionary { key: "Length" })?,
+            ),
+            CryptMethod::Aes256 => AesKey::Aes256(
+                self.file_key
+                    .clone()
+                    .try_into()
+                    .map_err(|_| PdfError::EncryptionDictionary { key: "Length" })?,
+            ),
+        };
+        Ok(encrypt_message(&aes_key, ivs.next_iv(), data))
+    }
+
+    fn encrypt_strings(
+        &self,
+        object: &mut Object,
+        id: ObjectId,
+        method: CryptMethod,
+        ivs: &mut IvSource,
+    ) -> Result<(), PdfError> {
+        match object.value_mut() {
+            Value::String(string) => {
+                let encrypted = self.encrypt_bytes(method, id, string.as_bytes(), ivs)?;
+                *string = crate::syntax::PdfString::new(encrypted);
+            }
+            Value::Array(items) => {
+                for item in items {
+                    self.encrypt_strings(item, id, method, ivs)?;
+                }
+            }
+            Value::Dictionary(dictionary) => self.encrypt_entries(dictionary, id, method, ivs)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn encrypt_entries(
+        &self,
+        dictionary: &mut Dictionary,
+        id: ObjectId,
+        method: CryptMethod,
+        ivs: &mut IvSource,
+    ) -> Result<(), PdfError> {
+        let signature = is_signature(dictionary);
+        for (key, value) in dictionary.iter_mut() {
+            if signature && key.as_bytes() == CONTENTS_KEY {
+                continue;
+            }
+            self.encrypt_strings(value, id, method, ivs)?;
+        }
+        Ok(())
+    }
+}
+
+/// The initialization vectors of the AES-encrypted strings and streams of
+/// one written file (7.6.2). Each is the first 16 bytes of SHA-256 over
+/// the caller's seed and a counter, so the vectors cannot be told in
+/// advance by anyone who does not know the seed, and the same seed gives
+/// the same file. A caller seeds each save with fresh random bytes.
+pub(crate) struct IvSource {
+    seed: [u8; SEED_BYTES],
+    counter: u64,
+}
+
+/// The bytes of the seed a writer is given.
+pub(crate) const SEED_BYTES: usize = 32;
+
+impl IvSource {
+    pub(crate) fn new(seed: [u8; SEED_BYTES]) -> Self {
+        Self { seed, counter: 0 }
+    }
+
+    pub(crate) fn next_iv(&mut self) -> [u8; AES_BLOCK] {
+        use sha2::Digest;
+        let mut hash = sha2::Sha256::new();
+        hash.update(self.seed);
+        hash.update(self.counter.to_le_bytes());
+        self.counter += 1;
+        let digest = hash.finalize();
+        let mut iv = [0u8; AES_BLOCK];
+        iv.copy_from_slice(&digest[..AES_BLOCK]);
+        iv
     }
 }
 

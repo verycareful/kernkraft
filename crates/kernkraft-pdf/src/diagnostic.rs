@@ -113,6 +113,15 @@ pub enum DiagnosticKind {
     /// blocks ending in padding (7.6.2). The whole blocks are decrypted
     /// and kept, with what stands where the padding should be.
     EncryptedDataDamaged,
+    /// A stream of an encrypted file of revision 2 to 4 that names a
+    /// crypt filter other than Identity in its `Filter`. 7.4.10 says such
+    /// a stream is decrypted with the file key as it is; it is decrypted
+    /// with the key of its object (Algorithm 1), as files are written.
+    CryptFilterObjectKey,
+    /// A page tree node whose `Type` is not `expected`: `Pages` for a node
+    /// with `Kids`, `Page` for one without (7.7.3). It is read as what its
+    /// `Kids` make it.
+    PageTreeType { expected: Name },
 }
 
 /// One tolerant decision.

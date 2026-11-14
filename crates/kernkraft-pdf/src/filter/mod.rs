@@ -208,6 +208,11 @@ pub struct Decoded<'a> {
     pub complete: bool,
 }
 
+/// `data` encoded with FlateDecode (7.4.4), for a writer.
+pub(crate) fn flate_encode(data: &[u8]) -> Result<Vec<u8>, PdfError> {
+    flate::encode(data)
+}
+
 /// The filters of one stream, in the order they decode its data.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Pipeline {

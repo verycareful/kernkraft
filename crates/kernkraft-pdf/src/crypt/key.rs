@@ -13,7 +13,7 @@
 use md5::{Digest, Md5};
 use sha2::{Sha256, Sha384, Sha512};
 
-use super::cipher::{cbc_decrypt, cbc_encrypt_128, rc4, AesKey, AES_BLOCK};
+use super::cipher::{cbc_decrypt, cbc_encrypt, rc4, AesKey, AES_BLOCK};
 use super::dictionary::{Encryption, Revision, HASH_BYTES_R4, KEY_BYTES_256};
 use super::password::MAX_UTF8_PASSWORD_BYTES;
 use crate::syntax::ObjectId;
@@ -195,7 +195,7 @@ fn hash_r6(revision: Revision, password: &[u8], salt: &[u8], user: &[u8]) -> [u8
         let aes_key: [u8; 16] = k[..16].try_into().unwrap_or_default();
         let iv: [u8; AES_BLOCK] = k[16..32].try_into().unwrap_or_default();
         // Every part is repeated 64 times, so `e` is whole blocks.
-        cbc_encrypt_128(aes_key, iv, &mut e);
+        cbc_encrypt(&AesKey::Aes128(aes_key), iv, &mut e);
         // The first 16 bytes of E as a number modulo 3: 256 is 1 modulo
         // 3, so the sum of the bytes has the same remainder.
         let selector: u32 = e[..SELECTOR_BYTES]

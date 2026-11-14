@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use crate::syntax::ObjectId;
+
 use crate::syntax::limits::{
     MAX_FILTERS, MAX_NAME_BYTES, MAX_NESTING_DEPTH, MAX_STRING_BYTES, MAX_TOKEN_BYTES,
 };
@@ -162,4 +164,43 @@ pub enum PdfError {
     /// of the file.
     #[error("the password does not open the PDF")]
     WrongPassword,
+    /// An entry of a document structure (the catalog, a page, a tree
+    /// node, the trailer) that is missing where the format requires it,
+    /// or is not of the type its table defines. `object` is the indirect
+    /// object holding the entry, when there is one.
+    #[error("the {key} entry of {} is not valid", describe(.object))]
+    InvalidEntry {
+        object: Option<ObjectId>,
+        key: &'static str,
+    },
+    /// A page tree (7.7.3) in which `object` is reached twice, so that the
+    /// tree is not a tree, or is a node that is not a dictionary.
+    #[error("the page tree is not valid at object {} {}", .object.number, .object.generation)]
+    PageTree { object: ObjectId },
+    /// A name tree or number tree (7.9.6, 7.9.7) in which a node is
+    /// reached twice, or that holds a node or an entry of the wrong type.
+    #[error("the name or number tree is not valid at {}", describe(.object))]
+    InvalidTree { object: Option<ObjectId> },
+    /// An object that the document's cross-reference or edits do not have,
+    /// where one is required.
+    #[error("object {} {} is missing", .object.number, .object.generation)]
+    MissingObject { object: ObjectId },
+    /// A stream whose data was asked for as an object, or the other way
+    /// round.
+    #[error("object {} {} is not of the kind expected", .object.number, .object.generation)]
+    WrongKind { object: ObjectId },
+    /// An operation ran out of object numbers: the next would pass the
+    /// largest a cross-reference can hold.
+    #[error("no object number is left")]
+    ObjectNumbersExhausted,
+    /// The operation was cancelled through its progress handle.
+    #[error("the operation was cancelled")]
+    Cancelled,
+}
+
+fn describe(object: &Option<ObjectId>) -> String {
+    match object {
+        Some(id) => format!("object {} {}", id.number, id.generation),
+        None => "a direct object".to_string(),
+    }
 }

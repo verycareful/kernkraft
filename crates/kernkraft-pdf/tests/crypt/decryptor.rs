@@ -331,3 +331,43 @@ fn the_pipeline_passes_crypt_data_on() {
         Err(PdfError::DecodedTooLarge { cap: 4 })
     ));
 }
+
+/// A stream of revision 4 that names a crypt filter other than Identity
+/// is decrypted with the key of its object, and that is reported; nothing
+/// is reported for Identity, for the default, or for revision 6, whose
+/// key is the same for every object.
+#[test]
+fn a_named_crypt_filter_is_reported_for_revision_4() {
+    let crypt = |filter: &str| {
+        dictionary(&[
+            ("Filter", Value::Array(vec![Object::new(name("Crypt"))])),
+            (
+                "DecodeParms",
+                Value::Array(vec![Object::new(Value::Dictionary(dictionary(&[(
+                    "Name",
+                    name(filter),
+                )])))]),
+            ),
+        ])
+    };
+    let reported = |file: &str, dictionary: &Dictionary| {
+        let opened = unlock(file, USER).unwrap();
+        let mut diagnostics = Diagnostics::new();
+        opened
+            .decryptor
+            .decrypt_stream(ID, dictionary, &[0u8; 32], 55, &mut diagnostics)
+            .unwrap();
+        diagnostics
+            .as_slice()
+            .iter()
+            .filter(|d| d.kind == DiagnosticKind::CryptFilterObjectKey)
+            .map(|d| (d.object, d.offset))
+            .collect::<Vec<_>>()
+    };
+    for file in ["aes-128", "rc4-128-v4"] {
+        assert_eq!(reported(file, &crypt("StdCF")), [(Some(ID), 55)], "{file}");
+        assert_eq!(reported(file, &crypt("Identity")), [], "{file}");
+        assert_eq!(reported(file, &Dictionary::new()), [], "{file}");
+    }
+    assert_eq!(reported("aes-256", &crypt("StdCF")), []);
+}

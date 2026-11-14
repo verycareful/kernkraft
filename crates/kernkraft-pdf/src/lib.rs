@@ -18,17 +18,24 @@
 //! reads a file's header and cross-reference and loads its objects one at
 //! a time, within the limits the caller sets. [`crypt`] reads the
 //! encryption dictionary of an encrypted file, checks a password against
-//! it and decrypts the file's strings and streams.
+//! it and decrypts the file's strings and streams. [`doc`] reads a
+//! document's objects as they are used, its pages and its trees, and
+//! gives a new snapshot for each edit; [`build`] makes the objects and
+//! content streams of an edit; [`write`] writes a document as a new file
+//! that keeps every untouched object as its original bytes.
 
+pub mod build;
 pub mod crypt;
 mod diagnostic;
-mod doc;
+pub mod doc;
 mod error;
 mod fields;
 pub mod file;
 pub mod filter;
+mod lopdf_io;
 mod merge;
 mod pages;
+mod pdf_doc;
 mod ranges;
 #[cfg(feature = "render")]
 mod render;
@@ -36,13 +43,14 @@ mod source;
 mod split;
 pub mod syntax;
 mod tree;
+pub mod write;
 
 pub use lopdf;
 
 pub use diagnostic::{Diagnostic, DiagnosticKind, Diagnostics, PortableLimit};
-pub use doc::{load, load_bytes, page_count, save, to_bytes};
 pub use error::{Limit, PdfError};
 pub use kernkraft_fs::FileStamp;
+pub use lopdf_io::{load, load_bytes, page_count, save, to_bytes};
 pub use merge::merge;
 pub use pages::{remove, reorder, rotate, Rotation};
 pub use ranges::{parse_ranges, PageRange};

@@ -9,7 +9,7 @@
 //! crate, so that data whose blocks all decode but whose checksum is absent
 //! or wrong is told apart from data that is damaged.
 
-use flate2::{Decompress, FlushDecompress, Status};
+use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 
 use super::output::Output;
 use super::Stop;
@@ -70,6 +70,45 @@ impl Adler32 {
     }
 }
 
+/// The header this library writes: DEFLATE with the largest window
+/// (CINFO 7) and FLEVEL 2, the default level, without a preset dictionary
+/// (RFC 1950, 2.2).
+const WRITTEN_CMF: u8 = (MAX_WINDOW_INFO << WINDOW_SHIFT) | METHOD_DEFLATE;
+const FLEVEL_DEFAULT: u8 = 2 << 6;
+/// The compression level written: 6, zlib's default, which FLEVEL 2
+/// describes.
+const WRITTEN_LEVEL: u32 = 6;
+
+/// `data` encoded for FlateDecode: a zlib stream whose header and checksum
+/// are written here and whose blocks `flate2` writes. The same data always
+/// gives the same bytes from one version of `flate2`.
+pub(crate) fn encode(data: &[u8]) -> Result<Vec<u8>, PdfError> {
+    let check = |flg: u8| (u16::from(WRITTEN_CMF) << 8 | u16::from(flg)) % HEADER_CHECK_MODULUS;
+    let fcheck = (HEADER_CHECK_MODULUS - check(FLEVEL_DEFAULT)) % HEADER_CHECK_MODULUS;
+    // FCHECK is below 31, which fits FLG's low five bits.
+    let flg = FLEVEL_DEFAULT | fcheck as u8;
+    let mut out = vec![WRITTEN_CMF, flg];
+    let mut compress = Compress::new(Compression::new(WRITTEN_LEVEL), false);
+    let mut input = data;
+    loop {
+        out.reserve(BLOCK_BYTES);
+        let before_in = compress.total_in();
+        let status = compress
+            .compress_vec(input, &mut out, FlushCompress::Finish)
+            .map_err(|_| PdfError::Invalid("DEFLATE compression failed".to_string()))?;
+        let consumed = usize::try_from(compress.total_in() - before_in).unwrap_or(input.len());
+        input = input.get(consumed..).unwrap_or_default();
+        if status == Status::StreamEnd {
+            break;
+        }
+    }
+    let mut adler = Adler32::new();
+    adler.update(data);
+    // The checksum is 32 bits wide (RFC 1950, 8.2).
+    out.extend_from_slice(&(adler.value() as u32).to_be_bytes());
+    Ok(out)
+}
+
 /// Whether the two header bytes describe DEFLATE data this filter can read.
 fn header_is_valid(cmf: u8, flg: u8) -> bool {
     cmf & METHOD_MASK == METHOD_DEFLATE
@@ -118,6 +157,8 @@ pub(super) fn decode(input: &[u8], out: &mut Output) -> Result<Stop, PdfError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]
@@ -147,5 +188,25 @@ mod tests {
             s2 = (s2 + s1) % ADLER_MODULUS;
         }
         assert_eq!(whole.value(), s2 << 16 | s1);
+    }
+
+    /// What `encode` writes decodes back to the data, with its checksum,
+    /// for nothing, for less than a block and for several blocks; the
+    /// header is the usual 78 9C (RFC 1950, 2.2: CINFO 7, CM 8, FLEVEL 2).
+    #[test]
+    fn encode_round_trips() {
+        let long: Vec<u8> = (0..5 * BLOCK_BYTES + 3)
+            .map(|i| (i * 7 % 256) as u8)
+            .collect();
+        for data in [Vec::new(), b"Hello, Flate".to_vec(), long] {
+            let encoded = encode(&data).unwrap();
+            assert_eq!(&encoded[..2], &[0x78, 0x9C]);
+            let mut out = Output::new(data.len(), 0);
+            assert!(matches!(
+                decode(&encoded, &mut out).unwrap(),
+                Stop::EndOfData
+            ));
+            assert_eq!(out.into_vec(), data);
+        }
     }
 }

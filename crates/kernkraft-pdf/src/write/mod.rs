@@ -25,6 +25,7 @@
 //! caller's seed.
 
 mod objects;
+mod renumber;
 mod xref;
 
 use std::path::Path;
@@ -86,11 +87,33 @@ pub fn compact(
     options: &WriteOptions,
     progress: &dyn Progress,
 ) -> Result<Vec<u8>, PdfError> {
+    let (bytes, numbers) = write_whole(document, options, progress)?;
+    let highest = numbers.last().map_or(0, |id| id.number);
+    if !renumber::is_sparse(highest, numbers.len(), bytes.len()) {
+        return Ok(bytes);
+    }
+    let dense = renumber::dense(document, &numbers)?;
+    Ok(write_whole(&dense, options, progress)?.0)
+}
+
+/// The bytes of `document` with its objects under their own numbers, and
+/// the objects written, in order of number.
+fn write_whole(
+    document: &Document,
+    options: &WriteOptions,
+    progress: &dyn Progress,
+) -> Result<(Vec<u8>, Vec<ObjectId>), PdfError> {
     let trailer = document.trailer();
     let numbers = reachable(document, trailer, progress)?;
     let streams = uses_object_streams(document);
     let mut ivs = IvSource::new(options.seed);
     let mut writer = Writer::new(document, &mut ivs)?;
+    // The writer's own objects (object streams, the cross-reference
+    // stream) follow the highest number it writes.
+    writer.next_number = numbers
+        .last()
+        .map_or(1, |id| id.number.saturating_add(1))
+        .max(1);
     writer.header();
     let total = numbers.len() as u64;
     let mut placed = Vec::with_capacity(numbers.len());
@@ -124,7 +147,7 @@ pub fn compact(
         xref::table(writer, entries, trailer)
     };
     progress.report(total, total, "objects");
-    Ok(bytes)
+    Ok((bytes, numbers))
 }
 
 /// Writes `document` as [`compact`] does to `path`, atomically as far as

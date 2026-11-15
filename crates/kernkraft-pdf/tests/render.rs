@@ -4,17 +4,45 @@
 #![cfg(feature = "render")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "common/mod.rs"]
 mod common;
+#[path = "pdf_fixture/mod.rs"]
+mod pdf_fixture;
 
-use kernkraft_fs::Expect;
 use std::path::PathBuf;
 
+use kernkraft_fs::{Expect, NoProgress};
+use kernkraft_pdf::doc::Document;
+use kernkraft_pdf::write::{save_compact, WriteOptions};
+use kernkraft_pdf::{
+    extract, merge, page_size_pt, render_page, rotate, PdfError, Renderer, Rotation,
+    MAX_RENDER_DIMENSION,
+};
+
 use common::*;
-use kernkraft_pdf::{page_size_pt, render_page, PdfError, Renderer, MAX_RENDER_DIMENSION};
+use pdf_fixture::{borrowed, pages_document, stream_file, table_file, OPTIONS};
 
 fn write(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> PathBuf {
     let path = dir.path().join(name);
     std::fs::write(&path, bytes).unwrap();
+    path
+}
+
+fn open(bytes: &[u8]) -> Document {
+    Document::from_bytes(bytes.to_vec(), &OPTIONS, "").unwrap()
+}
+
+/// `document` saved to `name` in `dir`.
+fn save(dir: &tempfile::TempDir, name: &str, document: &Document) -> PathBuf {
+    let path = dir.path().join(name);
+    save_compact(
+        document,
+        &path,
+        Expect::Anything,
+        &WriteOptions { seed: SEED },
+        &NoProgress,
+    )
+    .unwrap();
     path
 }
 
@@ -65,9 +93,7 @@ fn rotated_page_swaps_dimensions() {
     let path = write(
         &dir,
         "r.pdf",
-        &edited(&pdf(&[(200.0, 300.0)]), |doc, pages| {
-            doc.get_dictionary_mut(pages[0]).unwrap().set("Rotate", 90);
-        }),
+        &flat(&[(200.0, 300.0)], "", "/Rotate 90", "").bytes,
     );
     assert_eq!(page_size_pt(&path, 1).unwrap(), (300.0, 200.0));
     let page = render_page(&path, 1, 300).unwrap();
@@ -136,7 +162,12 @@ fn render_reports_missing_and_garbage_files() {
 #[test]
 fn render_refuses_encrypted() {
     let dir = tempfile::tempdir().unwrap();
-    let path = write(&dir, "locked.pdf", &encrypted_stub());
+    let bytes = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/encrypted/rc4-128.pdf"),
+    )
+    .unwrap();
+    let path = write(&dir, "locked.pdf", &bytes);
     let err = render_page(&path, 1, 100).unwrap_err();
     assert!(matches!(err, PdfError::Encrypted), "{err:?}");
 }
@@ -147,39 +178,81 @@ const CORPUS_WIDTH: u32 = 100;
 // to the nearest pixel, as Kern Android's `renderPage` computes it (the
 // contract `render_page` matches).
 
-fn number(o: &kernkraft_pdf::lopdf::Object) -> f32 {
-    match o {
-        kernkraft_pdf::lopdf::Object::Integer(i) => *i as f32,
-        kernkraft_pdf::lopdf::Object::Real(r) => *r,
-        other => panic!("not a number: {other:?}"),
-    }
+/// A file kernkraft must read and write, and its page count.
+struct Fixture {
+    name: &'static str,
+    bytes: Vec<u8>,
+    pages: u32,
 }
 
-fn rect(o: Option<kernkraft_pdf::lopdf::Object>) -> Option<[f32; 4]> {
-    let items = o?.as_array().ok()?.clone();
-    let v: Vec<f32> = items.iter().map(number).collect();
-    Some([
-        v[0].min(v[2]),
-        v[1].min(v[3]),
-        v[0].max(v[2]),
-        v[1].max(v[3]),
-    ])
+fn corpus() -> Vec<Fixture> {
+    let plain = pages_document(4);
+    // Streams cannot lie in an object stream; the page dictionaries can.
+    let in_stream =
+        |number: u32, body: &[u8]| number >= 10 && !body.windows(6).any(|w| w == b"stream");
+    let compressed: Vec<(u32, Vec<u8>)> = plain
+        .iter()
+        .filter(|(number, body)| in_stream(*number, body))
+        .cloned()
+        .collect();
+    let kept: Vec<(u32, Vec<u8>)> = plain
+        .iter()
+        .filter(|(number, body)| !in_stream(*number, body))
+        .cloned()
+        .collect();
+    let object_streams = stream_file(&borrowed(&kept), &borrowed(&compressed), "/Root 1 0 R").bytes;
+    let features = open(&features("").bytes);
+    let a = open(&features_bytes("A"));
+    let b = open(&features_bytes("B"));
+    vec![
+        Fixture {
+            name: "classic",
+            bytes: pdf_n(3),
+            pages: 3,
+        },
+        Fixture {
+            name: "nested",
+            bytes: nested_pdf(),
+            pages: 3,
+        },
+        Fixture {
+            name: "object-streams",
+            bytes: object_streams,
+            pages: 4,
+        },
+        Fixture {
+            name: "compacted",
+            bytes: saved(&features),
+            pages: 3,
+        },
+        Fixture {
+            name: "extracted",
+            bytes: saved(&extract(&features, &[3, 1]).unwrap()),
+            pages: 2,
+        },
+        Fixture {
+            name: "merged",
+            bytes: saved(&merge(&[&a, &b], &OPTIONS, &NoProgress).unwrap()),
+            pages: 6,
+        },
+    ]
+}
+
+fn features_bytes(tag: &str) -> Vec<u8> {
+    features(tag).bytes
 }
 
 /// Displayed size of page `n` in points: the CropBox clipped to the
 /// MediaBox (ISO 32000-1, 14.11.2), the CropBox defaulting to the
 /// MediaBox, with width and height swapped for a quarter or three-quarter
 /// turn (7.7.3.3, `/Rotate`).
-fn displayed_size(doc: &kernkraft_pdf::lopdf::Document, n: u32) -> (f32, f32) {
-    let media = rect(corpus::effective(doc, n, b"MediaBox")).expect("every page has a MediaBox");
-    let crop = rect(corpus::effective(doc, n, b"CropBox")).unwrap_or(media);
-    let w = crop[2].min(media[2]) - crop[0].max(media[0]);
-    let h = crop[3].min(media[3]) - crop[1].max(media[1]);
-    let turns = match corpus::effective(doc, n, b"Rotate") {
-        Some(o) => number(&o) as i64,
-        None => 0,
-    };
-    if turns.rem_euclid(180) == 90 {
+fn displayed_size(doc: &Document, n: u32) -> (f64, f64) {
+    let page = doc.page(n).unwrap();
+    let media = page.media_box.expect("every page has a MediaBox");
+    let crop = page.crop_box.unwrap_or(media);
+    let w = crop.urx.min(media.urx) - crop.llx.max(media.llx);
+    let h = crop.ury.min(media.ury) - crop.lly.max(media.lly);
+    if page.rotate % 180 == 90 {
         (h, w)
     } else {
         (w, h)
@@ -189,15 +262,15 @@ fn displayed_size(doc: &kernkraft_pdf::lopdf::Document, n: u32) -> (f32, f32) {
 #[test]
 fn every_corpus_page_renders() {
     let dir = tempfile::tempdir().unwrap();
-    for f in corpus::corpus() {
-        let doc = kernkraft_pdf::load_bytes(&f.bytes).unwrap();
+    for f in corpus() {
+        let doc = open(&f.bytes);
         let path = write(&dir, &format!("{}.pdf", f.name), &f.bytes);
         let renderer = Renderer::open(&path).unwrap();
         assert_eq!(renderer.page_count(), f.pages, "{}", f.name);
         for n in 1..=f.pages {
             let (w, h) = displayed_size(&doc, n);
             let page = renderer.render_page(n, CORPUS_WIDTH).unwrap();
-            let expected = (h * CORPUS_WIDTH as f32 / w).round() as u32;
+            let expected = (h * f64::from(CORPUS_WIDTH) / w).round() as u32;
             assert_eq!(
                 (page.width, page.height),
                 (CORPUS_WIDTH, expected),
@@ -210,26 +283,24 @@ fn every_corpus_page_renders() {
 
 #[test]
 fn rotated_output_renders_swapped() {
-    const LETTER: (f32, f32) = (612.0, 792.0);
+    const LETTER: (f64, f64) = (612.0, 792.0);
     let dir = tempfile::tempdir().unwrap();
-    let mut doc = kernkraft_pdf::load_bytes(&pdf_n(1)).unwrap();
-    kernkraft_pdf::rotate(&mut doc, &[1], kernkraft_pdf::Rotation::Cw90).unwrap();
-    let path = dir.path().join("turned.pdf");
-    kernkraft_pdf::save(&mut doc, &path, Expect::Anything).unwrap();
+    let doc = open(&pdf_n(1));
+    let turned = rotate(&doc, &[1], Rotation::Cw90).unwrap();
+    let path = save(&dir, "turned.pdf", &turned);
     let page = render_page(&path, 1, CORPUS_WIDTH).unwrap();
-    let expected = (LETTER.0 * CORPUS_WIDTH as f32 / LETTER.1).round() as u32;
+    let expected = (LETTER.0 * f64::from(CORPUS_WIDTH) / LETTER.1).round() as u32;
     assert_eq!((page.width, page.height), (CORPUS_WIDTH, expected));
 }
 
 #[test]
-fn flattened_nested_page_uses_inherited_cropbox() {
+fn extracted_nested_page_uses_inherited_cropbox() {
     let dir = tempfile::tempdir().unwrap();
-    let mut doc = kernkraft_pdf::load_bytes(&nested_pdf()).unwrap();
-    kernkraft_pdf::flatten_page_tree(&mut doc).unwrap();
-    let path = dir.path().join("flat.pdf");
-    kernkraft_pdf::save(&mut doc, &path, Expect::Anything).unwrap();
+    let doc = open(&nested_pdf());
+    let part = extract(&doc, &[2]).unwrap();
+    let path = save(&dir, "part.pdf", &part);
     // NESTED_CROPBOX is square and lies inside NESTED_MEDIABOX.
-    let page = render_page(&path, 2, CORPUS_WIDTH).unwrap();
+    let page = render_page(&path, 1, CORPUS_WIDTH).unwrap();
     assert_eq!((page.width, page.height), (CORPUS_WIDTH, CORPUS_WIDTH));
 }
 
@@ -237,19 +308,19 @@ fn flattened_nested_page_uses_inherited_cropbox() {
 /// drawn in the rendered page's top-left corner.
 #[test]
 fn offset_cropbox_maps_to_the_pixmap_origin() {
-    let bytes = edited(&pdf_n(1), |doc, pages| {
-        // A black square filling the top-left quarter of the crop box
-        // [100 100 200 200]; PDF y grows upward, so its top is y = 200.
-        let ops = b"0 g 100 150 50 50 re f".to_vec();
-        let content = doc.add_object(kernkraft_pdf::lopdf::Stream::new(
-            kernkraft_pdf::lopdf::dictionary! {},
-            ops,
-        ));
-        let page = doc.get_dictionary_mut(pages[0]).unwrap();
-        page.set("MediaBox", rect_of([0, 0, 300, 300]));
-        page.set("CropBox", rect_of([100, 100, 200, 200]));
-        page.set("Contents", content);
-    });
+    // A black square filling the top-left quarter of the crop box
+    // [100 100 200 200]; PDF y grows upward, so its top is y = 200.
+    let ops = pdf_fixture::stream("", b"0 g 100 150 50 50 re f");
+    let objects: Vec<(u32, &[u8])> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /CropBox [100 100 200 200] /Contents 4 0 R >>",
+        ),
+        (4, ops.as_slice()),
+    ];
+    let bytes = table_file(&objects, "/Root 1 0 R").bytes;
     let dir = tempfile::tempdir().unwrap();
     let path = write(&dir, "crop.pdf", &bytes);
     let page = render_page(&path, 1, CORPUS_WIDTH).unwrap();

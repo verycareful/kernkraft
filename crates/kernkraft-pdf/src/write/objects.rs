@@ -223,8 +223,12 @@ impl<'a> Writer<'a> {
                     }
                 }
                 let mut value = value.clone();
+                // The encryption dictionary is the one object that is never
+                // encrypted (7.6.1).
                 if let Some(decryptor) = &self.decryptor {
-                    decryptor.encrypt_object(object.id, &mut value, self.ivs)?;
+                    if Some(object.id) != self.encryption_dictionary {
+                        decryptor.encrypt_object(object.id, &mut value, self.ivs)?;
+                    }
                 }
                 write_indirect_object(object.id, &value, &mut self.out)?;
                 Ok(())

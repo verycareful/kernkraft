@@ -161,6 +161,24 @@ impl Object {
     }
 }
 
+impl Value {
+    /// The dictionary, for changing.
+    pub(crate) fn as_dictionary_mut(&mut self) -> Option<&mut Dictionary> {
+        match self {
+            Value::Dictionary(dictionary) => Some(dictionary),
+            _ => None,
+        }
+    }
+
+    /// The items, for changing.
+    pub(crate) fn as_array_mut(&mut self) -> Option<&mut Vec<Object>> {
+        match self {
+            Value::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+}
+
 impl From<Value> for Object {
     fn from(value: Value) -> Self {
         Self::new(value)

@@ -2,7 +2,6 @@
 <!-- Language -->
 [![Rust](https://img.shields.io/badge/Rust-1.99-000000?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 <!-- Libraries -->
-[![lopdf](https://img.shields.io/badge/lopdf-0.45-informational?style=flat-square)](https://crates.io/crates/lopdf)
 <!-- MuPDF has no shields.io logo yet; swap this for a logo badge if one appears. -->
 [![mupdf](https://img.shields.io/badge/mupdf-0.6-informational?style=flat-square)](https://crates.io/crates/mupdf)
 [![image](https://img.shields.io/badge/image-0.25-informational?style=flat-square)](https://crates.io/crates/image)
@@ -23,7 +22,7 @@
 <!-- Adapter -->
 [![Tauri](https://img.shields.io/badge/Tauri-2.12-FFC131?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 <!-- Release -->
-[![Version](https://img.shields.io/badge/Version-0.1.3.1.7-informational?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/Version-0.1.3.1.8-informational?style=flat-square)](VERSION)
 <!-- Licence and status -->
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)
@@ -42,7 +41,7 @@ kernkraft is in alpha: its public API will change.
 | Crate | Kind | Owns |
 |---|---|---|
 | `kernkraft-fs` | core | atomic save, FreeDesktop trash, XDG directories, bulk file operations, scanning and properties totals, undo journal for file operations, and the same-filesystem query that tells a move from a copy (device number and mount ID) |
-| `kernkraft-pdf` | core | PDF load and atomic save, page ranges, page-tree flattening, extract, split, merge, rotate, reorder, remove; MuPDF rendering (`render` feature) |
+| `kernkraft-pdf` | core | PDF reading (cross-reference and object streams, repair, encryption), a document model that never changes, a full writer, page ranges, extract, split, merge, rotate, reorder, remove with the outline, destinations, form, tagged structure and page labels kept in agreement; MuPDF rendering (`render` feature) |
 | `kernkraft-text` | core | text decode, UTF-8 BOM and line-ending preservation, read-only reasons, atomic save |
 | `kernkraft-xdg-apps` | core | MIME type lookup (Shared MIME-info Database), desktop entries, default applications, launching through `Exec` lines, and terminal discovery |
 | `kernkraft-thumb` | core | image thumbnails (PNG, JPEG, WebP, GIF, SVG) and the freedesktop thumbnail cache shared with other file managers |
@@ -74,8 +73,6 @@ Unlike the plain GPL, the AGPL extends that obligation to network use: if you
 run a modified version and let others interact with it over a network, you
 must offer them the source of your modified version.
 
-Every file is licensed under AGPL-3.0-or-later. Files holding code moved
-from [Qyra](https://github.com/zParik/Qyra) also name the Qyra authors as
-copyright holders in their header, since they wrote it.
+Every file is licensed under AGPL-3.0-or-later.
 
 See the [LICENSE](LICENSE) file for the full license text.

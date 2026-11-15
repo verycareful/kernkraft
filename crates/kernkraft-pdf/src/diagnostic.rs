@@ -148,6 +148,30 @@ pub enum DiagnosticKind {
     /// a view name and as many numbers as the view takes. It leads
     /// nowhere.
     InvalidDestination,
+    /// An input of a merge was encrypted. The merged file is not: what an
+    /// encryption dictionary says about who may do what is not carried
+    /// over, and the application decides what to do about it.
+    EncryptionNotCarried,
+    /// An input of a merge had signatures. A signature covers the bytes
+    /// of the file it was made in, so in the merged file it no longer
+    /// verifies.
+    SignaturesInvalidated,
+    /// An input's `AcroForm` had an `XFA` entry (an XFA form, Annex H of
+    /// ISO 32000-1:2008). The XML form is not merged; the fields of the
+    /// `AcroForm` are.
+    XfaNotCarried,
+    /// An entry of an input's document catalog (or its trailer's `Info`)
+    /// that a merge does not carry into the merged document.
+    CatalogEntryNotCarried { key: Name },
+    /// Two inputs of a merge give one name in a dictionary of default
+    /// resources (`AcroForm` `DR`) to different objects. The first
+    /// input's stays, so the second input's fields that use the name
+    /// draw with the first's resource.
+    ResourceNameKept { key: Name },
+    /// Two inputs of a merge define one entry of the structure tree's
+    /// `RoleMap`, `ClassMap` or `IDTree` differently. The first input's
+    /// stays.
+    StructureEntryKept { key: Name },
 }
 
 /// One tolerant decision.

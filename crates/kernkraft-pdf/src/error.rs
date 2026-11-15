@@ -65,8 +65,6 @@ impl fmt::Display for Limit {
 /// Every failure `kernkraft-pdf` reports.
 #[derive(Debug, thiserror::Error)]
 pub enum PdfError {
-    #[error("not a readable PDF: {0}")]
-    Parse(String),
     #[error("the PDF is encrypted")]
     Encrypted,
     #[error("the PDF has no pages")]
@@ -190,6 +188,8 @@ pub enum PdfError {
     InvalidTree { object: Option<ObjectId> },
     /// An object that the document's cross-reference or edits do not have,
     /// where one is required.
+    #[error("the structure tree is not valid at object {} {}", .object.number, .object.generation)]
+    StructureTree { object: ObjectId },
     #[error("object {} {} is missing", .object.number, .object.generation)]
     MissingObject { object: ObjectId },
     /// A stream whose data was asked for as an object, or the other way

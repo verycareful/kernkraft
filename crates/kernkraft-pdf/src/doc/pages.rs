@@ -46,6 +46,8 @@ type Inherited = [Option<ObjectId>; 4];
 #[derive(Debug)]
 pub(crate) struct PageList {
     pub(crate) pages: Vec<(ObjectId, Inherited)>,
+    /// The nodes of the tree that have kids, the root included.
+    pub(crate) nodes: HashSet<ObjectId>,
     /// The number of each page, counted from 1, built when first asked.
     numbers: OnceLock<HashMap<ObjectId, u32>>,
 }
@@ -70,6 +72,7 @@ impl PageList {
             }
         };
         let mut pages = Vec::new();
+        let mut nodes = HashSet::new();
         let mut seen = HashSet::new();
         let mut stack: Vec<(ObjectId, Inherited)> = vec![(root, [None; 4])];
         while let Some((id, mut inherited)) = stack.pop() {
@@ -100,6 +103,7 @@ impl PageList {
             let Some(kids) = kids.array() else {
                 return Err(PdfError::PageTree { object: id });
             };
+            nodes.insert(id);
             for (slot, key) in inherited.iter_mut().zip(INHERITABLE) {
                 if dictionary.get(key).is_some() {
                     *slot = Some(id);
@@ -114,6 +118,7 @@ impl PageList {
         }
         Ok(Self {
             pages,
+            nodes,
             numbers: OnceLock::new(),
         })
     }
@@ -307,6 +312,35 @@ impl Document {
             crop_box,
             rotate,
         })
+    }
+
+    /// The inheritable entries (Table 30) that page `number` takes from
+    /// its ancestors because it has none of its own, as the ancestors
+    /// write them: what a page needs in its own dictionary to stay the
+    /// same when it is hung from another node.
+    pub(crate) fn inherited_entries(&self, number: u32) -> Result<Vec<(Name, Object)>, PdfError> {
+        let (id, inherited) = self.page_entry(number)?;
+        let page = self.required(id)?;
+        let Some(dictionary) = page.dictionary() else {
+            return Err(PdfError::PageTree { object: id });
+        };
+        let mut entries = Vec::new();
+        for (key, node) in INHERITABLE.iter().zip(inherited) {
+            let Some(node) = node else {
+                continue;
+            };
+            if dictionary.get(key).is_some() {
+                continue;
+            }
+            if let Some(value) = self
+                .required(node)?
+                .dictionary()
+                .and_then(|node| node.get(key))
+            {
+                entries.push((Name::new(*key), value.clone()));
+            }
+        }
+        Ok(entries)
     }
 
     fn page_entry(&self, number: u32) -> Result<(ObjectId, Inherited), PdfError> {

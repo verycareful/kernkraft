@@ -12,6 +12,7 @@ mod pdf_fixture;
 
 mod encrypted;
 mod objects;
+mod renumber;
 mod robustness;
 mod xref;
 

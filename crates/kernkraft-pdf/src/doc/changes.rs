@@ -84,6 +84,19 @@ impl ObjectBuilder {
         })
     }
 
+    /// `count` consecutive new object numbers, generation 0, for objects
+    /// set later: the first number is returned. For copying the objects
+    /// of another document under numbers that keep their order.
+    pub fn reserve_many(&mut self, count: u32) -> Result<u32, PdfError> {
+        let changes = &mut self.changes;
+        let first = changes.next_number;
+        changes.next_number = first
+            .checked_add(count)
+            .ok_or(PdfError::ObjectNumbersExhausted)?;
+        changes.built_from.get_or_insert(first);
+        Ok(first)
+    }
+
     /// A new object holding `object`.
     pub fn add(&mut self, object: Object) -> Result<ObjectId, PdfError> {
         let id = self.reserve()?;

@@ -20,13 +20,13 @@ use crate::syntax::{write_object, Dictionary, Name, Object, Value};
 use crate::PdfError;
 
 /// The generation of the head of the free list, object 0 (7.5.4).
-const FREE_HEAD_GENERATION: u16 = u16::MAX;
+pub(super) const FREE_HEAD_GENERATION: u16 = u16::MAX;
 /// Table 18: the type field of each kind of entry.
-const TYPE_FREE: u8 = 0;
-const TYPE_IN_USE: u8 = 1;
-const TYPE_COMPRESSED: u8 = 2;
+pub(super) const TYPE_FREE: u8 = 0;
+pub(super) const TYPE_IN_USE: u8 = 1;
+pub(super) const TYPE_COMPRESSED: u8 = 2;
 /// The width of the type field.
-const TYPE_WIDTH: usize = 1;
+pub(super) const TYPE_WIDTH: usize = 1;
 
 /// The entry of every object number from 0 to the highest in `entries`.
 fn all_entries(document: &Document, mut entries: Vec<(u32, XrefEntry)>) -> Vec<XrefEntry> {
@@ -61,7 +61,7 @@ fn all_entries(document: &Document, mut entries: Vec<(u32, XrefEntry)>) -> Vec<X
 }
 
 /// The trailer with `Size` first, then the entries given.
-fn with_size(size: usize, trailer: Dictionary) -> Dictionary {
+pub(super) fn with_size(size: usize, trailer: Dictionary) -> Dictionary {
     let mut out = Dictionary::new();
     out.insert(Name::new(b"Size".as_slice()), integer(size));
     for (key, value) in trailer.iter() {
@@ -70,8 +70,20 @@ fn with_size(size: usize, trailer: Dictionary) -> Dictionary {
     out
 }
 
-fn end_of_file(out: &mut Vec<u8>, xref_offset: u64) {
+pub(super) fn end_of_file(out: &mut Vec<u8>, xref_offset: u64) {
     let _ = write!(out, "startxref\n{xref_offset}\n%%EOF\n");
+}
+
+/// One entry of a table, in 20 bytes (7.5.4).
+pub(super) fn push_row(out: &mut Vec<u8>, entry: &XrefEntry) {
+    let (field, generation, kind) = match *entry {
+        XrefEntry::InUse { offset, generation } => (offset, generation, 'n'),
+        XrefEntry::Free { next, generation } => (u64::from(next), generation, 'f'),
+        // Neither is made in table form: every compressed object goes to a
+        // file written with a cross-reference stream.
+        XrefEntry::Compressed { .. } | XrefEntry::Null => (0, 0, 'f'),
+    };
+    let _ = write!(out, "{field:010} {generation:05} {kind}\r\n");
 }
 
 /// 7.5.4: the table, each entry in 20 bytes, then the trailer.
@@ -85,14 +97,7 @@ pub(super) fn table(
     let out = &mut writer.out;
     let _ = write!(out, "xref\n0 {}\n", entries.len());
     for entry in &entries {
-        let (field, generation, kind) = match *entry {
-            XrefEntry::InUse { offset, generation } => (offset, generation, 'n'),
-            XrefEntry::Free { next, generation } => (u64::from(next), generation, 'f'),
-            // Neither is made in table form: every compressed object goes
-            // to a file written with a cross-reference stream.
-            XrefEntry::Compressed { .. } | XrefEntry::Null => (0, 0, 'f'),
-        };
-        let _ = write!(out, "{field:010} {generation:05} {kind}\r\n");
+        push_row(out, entry);
     }
     out.extend_from_slice(b"trailer\n");
     let trailer = with_size(entries.len(), trailer);
@@ -105,13 +110,45 @@ pub(super) fn table(
 }
 
 /// The fewest bytes that hold `value`, and at least one.
-fn width(value: u64) -> usize {
+pub(super) fn width(value: u64) -> usize {
     let bits = u64::BITS - value.leading_zeros();
     (bits as usize).div_ceil(8).max(1)
 }
 
-fn push_field(data: &mut Vec<u8>, value: u64, width: usize) {
+pub(super) fn push_field(data: &mut Vec<u8>, value: u64, width: usize) {
     data.extend_from_slice(&value.to_be_bytes()[8 - width..]);
+}
+
+/// The three fields of an entry of a cross-reference stream (Table 18).
+fn fields(entry: &XrefEntry) -> (u8, u64, u64) {
+    match *entry {
+        XrefEntry::Free { next, generation } => (TYPE_FREE, u64::from(next), u64::from(generation)),
+        XrefEntry::InUse { offset, generation } => (TYPE_IN_USE, offset, u64::from(generation)),
+        XrefEntry::Compressed { stream, index } => {
+            (TYPE_COMPRESSED, u64::from(stream), u64::from(index))
+        }
+        XrefEntry::Null => (TYPE_FREE, 0, 0),
+    }
+}
+
+/// The data of a cross-reference stream holding `entries`, and the widths
+/// of its second and third fields (the first is [`TYPE_WIDTH`]).
+pub(super) fn pack(entries: &[XrefEntry]) -> (Vec<u8>, usize, usize) {
+    let (second, third) = entries
+        .iter()
+        .map(fields)
+        .fold((0, 0), |(second, third), (_, b, c)| {
+            (second.max(b), third.max(c))
+        });
+    let (second, third) = (width(second), width(third));
+    let mut data = Vec::with_capacity(entries.len() * (TYPE_WIDTH + second + third));
+    for entry in entries {
+        let (kind, b, c) = fields(entry);
+        data.push(kind);
+        push_field(&mut data, b, second);
+        push_field(&mut data, c, third);
+    }
+    (data, second, third)
 }
 
 /// 7.5.8: the cross-reference stream, which is never encrypted (7.5.8.2)
@@ -131,32 +168,7 @@ pub(super) fn stream(
         },
     ));
     let entries = all_entries(writer.document, entries);
-    let fields = |entry: &XrefEntry| -> (u8, u64, u64) {
-        match *entry {
-            XrefEntry::Free { next, generation } => {
-                (TYPE_FREE, u64::from(next), u64::from(generation))
-            }
-            XrefEntry::InUse { offset, generation } => (TYPE_IN_USE, offset, u64::from(generation)),
-            XrefEntry::Compressed { stream, index } => {
-                (TYPE_COMPRESSED, u64::from(stream), u64::from(index))
-            }
-            XrefEntry::Null => (TYPE_FREE, 0, 0),
-        }
-    };
-    let (second, third) = entries
-        .iter()
-        .map(fields)
-        .fold((0, 0), |(second, third), (_, b, c)| {
-            (second.max(b), third.max(c))
-        });
-    let (second, third) = (width(second), width(third));
-    let mut data = Vec::with_capacity(entries.len() * (TYPE_WIDTH + second + third));
-    for entry in &entries {
-        let (kind, b, c) = fields(entry);
-        data.push(kind);
-        push_field(&mut data, b, second);
-        push_field(&mut data, c, third);
-    }
+    let (data, second, third) = pack(&entries);
     let encoded = flate_encode(&data)?;
     let mut dictionary = Dictionary::new();
     dictionary.insert(Name::new(b"Type".as_slice()), name(b"XRef"));

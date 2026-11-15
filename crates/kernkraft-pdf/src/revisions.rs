@@ -101,7 +101,7 @@ impl Document {
             Some(decryptor) => decrypt_file(file, decryptor.clone(), &mut diagnostics)?,
             None => file,
         };
-        Ok(Self::from_parts(
+        Ok(Self::revision_view(
             file,
             decryptor,
             self.options(),

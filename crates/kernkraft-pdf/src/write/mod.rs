@@ -24,6 +24,7 @@
 //! file identifier and the initialization vectors of AES come from the
 //! caller's seed.
 
+mod incremental;
 mod objects;
 mod renumber;
 mod xref;
@@ -37,6 +38,7 @@ use crate::doc::Document;
 use crate::file::{SectionForm, XrefEntry};
 use crate::syntax::{Dictionary, Name, Object, ObjectId, PdfString, Value};
 use crate::PdfError;
+pub(crate) use incremental::{incremental, Tail, Update};
 pub(crate) use objects::reachable;
 use objects::{Placement, Writer};
 

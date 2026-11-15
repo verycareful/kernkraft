@@ -24,8 +24,11 @@
 //! document's objects as they are used, its pages and its trees, and
 //! gives a new snapshot for each edit; [`build`] makes the objects and
 //! content streams of an edit; [`write`] writes a document as a new file
-//! that keeps every untouched object as its original bytes. A
-//! [`Document`](doc::Document) also gives its revisions and an earlier
+//! that keeps every untouched object as its original bytes. An
+//! [`EditSession`] holds the document being edited, undoes and redoes its
+//! edits, and saves them as an incremental update appended to the bytes
+//! of the file as it was opened, or returns that update for an application
+//! that can only append. A [`Document`](doc::Document) also gives its revisions and an earlier
 //! one opened, its signatures and what their byte ranges cover, a report
 //! of what in it could run or reach outside it, its page labels, its
 //! outline and its attachments.
@@ -50,6 +53,7 @@ mod ranges;
 #[cfg(feature = "render")]
 mod render;
 mod revisions;
+mod session;
 mod signatures;
 mod source;
 pub mod syntax;
@@ -73,5 +77,6 @@ pub use ranges::{parse_ranges, PageRange};
 #[cfg(feature = "render")]
 pub use render::{page_size_pt, render_page, RenderedPage, Renderer, MAX_RENDER_DIMENSION};
 pub use revisions::Revision;
+pub use session::{Appended, EditSession, SaveOptions};
 pub use signatures::{Coverage, Signature, SignatureKind};
 pub use source::{FileSource, MemorySource, Source};

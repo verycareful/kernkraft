@@ -109,6 +109,9 @@ pub(super) struct Writer<'a> {
     encryption_dictionary: Option<ObjectId>,
     /// The next number for an object the writer makes.
     pub(super) next_number: u32,
+    /// How many bytes of the file lie before `out`: 0 for a file written
+    /// whole, the length of the file an update is appended to.
+    pub(super) start: u64,
 }
 
 impl<'a> Writer<'a> {
@@ -136,6 +139,7 @@ impl<'a> Writer<'a> {
             metadata,
             encryption_dictionary,
             next_number: document.next_object_number(),
+            start: 0,
         })
     }
 
@@ -146,9 +150,10 @@ impl<'a> Writer<'a> {
         self.out.extend_from_slice(BINARY_COMMENT);
     }
 
+    /// Where the next byte written lies in the file.
     pub(super) fn offset(&self) -> u64 {
         // A vector holds at most isize::MAX bytes, which fits in a u64.
-        self.out.len() as u64
+        self.start + self.out.len() as u64
     }
 
     pub(super) fn take_number(&mut self) -> Result<ObjectId, PdfError> {
@@ -195,6 +200,14 @@ impl<'a> Writer<'a> {
         let offset = self.offset();
         self.write_in_file(object)?;
         Ok(Placement::File { offset })
+    }
+
+    /// Writes `object` in the file, as [`Self::place`] does for one that
+    /// is not put in an object stream, and gives its offset.
+    pub(super) fn write_at_end(&mut self, object: &DocObject) -> Result<u64, PdfError> {
+        let offset = self.offset();
+        self.write_in_file(object)?;
+        Ok(offset)
     }
 
     fn write_in_file(&mut self, object: &DocObject) -> Result<(), PdfError> {

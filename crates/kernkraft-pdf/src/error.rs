@@ -210,6 +210,20 @@ pub enum PdfError {
     /// not read.
     #[error("revision {revision} is encrypted otherwise than the file")]
     RevisionEncryption { revision: usize },
+    /// An edit session over a file whose cross-reference was rebuilt: the
+    /// bytes the rebuilt reading took for objects are not what an
+    /// incremental update can be appended to, so such a file is saved only
+    /// as a compacted copy.
+    #[error("the file's cross-reference was rebuilt, so it can be saved only as a compacted copy")]
+    RebuiltNotEditable,
+    /// An edit session over an earlier revision of a file, which an
+    /// incremental update would append to the end of the whole file, past
+    /// the later revisions.
+    #[error("an earlier revision of a file cannot be edited in place")]
+    RevisionNotEditable,
+    /// Bytes appended since a length that no save of the session ended at.
+    #[error("no save of the session left the file {length} bytes long")]
+    UnknownAppendPoint { length: u64 },
     /// The operation was cancelled through its progress handle.
     #[error("the operation was cancelled")]
     Cancelled,

@@ -194,6 +194,9 @@ struct Base {
     /// Shared with the snapshot [`Document::unlock_attachments`] makes,
     /// which reads the same file.
     log: Arc<Mutex<Log>>,
+    /// Whether the file is an earlier revision of the bytes the source
+    /// holds ([`Document::open_revision`]).
+    revision_view: bool,
 }
 
 /// What a snapshot holds beyond the file: the objects its edits set or
@@ -210,6 +213,20 @@ pub(crate) enum Edit {
     Set(Arc<DocObject>),
     /// The object was removed; it had this generation.
     Removed(u16),
+}
+
+impl Edit {
+    /// Whether two snapshots' edits of one object number leave it the
+    /// same: neither edited it, both removed it at one generation, or both
+    /// set it to equal objects.
+    pub(crate) fn same(a: Option<&Edit>, b: Option<&Edit>) -> bool {
+        match (a, b) {
+            (None, None) => true,
+            (Some(Edit::Removed(a)), Some(Edit::Removed(b))) => a == b,
+            (Some(Edit::Set(a)), Some(Edit::Set(b))) => Arc::ptr_eq(a, b) || a == b,
+            _ => false,
+        }
+    }
 }
 
 /// An open PDF document. Cloning it is cheap and gives the same snapshot.
@@ -276,7 +293,7 @@ impl Document {
         let mut diagnostics = Diagnostics::new();
         let file = PdfFile::open(source, options.limits, &mut diagnostics)?;
         let (file, decryptor) = unlock(file, password, &mut diagnostics)?;
-        Ok(Self::new(file, decryptor, options, diagnostics))
+        Ok(Self::new(file, decryptor, options, diagnostics, false))
     }
 
     /// The same file opened without its cross-reference, read through for
@@ -301,18 +318,20 @@ impl Document {
             base.decryptor.clone(),
             &base.options,
             diagnostics,
+            base.revision_view,
         ))
     }
 
-    /// A document of `file`, as [`Self::open`] gives one once the file is
-    /// read and unlocked.
-    pub(crate) fn from_parts(
+    /// A document of `file`, an earlier revision of the bytes its source
+    /// holds, as [`Self::open_revision`] gives one once the file is read
+    /// and unlocked.
+    pub(crate) fn revision_view(
         file: PdfFile,
         decryptor: Option<Arc<Decryptor>>,
         options: &OpenOptions,
         diagnostics: Diagnostics,
     ) -> Self {
-        Self::new(file, decryptor, options, diagnostics)
+        Self::new(file, decryptor, options, diagnostics, true)
     }
 
     fn new(
@@ -320,6 +339,7 @@ impl Document {
         decryptor: Option<Arc<Decryptor>>,
         options: &OpenOptions,
         diagnostics: Diagnostics,
+        revision_view: bool,
     ) -> Self {
         let mut log = Log::new(options.max_diagnostics);
         log.record(diagnostics);
@@ -333,6 +353,7 @@ impl Document {
                 objects: Mutex::new(Lru::new(options.cached_objects)),
                 object_streams: Mutex::new(Lru::new(options.cached_object_streams)),
                 log: Arc::new(Mutex::new(log)),
+                revision_view,
             }),
             edits: Arc::new(Edits {
                 objects: HashMap::new(),
@@ -380,6 +401,7 @@ impl Document {
                 objects: Mutex::new(Lru::new(base.options.cached_objects)),
                 object_streams: Mutex::new(Lru::new(base.options.cached_object_streams)),
                 log: base.log.clone(),
+                revision_view: base.revision_view,
             }),
             edits: self.edits.clone(),
             pages: Arc::new(Mutex::new(None)),
@@ -450,6 +472,54 @@ impl Document {
     /// Whether this snapshot carries edits.
     pub fn is_edited(&self) -> bool {
         !self.edits.objects.is_empty() || self.edits.trailer != *self.base.file.trailer()
+    }
+
+    /// Whether the document is an earlier revision of the bytes its
+    /// source holds ([`Self::open_revision`]), not the file's newest.
+    pub fn is_revision_view(&self) -> bool {
+        self.base.revision_view
+    }
+
+    /// This document without its edits: the file as it is, which shares
+    /// this document's file, cache and log.
+    pub(crate) fn unedited(&self) -> Self {
+        Self {
+            base: self.base.clone(),
+            edits: Arc::new(Edits {
+                objects: HashMap::new(),
+                trailer: self.base.file.trailer().clone(),
+                next_number: first_free_number(&self.base.file),
+            }),
+            pages: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Whether `other` reads the same file as this document, so that the
+    /// edits of one can be set against those of the other.
+    pub(crate) fn same_file(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.base, &other.base)
+    }
+
+    /// Whether `other`, a snapshot of the same file, has the same trailer
+    /// and edits every object the same way as this one.
+    pub fn same_edits(&self, other: &Self) -> bool {
+        self.same_file(other)
+            && self.trailer() == other.trailer()
+            && self
+                .edited_numbers()
+                .chain(other.edited_numbers())
+                .all(|number| Edit::same(self.edit(number), other.edit(number)))
+    }
+
+    /// The numbers of the objects this snapshot's edits set or removed.
+    pub(crate) fn edited_numbers(&self) -> impl Iterator<Item = u32> + '_ {
+        self.edits.objects.keys().copied()
+    }
+
+    /// What this snapshot's edits did to object `number`, when they did
+    /// anything.
+    pub(crate) fn edit(&self, number: u32) -> Option<&Edit> {
+        self.edits.objects.get(&number)
     }
 
     /// Object `id`, or `None` when the document has no such object: a

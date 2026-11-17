@@ -172,6 +172,48 @@ pub enum DiagnosticKind {
     /// `RoleMap`, `ClassMap` or `IDTree` differently. The first input's
     /// stays.
     StructureEntryKept { key: Name },
+    /// A CMap entry that is not one: an operand of the wrong kind, a code
+    /// of a length no CMap code has (1 to 4 bytes), a range whose ends
+    /// differ in length or run backward, or a CID past 32 bits. The entry
+    /// is skipped.
+    CMapEntryInvalid,
+    /// A CMap whose data ends inside a `begin`...`end` block. The entries
+    /// read before the end are kept.
+    CMapUnterminated,
+    /// A CMap with two entries for one code. The first is kept.
+    CMapRangesOverlap,
+    /// A `ToUnicode` stream that cannot be read as a CMap: the font has no
+    /// ToUnicode mapping.
+    ToUnicodeUnreadable,
+    /// An embedded font program that cannot be decoded or read, whose
+    /// built-in encoding was therefore needed and is not known: the
+    /// encoding is taken as the font would have it without a program.
+    FontProgramUnreadable,
+    /// An `Encoding` or `BaseEncoding` name that is none of the predefined
+    /// encodings of Annex D: the implicit base encoding is used.
+    EncodingUnknown { name: Name },
+    /// An item of a `Differences` array that does not belong: a code
+    /// outside 0 to 255, a name with no code before it, or an item of
+    /// another kind. It is skipped.
+    EncodingDifferenceInvalid,
+    /// A simple font that is not one of the standard 14 and has no
+    /// `Widths`. The descriptor's `MissingWidth` stands for every width.
+    WidthsMissing,
+    /// A `Widths` array with fewer items than `FirstChar` to `LastChar`
+    /// has codes. The codes past its end have the missing width.
+    WidthsShort,
+    /// An item of `Widths`, `W` or `W2` that is not what the format needs.
+    /// A `Widths` item has no width; the rest of a `W` or `W2` array from
+    /// the item on is ignored.
+    WidthInvalid,
+    /// Two ranges of a `W` or `W2` array that cover a CID. The first
+    /// gives its metrics.
+    WidthsOverlap,
+    /// A Type 0 font with more or fewer than one descendant font. The
+    /// first is used.
+    DescendantFontCount,
+    /// A `CIDToGIDMap` that is not a stream: the identity map is used.
+    CidToGidUnreadable,
 }
 
 /// One tolerant decision.

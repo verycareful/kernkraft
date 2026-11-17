@@ -102,6 +102,10 @@ pub enum PdfError {
     /// the start of the name as text.
     #[error("{name} is not a filter this library decodes")]
     UnknownFilter { name: String },
+    /// The `Encoding` of a Type 0 font, or the `UseCMap` of a CMap, names
+    /// a CMap that is not predefined (Table 118) and is no stream.
+    #[error("{name} is not a predefined CMap")]
+    UnknownCMap { name: String },
     /// A `Filter` or `DecodeParms` entry of the wrong shape, or a filter
     /// parameter outside the values its filter defines. `filter` is the
     /// filter's name, or `the stream` for the two entries themselves.

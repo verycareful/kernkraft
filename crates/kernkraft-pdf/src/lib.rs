@@ -31,7 +31,9 @@
 //! that can only append. A [`Document`](doc::Document) also gives its revisions and an earlier
 //! one opened, its signatures and what their byte ranges cover, a report
 //! of what in it could run or reach outside it, its page labels, its
-//! outline and its attachments.
+//! outline and its attachments. [`font`] reads a font dictionary into a
+//! [`Font`](font::Font): its encoding, CMaps, widths and descriptor, and
+//! the characters of a string shown with it, with their Unicode text.
 
 mod action;
 mod active;
@@ -45,6 +47,7 @@ mod error;
 pub mod file;
 mod filespec;
 pub mod filter;
+pub mod font;
 mod labels;
 mod outline;
 mod pages;

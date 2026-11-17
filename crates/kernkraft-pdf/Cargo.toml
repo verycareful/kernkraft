@@ -3,16 +3,13 @@
 
 [package]
 name = "kernkraft-pdf"
-description = "PDF load, atomic save, page operations and MuPDF rendering"
+description = "PDF reading, atomic save, page operations and rendering"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
-
-[features]
-render = ["dep:mupdf"]
 
 [dependencies]
 aes.workspace = true
@@ -25,7 +22,6 @@ kernkraft-font.workspace = true
 kernkraft-fs.workspace = true
 md-5.workspace = true
 moxcms.workspace = true
-mupdf = { workspace = true, optional = true }
 rc4.workspace = true
 sha2.workspace = true
 unicode-normalization.workspace = true

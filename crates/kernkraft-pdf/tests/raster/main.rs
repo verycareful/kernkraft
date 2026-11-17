@@ -11,11 +11,15 @@
 #[path = "../pdf_fixture/mod.rs"]
 mod pdf_fixture;
 
+mod annotations;
 mod geometry;
 mod images;
 mod paths;
+mod patterns;
 mod robustness;
+mod shadings;
 mod text;
+mod transparency;
 
 use kernkraft_fs::NoProgress;
 use kernkraft_pdf::doc::Document;
@@ -73,6 +77,41 @@ pub fn fixture(
 /// The 20 by 20 point test page.
 pub fn square_page(content: &str, resources: &str, extra: &[(u32, &[u8])]) -> Document {
     document("/MediaBox [0 0 20 20]", content, resources, extra)
+}
+
+/// A one-page file like [`square_page`] whose catalog turns the optional
+/// content group `/L` (object 20, in the page's `Properties`) off. `extra`
+/// objects must not use 1, 2, 10, 11 or 20.
+pub fn hidden_group_page(
+    page_entries: &str,
+    content: &str,
+    resources: &str,
+    extra: &[(u32, &[u8])],
+) -> Document {
+    let mut objects: Vec<(u32, Vec<u8>)> = vec![
+        (
+            1,
+            b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [20 0 R] \
+              /D << /OFF [20 0 R] >> >> >>"
+                .to_vec(),
+        ),
+        (2, b"<< /Type /Pages /Kids [10 0 R] /Count 1 >>".to_vec()),
+        (
+            10,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /Contents 11 0 R /MediaBox [0 0 20 20] \
+                 {page_entries} /Resources << /Properties << /L 20 0 R >> {resources} >> >>"
+            )
+            .into_bytes(),
+        ),
+        (11, stream("", content.as_bytes())),
+        (20, b"<< /Type /OCG /Name (Layer) >>".to_vec()),
+    ];
+    for (number, body) in extra {
+        objects.push((*number, body.to_vec()));
+    }
+    objects.sort_by_key(|(n, _)| *n);
+    table_file(&borrowed(&objects), "/Root 1 0 R").open()
 }
 
 pub fn render(doc: &Document) -> Raster {

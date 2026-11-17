@@ -125,6 +125,43 @@ struct StreamFrame {
     path: PathBuilder,
 }
 
+/// The blend modes of 11.3.5 (Table 136), which the interpreter's consumers
+/// are expected to know.
+const KNOWN_BLEND_MODES: [&[u8]; 17] = [
+    b"Normal",
+    b"Compatible",
+    b"Multiply",
+    b"Screen",
+    b"Overlay",
+    b"Darken",
+    b"Lighten",
+    b"ColorDodge",
+    b"ColorBurn",
+    b"HardLight",
+    b"SoftLight",
+    b"Difference",
+    b"Exclusion",
+    b"Hue",
+    b"Saturation",
+    b"Color",
+    b"Luminosity",
+];
+
+/// A tiling pattern's cell to run (8.7.3).
+#[derive(Debug, Clone, Copy)]
+pub struct PatternCell<'a> {
+    /// The pattern's stream.
+    pub id: ObjectId,
+    /// The pattern's own resources.
+    pub resources: &'a Dictionary,
+    /// Pattern space to the space the device draws in.
+    pub matrix: Matrix,
+    /// `BBox`, as `[left bottom right top]`: the cell is clipped to it.
+    pub bbox: [f64; 4],
+    /// The colour of an uncoloured pattern (`PaintType` 2).
+    pub colour: Option<&'a Paint>,
+}
+
 /// Interprets content streams against a [`Document`].
 pub struct Interpreter<'d> {
     pub(super) doc: &'d Document,
@@ -258,14 +295,67 @@ impl<'d> Interpreter<'d> {
         self.state.blend_mode = outer.blend_mode.clone();
         self.state.soft_mask = outer.soft_mask.clone();
         self.in_glyph = true;
-        let result = self.run_glyph_inner(procedure, resources, &mut Env { device, progress });
+        let result = self.run_object_stream(procedure, resources, &mut Env { device, progress });
         self.in_glyph = false;
         self.uncoloured = false;
         self.flush();
         result
     }
 
-    fn run_glyph_inner(
+    /// Runs the cell of the tiling pattern `pattern` (8.7.3) with `matrix`
+    /// taking pattern space to the space the device draws in, clipped to
+    /// the pattern's `bbox`. `resources` are the pattern's own.
+    ///
+    /// A coloured pattern (`PaintType` 1) starts in the initial state and
+    /// sets its own colours. For an uncoloured one (`PaintType` 2) `colour`
+    /// is the colour it is painted in: it is both the fill and the stroke
+    /// colour, and the colour operators of the cell are ignored (8.7.3.3).
+    pub fn run_pattern(
+        &mut self,
+        cell: &PatternCell<'_>,
+        device: &mut dyn Device,
+        progress: &dyn Progress,
+    ) -> Result<(), PdfError> {
+        let PatternCell {
+            id: pattern,
+            resources,
+            matrix,
+            bbox,
+            colour,
+        } = *cell;
+        self.reset(matrix);
+        if let Some(colour) = colour {
+            self.state.fill = colour.clone();
+            self.state.stroke = colour.clone();
+            self.uncoloured = true;
+        }
+        let stream = StreamId::Object(pattern);
+        let span = OperatorSpan {
+            stream,
+            range: Span { start: 0, end: 0 },
+            index: 0,
+        };
+        let [llx, lly, urx, ury] = bbox;
+        let clip = Path {
+            segments: vec![
+                PathSegment::MoveTo(llx, lly),
+                PathSegment::LineTo(urx, lly),
+                PathSegment::LineTo(urx, ury),
+                PathSegment::LineTo(llx, ury),
+                PathSegment::Close,
+            ],
+        };
+        let mut env = Env { device, progress };
+        let ctx = self.context(span);
+        env.device.clip(&ctx, &clip, FillRule::NonZeroWinding);
+        let result = self.run_object_stream(pattern, resources, &mut env);
+        self.uncoloured = false;
+        self.flush();
+        result
+    }
+
+    /// Runs the content stream of the object `procedure` with `resources`.
+    fn run_object_stream(
         &mut self,
         procedure: ObjectId,
         resources: &Dictionary,
@@ -870,20 +960,27 @@ impl<'d> Interpreter<'d> {
     }
 
     fn ext_blend_mode(&mut self, object: &Object) -> Result<bool, PdfError> {
-        let first = match object.value() {
+        let chosen = match object.value() {
             Value::Name(name) => Some(name.clone()),
             // An array lists modes in order of preference (11.6.3): the
-            // first is used, since this consumer knows all of them.
-            Value::Array(items) => match items.first() {
-                Some(item) => match self.doc.resolve(item)?.value() {
-                    Value::Name(name) => Some(name.clone()),
-                    _ => None,
-                },
-                None => None,
-            },
+            // first one this consumer knows is used, and the first when it
+            // knows none.
+            Value::Array(items) => {
+                let mut names = Vec::with_capacity(items.len());
+                for item in items {
+                    if let Value::Name(name) = self.doc.resolve(item)?.value() {
+                        names.push(name.clone());
+                    }
+                }
+                names
+                    .iter()
+                    .find(|name| KNOWN_BLEND_MODES.contains(&name.as_bytes()))
+                    .or(names.first())
+                    .cloned()
+            }
             _ => None,
         };
-        match first {
+        match chosen {
             Some(name) => {
                 self.state.blend_mode = name;
                 Ok(true)

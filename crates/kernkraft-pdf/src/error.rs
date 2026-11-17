@@ -53,6 +53,8 @@ pub enum Limit {
     /// The glyphs one page shows, when its text is read. The caller sets
     /// `max` ([`TextOptions`](crate::TextOptions)).
     TextGlyphs { max: u64 },
+    /// The vertices or patches of one mesh shading.
+    MeshElements { max: u64 },
     /// The pixels of one render. The caller sets `max`
     /// ([`RenderOptions`](crate::render::RenderOptions)).
     RenderPixels { max: u64 },
@@ -80,6 +82,7 @@ impl Limit {
             | Limit::XrefEntries { max }
             | Limit::Operations { max }
             | Limit::TextGlyphs { max }
+            | Limit::MeshElements { max }
             | Limit::RenderPixels { max }
             | Limit::ImagePixels { max } => return max,
         };
@@ -106,6 +109,7 @@ impl fmt::Display for Limit {
             Limit::ObjectElements { .. } => "element count of an object",
             Limit::XrefEntries { .. } => "cross-reference entry count",
             Limit::TextGlyphs { .. } => "glyph count of a page",
+            Limit::MeshElements { .. } => "vertex or patch count of a mesh shading",
             Limit::RenderPixels { .. } => "pixel count of a render",
             Limit::ImagePixels { .. } => "pixel count of an image",
         })
@@ -129,8 +133,6 @@ pub enum PdfError {
     Invalid(String),
     #[error(transparent)]
     Fs(#[from] kernkraft_fs::FsError),
-    #[error("render failed: {0}")]
-    Render(String),
     /// A read that does not lie inside the source: its range starts or ends
     /// past the last byte, or its end does not fit in a `u64`.
     #[error("read of {len} bytes at offset {offset} is outside the file's {size} bytes")]

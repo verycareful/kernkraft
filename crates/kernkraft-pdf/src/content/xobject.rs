@@ -12,6 +12,7 @@ use crate::content::device::{
 use crate::content::interpreter::{Env, Interpreter};
 use crate::content::matrix::Matrix;
 use crate::content::operation::{operand_number, Operation};
+use crate::content::state::SoftMask;
 use crate::diagnostic::DiagnosticKind;
 use crate::doc::Content;
 use crate::error::{Limit, PdfError};
@@ -76,6 +77,13 @@ impl Interpreter<'_> {
                 Ok(())
             }
         }
+    }
+
+    /// Whether the `OC` entry of `dictionary` puts it in a group that is off
+    /// (8.11.3.2): for an annotation, an XObject, or any other dictionary
+    /// that has the entry.
+    pub fn hides_content(&mut self, dictionary: &Dictionary) -> Result<bool, PdfError> {
+        self.hides(dictionary)
     }
 
     /// Whether the `OC` entry of `dictionary` puts it in a group that is off.
@@ -159,6 +167,16 @@ impl Interpreter<'_> {
         self.resources.push(resources);
         let ctx = self.context(span);
         env.device.begin_form(&ctx, &info);
+        if info.group.is_some() {
+            // The group is composed as one object with the alpha, blend
+            // mode and soft mask it was invoked with, so what it paints
+            // starts with none of them (11.6.6).
+            self.state.fill_alpha = 1.0;
+            self.state.stroke_alpha = 1.0;
+            self.state.blend_mode = Name::new(b"Normal".to_vec());
+            self.state.soft_mask = SoftMask::None;
+            self.state.alpha_is_shape = false;
+        }
         if let Some([llx, lly, urx, ury]) = bbox {
             let clip = Path {
                 segments: vec![

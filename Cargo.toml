@@ -10,7 +10,7 @@ resolver = "2"
 # commit index on a dev branch) is written as its first three parts with the
 # rest as build metadata: label 0.1.0.0 is 0.1.0+0, label 0.1.0.0.3 is
 # 0.1.0+0.3. The kernkraft-fs version test checks the two agree.
-version = "0.1.3+1.17"
+version = "0.1.3+1.18"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -43,7 +43,6 @@ unicode-normalization = "0.1"
 # ICC profile colour transforms (ICCBased colour spaces); no unsafe in the
 # transform path we call, BSD-3-Clause OR Apache-2.0.
 moxcms = "0.8"
-mupdf = "0.6"
 # The page rasteriser (BSD-3-Clause): paths, strokes, clip masks, compositing.
 # No png-format: pixels leave as raw bytes.
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }

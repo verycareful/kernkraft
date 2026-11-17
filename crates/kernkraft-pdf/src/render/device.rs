@@ -6,48 +6,138 @@
 //! and 9.6.5 (Type 3 glyph descriptions).
 //!
 //! Colours reach the device as the stream wrote them; they are turned into
-//! sRGB here, one paint at a time. What a later version of the renderer
-//! draws (shadings, patterns, blend modes, soft masks) is reported
-//! with [`DiagnosticKind::NotRendered`] once for each kind on a page, and
-//! the mark is left out.
+//! sRGB here, one paint at a time, and a pattern paint becomes pixels laid
+//! over the mark. Transparency (11): the blend mode and constant alpha of
+//! the state are the mark's, a form XObject with a transparency group is
+//! painted on a layer of its own when it has to be composed as one object,
+//! and a soft mask in the state cuts every mark.
+//!
+//! What the renderer does not draw is reported with
+//! [`DiagnosticKind::NotRendered`] once for each kind on a page, and the
+//! mark is left out.
 
+mod annotations;
+mod groups;
 mod images;
+mod patterns;
+mod shadings;
+mod softmask;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use kernkraft_fs::Progress;
-use tiny_skia::{Path as Path2, PathBuilder, Transform};
+use tiny_skia::{Path as Path2, PathBuilder, Pixmap, Transform};
 
 use crate::content::ContentStream;
 use crate::content::{
-    Context, Device, FillRule, FormInfo, GraphicsState, ImageSource, InterpretOptions, Interpreter,
-    Matrix, Paint, Path, PathPaint, PlacedGlyph, RenderMode, SoftMask, TextRun,
+    Context, Device, ExtGStateInfo, FillRule, FormInfo, GraphicsState, ImageSource,
+    InterpretOptions, Interpreter, Matrix, Path, PathPaint, PlacedGlyph, RenderMode, TextRun,
 };
 use crate::diagnostic::{DiagnosticKind, Diagnostics};
 use crate::doc::Document;
 use crate::error::Limit;
 use crate::font::FontKind;
 use crate::image::{DecodedImage, ImageOptions};
-use crate::render::canvas::{Canvas, Colour, StrokeStyle};
+use crate::render::blend::blend_mode;
+use crate::render::canvas::{Area, Brush, Canvas, Colour, Source, StrokeStyle};
 use crate::render::colour::{Colours, Resolved};
 use crate::render::glyphs::Glyphs;
+use crate::render::shading::Shading;
 use crate::render::shape;
 use crate::syntax::{Dictionary, Name, Object, ObjectId};
 
-/// The blend modes that paint as Normal does (11.3.5: `Compatible` is
-/// `Normal`).
-const NORMAL_BLEND_MODES: [&[u8]; 2] = [b"Normal", b"Compatible"];
+/// How many streams may be run one inside another by this device: Type 3
+/// glyph descriptions that show Type 3 text, pattern cells that use
+/// patterns, soft masks whose group sets a soft mask.
+const MAX_NESTING: usize = 6;
 
-/// How many Type 3 glyph descriptions may be open one inside another (a
-/// glyph that shows text in a Type 3 font).
-const MAX_GLYPH_NESTING: usize = 4;
+/// The most pixels the cell of a tiling pattern may be rendered at.
+const MAX_TILE_PIXELS: u64 = 1 << 24;
 
-/// What a mark is painted with.
+/// Which of the two colours of the state a mark is painted with.
 #[derive(Clone, Copy)]
 enum Ink {
     Fill,
     Stroke,
+}
+
+/// What a mark is painted with, ready for the canvas.
+enum Ready {
+    Solid(Colour),
+    Pixels {
+        pixmap: Arc<Pixmap>,
+        transform: Transform,
+        repeat: bool,
+        smooth: bool,
+        alpha: f32,
+    },
+}
+
+impl Ready {
+    fn brush(&self, blend: tiny_skia::BlendMode, alpha_is_shape: bool) -> Brush<'_> {
+        match self {
+            Ready::Solid(colour) => Brush::solid(*colour, blend, alpha_is_shape),
+            Ready::Pixels {
+                pixmap,
+                transform,
+                repeat,
+                smooth,
+                alpha,
+            } => Brush {
+                source: Source::Pixels {
+                    pixmap,
+                    transform: *transform,
+                    repeat: *repeat,
+                    smooth: *smooth,
+                    alpha: *alpha,
+                },
+                blend,
+                alpha_is_shape,
+            },
+        }
+    }
+}
+
+/// The shape of a mark, which a pattern paint needs to know to be rendered
+/// only where it is seen.
+#[derive(Clone, Copy)]
+struct Marked<'a> {
+    path: &'a Path2,
+    transform: Transform,
+    /// How far past the path the mark reaches, in device pixels.
+    reach: f32,
+}
+
+/// What the painter needs to know of the page it draws.
+pub(super) struct PageSetup {
+    /// The page's resources, which a Type 3 font with none of its own uses.
+    pub resources: Dictionary,
+    /// The default user space to the pixels (8.7.3.1).
+    pub base: Matrix,
+}
+
+/// The parts of the state of a run through a content stream: what a stream
+/// run for a pattern, a soft mask or an annotation has of its own.
+struct Run {
+    /// The glyph outlines of the text object in progress, when a rendering
+    /// mode adds them to the clip (9.3.6).
+    text_clip: Option<PathBuilder>,
+    /// For each form open, whether it is painted on a layer of its own.
+    forms: Vec<bool>,
+    /// The matrix of the default coordinate system of each content stream
+    /// open, which a pattern matrix is relative to (8.7.3.1).
+    bases: Vec<Matrix>,
+}
+
+impl Run {
+    fn new(base: Matrix) -> Self {
+        Self {
+            text_clip: None,
+            forms: Vec::new(),
+            bases: vec![base],
+        }
+    }
 }
 
 /// A device that draws on a [`Canvas`].
@@ -61,13 +151,17 @@ pub(super) struct Painter<'d, 'p> {
     glyphs: Glyphs<'d>,
     /// The kinds of unrendered content already reported.
     noted: HashSet<&'static str>,
-    /// The glyph outlines of the text object in progress, when a rendering
-    /// mode adds them to the clip (9.3.6).
-    text_clip: Option<PathBuilder>,
-    /// The interpreter that runs Type 3 glyph descriptions; taken out while
-    /// it runs, so a description that shows Type 3 text makes its own.
-    glyph_interpreter: Option<Interpreter<'d>>,
-    glyph_nesting: usize,
+    run: Run,
+    /// The interpreter that runs Type 3 glyph descriptions, pattern cells,
+    /// soft masks and annotation appearances; taken out while it runs, so
+    /// a stream that needs one in turn makes its own.
+    interpreter: Option<Interpreter<'d>>,
+    nesting: usize,
+    /// The shadings read so far, by object.
+    shadings: HashMap<ObjectId, Option<Arc<Shading>>>,
+    /// The cells of tiling patterns rendered so far.
+    tiles: HashMap<patterns::TileKey, Arc<Pixmap>>,
+    tile_bytes: usize,
     image_options: ImageOptions,
     /// The images drawn so far, by object, while they fit the budget.
     images: HashMap<ObjectId, Arc<DecodedImage>>,
@@ -82,7 +176,7 @@ pub(super) struct Painter<'d, 'p> {
 impl<'d, 'p> Painter<'d, 'p> {
     pub fn new(
         doc: &'d Document,
-        page_resources: Dictionary,
+        page: PageSetup,
         canvas: Canvas,
         colours: Colours<'d>,
         glyphs: Glyphs<'d>,
@@ -93,13 +187,16 @@ impl<'d, 'p> Painter<'d, 'p> {
             canvas,
             diagnostics: Diagnostics::new(),
             doc,
-            page_resources,
+            page_resources: page.resources,
             colours,
             glyphs,
             noted: HashSet::new(),
-            text_clip: None,
-            glyph_interpreter: None,
-            glyph_nesting: 0,
+            run: Run::new(page.base),
+            interpreter: None,
+            nesting: 0,
+            shadings: HashMap::new(),
+            tiles: HashMap::new(),
+            tile_bytes: 0,
             image_options,
             images: HashMap::new(),
             image_bytes: 0,
@@ -116,32 +213,18 @@ impl<'d, 'p> Painter<'d, 'p> {
         }
     }
 
-    /// Reports what the state asks for that this renderer does not draw.
-    fn note_transparency(&mut self, state: &GraphicsState) {
-        if !NORMAL_BLEND_MODES.contains(&state.blend_mode.as_bytes()) {
-            self.note("blend mode");
-        }
-        if !matches!(state.soft_mask, SoftMask::None) {
-            self.note("soft mask");
-        }
-    }
-
-    /// The colour a mark is painted in, or `None` when it leaves no mark.
-    fn colour(&mut self, state: &GraphicsState, ink: Ink) -> Option<Colour> {
-        self.note_transparency(state);
-        let (paint, alpha): (&Paint, f64) = match ink {
-            Ink::Fill => (&state.fill, state.fill_alpha),
-            Ink::Stroke => (&state.stroke, state.stroke_alpha),
+    /// What the mark `mark` is painted with, or `None` when it leaves no
+    /// mark.
+    fn ink(&mut self, state: &GraphicsState, ink: Ink, mark: Option<Marked<'_>>) -> Option<Ready> {
+        let (paint, alpha) = match ink {
+            Ink::Fill => (&state.fill, state.fill_alpha as f32),
+            Ink::Stroke => (&state.stroke, state.stroke_alpha as f32),
         };
         match self.colours.resolve(paint) {
-            Ok(Resolved::Rgb(rgb)) => Some(Colour {
-                rgb,
-                alpha: alpha as f32,
-            }),
+            Ok(Resolved::Rgb(rgb)) => Some(Ready::Solid(Colour { rgb, alpha })),
             Ok(Resolved::Nothing) => None,
-            Ok(Resolved::Pattern) => {
-                self.note("pattern");
-                None
+            Ok(Resolved::Pattern { object, under }) => {
+                self.pattern_ink(&object, under, alpha, mark)
             }
             Err(error) => {
                 if matches!(error, crate::PdfError::Cancelled) {
@@ -152,6 +235,37 @@ impl<'d, 'p> Painter<'d, 'p> {
                 None
             }
         }
+    }
+
+    /// The area of the page's pixels that `mark` can touch, within the
+    /// layer being painted.
+    fn mark_area(&self, mark: &Marked<'_>) -> Option<Area> {
+        Area::of_bounds(mark.path.bounds(), mark.transform, mark.reach)?
+            .intersect(self.canvas.bounds())
+    }
+
+    /// Runs `f` with an interpreter for a stream of this device's own to
+    /// run: the interpreter is taken out of the device while it runs, so
+    /// that a stream which needs one in turn makes its own.
+    fn sub_run<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self, &mut Interpreter<'d>) -> Result<R, crate::PdfError>,
+    ) -> Result<R, crate::PdfError> {
+        if self.nesting >= MAX_NESTING {
+            return Err(crate::PdfError::LimitExceeded {
+                offset: 0,
+                limit: Limit::FormNesting,
+            });
+        }
+        let mut interpreter = match self.interpreter.take() {
+            Some(interpreter) => interpreter,
+            None => Interpreter::new(self.doc, InterpretOptions::default())?,
+        };
+        self.nesting += 1;
+        let result = f(self, &mut interpreter);
+        self.nesting -= 1;
+        self.interpreter.get_or_insert(interpreter);
+        result
     }
 
     fn stroke_style(state: &GraphicsState) -> StrokeStyle {
@@ -175,10 +289,31 @@ impl<'d, 'p> Painter<'d, 'p> {
         }
     }
 
-    fn stroke(&mut self, state: &GraphicsState, path: &tiny_skia::Path, ts: Transform) {
-        if let Some(colour) = self.colour(state, Ink::Stroke) {
-            self.canvas
-                .stroke_path(path, &Self::stroke_style(state), ts, colour);
+    fn fill(&mut self, state: &GraphicsState, path: &Path2, rule: FillRule, ts: Transform) {
+        let mark = Marked {
+            path,
+            transform: ts,
+            reach: 0.0,
+        };
+        if let Some(ready) = self.ink(state, Ink::Fill, Some(mark)) {
+            let brush = ready.brush(blend_mode(&state.blend_mode), state.alpha_is_shape);
+            self.canvas.fill_path(path, rule, ts, &brush);
+        }
+    }
+
+    fn stroke(&mut self, state: &GraphicsState, path: &Path2, ts: Transform) {
+        let style = Self::stroke_style(state);
+        // A stroke reaches half its width from the path, further at a miter
+        // join, in pixels.
+        let scale = state.ctm.determinant().abs().sqrt() as f32;
+        let mark = Marked {
+            path,
+            transform: ts,
+            reach: style.width * scale * style.miter_limit.max(1.0),
+        };
+        if let Some(ready) = self.ink(state, Ink::Stroke, Some(mark)) {
+            let brush = ready.brush(blend_mode(&state.blend_mode), state.alpha_is_shape);
+            self.canvas.stroke_path(path, &style, ts, &brush);
         }
     }
 
@@ -197,38 +332,21 @@ impl<'d, 'p> Painter<'d, 'p> {
         else {
             return;
         };
-        if self.glyph_nesting >= MAX_GLYPH_NESTING {
-            self.error.get_or_insert(crate::PdfError::LimitExceeded {
-                offset: ctx.span.range.start,
-                limit: Limit::FormNesting,
-            });
-            return;
-        }
         let resources = match type3.resources.as_ref().map(|r| self.doc.resolve(r)) {
             Some(Ok(resolved)) => resolved.dictionary().cloned(),
             _ => None,
         }
         .unwrap_or_else(|| self.page_resources.clone());
         let matrix = Matrix::from_array(type3.font_matrix).then(glyph.matrix);
-        let mut interpreter = match self.glyph_interpreter.take() {
-            Some(interpreter) => interpreter,
-            None => match Interpreter::new(self.doc, InterpretOptions::default()) {
-                Ok(interpreter) => interpreter,
-                Err(error) => {
-                    self.error.get_or_insert(error);
-                    return;
-                }
-            },
-        };
         let depth = self.canvas.depth();
         self.canvas.save();
-        self.glyph_nesting += 1;
-        let progress = self.progress;
-        let result =
-            interpreter.run_glyph(*procedure, &resources, matrix, ctx.state, self, progress);
-        self.glyph_nesting -= 1;
+        self.run.bases.push(matrix);
+        let result = self.sub_run(|painter, interpreter| {
+            let progress = painter.progress;
+            interpreter.run_glyph(*procedure, &resources, matrix, ctx.state, painter, progress)
+        });
+        self.run.bases.pop();
         self.canvas.restore_to(depth);
-        self.glyph_interpreter.get_or_insert(interpreter);
         if let Err(error) = result {
             self.error.get_or_insert(error);
         }
@@ -244,7 +362,7 @@ impl<'d, 'p> Painter<'d, 'p> {
         if mode.clips() {
             // A glyph with no marks still adds its (empty) shape to the
             // clip: text of spaces in a clip mode hides what follows.
-            self.text_clip.get_or_insert_with(PathBuilder::new);
+            self.run.text_clip.get_or_insert_with(PathBuilder::new);
         }
         let Some(outline) = self.glyphs.outline(run, glyph, &mut self.diagnostics) else {
             return;
@@ -253,10 +371,7 @@ impl<'d, 'p> Painter<'d, 'p> {
             return;
         };
         if ctx.visible && mode.fills() {
-            if let Some(colour) = self.colour(state, Ink::Fill) {
-                self.canvas
-                    .fill_path(&outline, FillRule::NonZeroWinding, glyph_ts, colour);
-            }
+            self.fill(state, &outline, FillRule::NonZeroWinding, glyph_ts);
         }
         if ctx.visible && mode.strokes() {
             // The pen is measured in user space: the outline goes to user
@@ -275,7 +390,7 @@ impl<'d, 'p> Painter<'d, 'p> {
         if mode.clips() {
             if let (Some(device), Some(clip)) = (
                 Path2::clone(&outline).transform(glyph_ts),
-                self.text_clip.as_mut(),
+                self.run.text_clip.as_mut(),
             ) {
                 clip.push_path(&device);
             }
@@ -325,9 +440,7 @@ impl Device for Painter<'_, '_> {
             return;
         };
         if let Some(rule) = paint.fill {
-            if let Some(colour) = self.colour(state, Ink::Fill) {
-                self.canvas.fill_path(&shape, rule, ts, colour);
-            }
+            self.fill(state, &shape, rule, ts);
         }
         if paint.stroke {
             self.stroke(state, &shape, ts);
@@ -342,11 +455,11 @@ impl Device for Painter<'_, '_> {
     }
 
     fn begin_text(&mut self, _ctx: &Context<'_>) {
-        self.text_clip = None;
+        self.run.text_clip = None;
     }
 
     fn end_text(&mut self, _ctx: &Context<'_>) {
-        let Some(builder) = self.text_clip.take() else {
+        let Some(builder) = self.run.text_clip.take() else {
             return;
         };
         match builder.finish() {
@@ -372,21 +485,19 @@ impl Device for Painter<'_, '_> {
         self.paint_image(ctx, image);
     }
 
-    fn shading(&mut self, _ctx: &Context<'_>, _name: &Name, _object: &Object) {
-        self.note("shading");
+    fn shading(&mut self, ctx: &Context<'_>, _name: &Name, object: &Object) {
+        self.paint_shading(ctx, object);
     }
 
     fn begin_form(&mut self, ctx: &Context<'_>, form: &FormInfo) {
-        // A transparency group composes as one object (11.4). Drawn
-        // straight onto the page it differs only when the group itself is
-        // translucent, blended or masked.
-        let state = ctx.state;
-        let composed = state.fill_alpha < 1.0
-            || state.stroke_alpha < 1.0
-            || !NORMAL_BLEND_MODES.contains(&state.blend_mode.as_bytes())
-            || !matches!(state.soft_mask, SoftMask::None);
-        if form.group.is_some() && composed {
-            self.note("transparency group");
-        }
+        self.open_form(ctx, form);
+    }
+
+    fn end_form(&mut self, _ctx: &Context<'_>, _form: &FormInfo) {
+        self.close_form();
+    }
+
+    fn ext_gstate(&mut self, ctx: &Context<'_>, info: &ExtGStateInfo) {
+        self.apply_soft_mask(ctx, info);
     }
 }

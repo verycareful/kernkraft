@@ -35,7 +35,7 @@ pub use device::{
     Context, Device, ExtGStateInfo, FillRule, FormInfo, ImageSource, MarkedContent, OperatorSpan,
     Path, PathPaint, PathSegment, PlacedGlyph, StreamId, TextRun,
 };
-pub use interpreter::{InterpretOptions, Interpreter, DEFAULT_MAX_OPERATIONS};
+pub use interpreter::{InterpretOptions, Interpreter, PatternCell, DEFAULT_MAX_OPERATIONS};
 pub use load::{ContentPart, ContentStream, DEFAULT_MAX_CONTENT_BYTES};
 pub use matrix::Matrix;
 pub use operation::{ContentParser, InlineImage, Operation, MAX_OPERANDS};

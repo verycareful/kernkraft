@@ -43,6 +43,25 @@ pub enum ImageFault {
     NotAnImage,
 }
 
+/// Why a shading, a pattern, a soft mask or the appearance of an annotation
+/// is not used (8.7, 11.6.5, 12.5.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaintFault {
+    /// A required entry is missing or not valid.
+    Entry,
+    /// The colour space cannot be read, or is not one the use allows.
+    ColourSpace,
+    /// A function cannot be read, or its evaluation failed.
+    Function,
+    /// The stream's data cannot be decoded.
+    Data,
+    /// The type or the paint type is not one that exists.
+    Type,
+    /// A size, a step or a matrix that is zero, not finite or too large to
+    /// draw.
+    Size,
+}
+
 /// What was found, and with it what the reader did.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -310,6 +329,19 @@ pub enum DiagnosticKind {
     NotRendered { feature: &'static str },
     /// An image that is not painted, for the `fault`.
     ImageUnusable { fault: ImageFault },
+    /// A shading that is not painted, for the `fault`.
+    ShadingUnusable { fault: PaintFault },
+    /// The data of a mesh shading ends in the middle of a vertex or a patch.
+    /// What was read before is painted.
+    ShadingDataShort,
+    /// A tiling pattern that is not painted, for the `fault`. What it
+    /// would have painted is left out.
+    PatternUnusable { fault: PaintFault },
+    /// A soft mask that is not applied, for the `fault`; what is painted
+    /// under it is painted without a mask.
+    SoftMaskUnusable { fault: PaintFault },
+    /// The appearance of an annotation that is not drawn, for the `fault`.
+    AppearanceUnusable { fault: PaintFault },
     /// An image whose data ends before the samples its dimensions call for.
     /// The samples that are missing read as 0.
     ImageDataShort,

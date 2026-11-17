@@ -19,7 +19,10 @@ use crate::content::{Context, GraphicsState, ImageSource, DEFAULT_MAX_CONTENT_BY
 use crate::image::{box_down, DecodedImage};
 use crate::PdfError;
 
-use super::{Ink, Painter};
+use crate::render::blend::blend_mode;
+use crate::render::canvas::{Area, Brush, GroupParams, Placement};
+
+use super::{Ink, Marked, Painter, Ready};
 
 /// The bytes of decoded images one page keeps for reuse. A page that
 /// repeats a logo hundreds of times decodes it once, and a page of many
@@ -42,7 +45,6 @@ impl Painter<'_, '_> {
         };
         match &*decoded {
             DecodedImage::Colour(bitmap) => {
-                self.note_transparency(state);
                 self.draw_straight(
                     &bitmap.rgba,
                     bitmap.width,
@@ -53,24 +55,99 @@ impl Painter<'_, '_> {
                 );
             }
             DecodedImage::Stencil(stencil) => {
-                let Some(colour) = self.colour(state, Ink::Fill) else {
+                let square = unit_square();
+                let Some(placement) = super::shape::transform(&state.ctm) else {
                     return;
                 };
-                let rgba: Vec<u8> = stencil
-                    .coverage
-                    .iter()
-                    .flat_map(|coverage| [colour.rgb[0], colour.rgb[1], colour.rgb[2], *coverage])
-                    .collect();
-                self.draw_straight(
-                    &rgba,
-                    stencil.width,
-                    stencil.height,
-                    stencil.interpolate,
-                    state,
-                    colour.alpha,
-                );
+                let mark = Marked {
+                    path: &square,
+                    transform: placement,
+                    reach: 0.0,
+                };
+                let Some(ready) = self.ink(state, Ink::Fill, Some(mark)) else {
+                    return;
+                };
+                match ready {
+                    Ready::Solid(colour) => {
+                        let rgba: Vec<u8> = stencil
+                            .coverage
+                            .iter()
+                            .flat_map(|coverage| {
+                                [colour.rgb[0], colour.rgb[1], colour.rgb[2], *coverage]
+                            })
+                            .collect();
+                        self.draw_straight(
+                            &rgba,
+                            stencil.width,
+                            stencil.height,
+                            stencil.interpolate,
+                            state,
+                            colour.alpha,
+                        );
+                    }
+                    pattern => {
+                        self.stencil_in_pattern(&pattern, &square, placement, stencil, state)
+                    }
+                }
             }
         }
+    }
+
+    /// A stencil mask painted in a pattern: the pattern fills the image's
+    /// square on a layer of its own, the stencil's coverage keeps what it
+    /// covers (11.3.5, `DestinationIn` as the source-in operation of the
+    /// compositing formula), and the layer is composed as one object.
+    fn stencil_in_pattern(
+        &mut self,
+        pattern: &Ready,
+        square: &tiny_skia::Path,
+        placement: tiny_skia::Transform,
+        stencil: &crate::image::Stencil,
+        state: &GraphicsState,
+    ) {
+        let mark = Marked {
+            path: square,
+            transform: placement,
+            reach: 0.0,
+        };
+        let Some(area) = self.mark_area(&mark) else {
+            return;
+        };
+        let area: Area = area;
+        let alpha = state.fill_alpha as f32;
+        if !self.canvas.push_group(
+            area,
+            GroupParams {
+                alpha,
+                blend: blend_mode(&state.blend_mode),
+                isolated: true,
+                knockout: false,
+            },
+        ) {
+            return;
+        }
+        let brush: Brush<'_> = pattern.brush(tiny_skia::BlendMode::SourceOver, false);
+        self.canvas.fill_path(
+            square,
+            crate::content::FillRule::NonZeroWinding,
+            placement,
+            &brush,
+        );
+        let opaque_stencil: Vec<u8> = stencil
+            .coverage
+            .iter()
+            .flat_map(|coverage| [*coverage, *coverage, *coverage, *coverage])
+            .collect();
+        self.draw_straight_with(
+            &opaque_stencil,
+            stencil.width,
+            stencil.height,
+            stencil.interpolate,
+            state,
+            1.0,
+            tiny_skia::BlendMode::DestinationIn,
+        );
+        self.canvas.pop_group();
     }
 
     /// The decoded image, from the page's cache when it was drawn before.
@@ -146,6 +223,29 @@ impl Painter<'_, '_> {
         state: &GraphicsState,
         opacity: f32,
     ) {
+        self.draw_straight_with(
+            rgba,
+            width,
+            height,
+            interpolate,
+            state,
+            opacity,
+            blend_mode(&state.blend_mode),
+        );
+    }
+
+    /// [`Self::draw_straight`] with the blend mode given.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_straight_with(
+        &mut self,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        interpolate: bool,
+        state: &GraphicsState,
+        opacity: f32,
+        blend: tiny_skia::BlendMode,
+    ) {
         let Some(placement) = super::shape::transform(&state.ctm) else {
             return;
         };
@@ -180,11 +280,25 @@ impl Painter<'_, '_> {
             &premultiplied,
             width,
             height,
-            placement.pre_concat(pixel_to_unit),
-            opacity,
-            shrunk || interpolate,
+            &Placement {
+                transform: placement.pre_concat(pixel_to_unit),
+                opacity,
+                smooth: shrunk || interpolate,
+                blend,
+                alpha_is_shape: state.alpha_is_shape,
+            },
         );
     }
+}
+
+/// The unit square of user space, which an image fills.
+fn unit_square() -> tiny_skia::Path {
+    tiny_skia::PathBuilder::from_rect(
+        tiny_skia::Rect::from_xywh(0.0, 0.0, 1.0, 1.0).unwrap_or(
+            tiny_skia::Rect::from_ltrb(0.0, 0.0, 1.0, 1.0)
+                .unwrap_or_else(|| unreachable!("the unit square")),
+        ),
+    )
 }
 
 /// Straight RGBA8 as premultiplied, each colour channel rounded.

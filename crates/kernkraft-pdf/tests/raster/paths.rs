@@ -211,22 +211,6 @@ fn a_hidden_optional_content_group_paints_nothing() {
 }
 
 #[test]
-fn what_is_not_drawn_yet_is_reported_once() {
-    let doc = square_page(
-        "/S sh /S sh 1 0 0 rg 0 0 5 5 re f",
-        "/Shading << /S << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 20 0] \
-         /Function << /FunctionType 2 /Domain [0 1] /N 1 >> >> >>",
-        &[],
-    );
-    let raster = render(&doc);
-    assert_eq!(px(&raster, 2, 17), RED);
-    let found = diagnostics_of(&doc, |k| {
-        matches!(k, DiagnosticKind::NotRendered { feature: "shading" })
-    });
-    assert_eq!(found.len(), 1);
-}
-
-#[test]
 fn transfer_and_colour_removal_functions_are_not_read() {
     // These entries are functions, which are streams; a page that sets such
     // a state still draws (8.4.5 lets a renderer ignore them).

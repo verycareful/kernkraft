@@ -22,8 +22,7 @@ what to report:
 
 - a file that makes a kernkraft crate execute code, write outside the file it was
   given, or read a file it was not asked to read;
-- memory unsafety reachable from a file, including through the PDF renderer (MuPDF is
-  C code underneath);
+- memory unsafety reachable from a file, including through the PDF renderer;
 - a way past the atomic save or the temporary-copy handling, such as a symbolic link
   that redirects a write, or a temporary copy another user can read;
 - any network connection made by a kernkraft crate.
@@ -36,7 +35,7 @@ trigger it from outside, in which case report it privately.
 
 - An attacker who can already run code as the user. kernkraft runs with the caller's
   permissions and is not a sandbox.
-- Bugs in a dependency such as MuPDF or Tauri. Report them upstream. A note to me is
+- Bugs in a dependency such as Tauri. Report them upstream. A note to me is
   welcome if you think kernkraft is exposed.
 
 ## Supported versions

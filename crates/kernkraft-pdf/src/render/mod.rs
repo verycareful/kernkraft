@@ -3,7 +3,8 @@
 
 //! Page rendering: a raster [`Device`](crate::content::Device) for the
 //! content interpreter. ISO 32000-1:2008, 8.5 (paths), 8.5.4 (clipping),
-//! 9 (text) and 10.2 (the painting model's device space).
+//! 8.7 (patterns and shadings), 9 (text), 10.2 (the painting model's device
+//! space), 11 (transparency) and 12.5.5 (annotation appearances).
 //!
 //! [`render_page`] draws a page, or a region of it, at a scale, onto an
 //! opaque white background, and gives straight RGBA8 pixels row by row from
@@ -12,20 +13,35 @@
 //! rendering mode with the glyphs of embedded Type 1, CFF and TrueType
 //! programs, Type 3 glyph descriptions, and a face from the application's
 //! font list for a font with no program. Colours of every space are
-//! converted to sRGB; constant alpha applies. Images are drawn at their
-//! place in the unit square of user space, with their masks, smoothed
-//! when they are shrunk or when `Interpolate` asks for it.
+//! converted to sRGB. Images are drawn at their place in the unit square of
+//! user space, with their masks, smoothed when they are shrunk or when
+//! `Interpolate` asks for it.
 //!
-//! What a later step draws is reported, not drawn: see
-//! [`DiagnosticKind::NotRendered`](crate::DiagnosticKind::NotRendered).
+//! Tiling patterns (coloured and uncoloured) and shading patterns paint
+//! paths, strokes, text and stencil masks; the `sh` operator paints the
+//! clip with a shading of any of the seven types (function-based, axial,
+//! radial, free-form and lattice triangle meshes, Coons and tensor-product
+//! patches). The 16 blend modes, the constant alpha and its `AIS` form, soft
+//! masks (luminosity and alpha, with `BC` and `TR`) and transparency groups
+//! (isolated or not, knockout or not) are drawn as 11 says. The page's
+//! annotations are drawn over its content from their normal appearance
+//! streams, honouring `Hidden`, `NoView`, `NoRotate`, `NoZoom` and optional
+//! content, unless [`RenderOptions::annotations`] is off.
+//!
+//! What is not drawn is reported, not drawn: see
+//! [`DiagnosticKind`](crate::DiagnosticKind) (`NotRendered`, and the
+//! `Unusable` kinds for a shading, pattern, soft mask or appearance that is
+//! damaged).
 //!
 //! Geometry follows the displayed page: the CropBox clipped to the MediaBox
 //! with `Rotate` applied, `y` down, in the fractions [`Rect`] uses.
 
+mod blend;
 mod canvas;
 mod colour;
 mod device;
 mod glyphs;
+mod shading;
 mod shape;
 
 use kernkraft_font::FontList;
@@ -42,7 +58,7 @@ use crate::{PdfError, Rect};
 
 use canvas::Canvas;
 use colour::Colours;
-use device::Painter;
+use device::{PageSetup, Painter};
 use glyphs::Glyphs;
 
 /// The most pixels one render may produce when the caller does not say: the
@@ -67,6 +83,10 @@ pub struct RenderOptions<'f> {
     /// The most pixels an image of the page may have; one with more is
     /// left out and reported ([`Limit::ImagePixels`]).
     pub max_image_pixels: u64,
+    /// Whether the appearances of the page's annotations are drawn over its
+    /// content (12.5.5). An annotation the file marks hidden or not
+    /// viewable, or that optional content hides, is never drawn.
+    pub annotations: bool,
 }
 
 impl Default for RenderOptions<'_> {
@@ -77,6 +97,7 @@ impl Default for RenderOptions<'_> {
             fonts: None,
             max_pixels: DEFAULT_MAX_PIXELS,
             max_image_pixels: crate::image::DEFAULT_MAX_IMAGE_PIXELS,
+            annotations: true,
         }
     }
 }
@@ -163,7 +184,10 @@ pub fn render_page(
     };
     let mut painter = Painter::new(
         doc,
-        resources.clone(),
+        PageSetup {
+            resources: resources.clone(),
+            base: base_matrix,
+        },
         canvas,
         colours,
         Glyphs::new(doc, options.fonts),
@@ -178,6 +202,9 @@ pub fn render_page(
         },
     )?;
     let run = interpreter.run_page(&page, &mut painter, progress);
+    if run.is_ok() && options.annotations && painter.error.is_none() {
+        painter.paint_annotations(&page, base_matrix, options.scale);
+    }
     doc.record_diagnostics(std::mem::take(&mut painter.diagnostics));
     run?;
     if let Some(error) = painter.error.take() {

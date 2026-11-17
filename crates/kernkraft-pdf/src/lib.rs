@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
-//! PDF reading, atomic saving and page operations, with page rendering
-//! through MuPDF behind the `render` feature.
+//! PDF reading, atomic saving, page operations and page rendering.
 //!
 //! Page numbers in every API are 1-based. A [`Document`](doc::Document)
 //! is a snapshot that never changes; each page operation
@@ -44,9 +43,10 @@
 //! and functions (sampled, exponential, stitching and PostScript
 //! calculator) and converts a colour of any space to sRGB.
 //! [`image`] decodes an image XObject or an inline image, with its masks, to
-//! RGBA pixels. [`render`] draws a page, or a region of it, at a scale:
-//! paths, clipping, text in embedded and substituted fonts and images, as
-//! RGBA pixels.
+//! RGBA pixels. [`render`] draws a page, or a region of it, at a scale: paths,
+//! clipping, text in embedded and substituted fonts, images, shadings,
+//! patterns, transparency (blend modes, groups, soft masks) and the
+//! appearances of annotations, as RGBA pixels.
 
 mod action;
 mod active;
@@ -67,8 +67,6 @@ pub mod font;
 pub mod image;
 mod labels;
 mod links;
-#[cfg(feature = "render")]
-mod mupdf_render;
 mod outline;
 mod pages;
 mod pdf_doc;
@@ -86,15 +84,15 @@ pub use action::{Action, ActionKind};
 pub use active::{ActiveAction, ActiveContent};
 pub use attachments::{Attachment, AttachmentPlace, Check, Extracted};
 pub use destination::{Destination, DestinationPage, NamedDestination, View};
-pub use diagnostic::{Diagnostic, DiagnosticKind, Diagnostics, ImageFault, PortableLimit};
+pub use diagnostic::{
+    Diagnostic, DiagnosticKind, Diagnostics, ImageFault, PaintFault, PortableLimit,
+};
 pub use display::Rect;
 pub use error::{Limit, PdfError};
 pub use filespec::FileSpec;
 pub use kernkraft_fs::FileStamp;
 pub use labels::{LabelStyle, PageLabel};
 pub use links::{Link, Located};
-#[cfg(feature = "render")]
-pub use mupdf_render::{page_size_pt, render_page, RenderedPage, Renderer, MAX_RENDER_DIMENSION};
 pub use outline::OutlineItem;
 pub use pages::{
     extract, merge, remove, reorder, rotate, split_by_bookmarks, split_per_page, split_ranges,

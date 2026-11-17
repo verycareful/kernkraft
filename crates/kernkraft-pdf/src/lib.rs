@@ -34,11 +34,14 @@
 //! outline and its attachments. [`font`] reads a font dictionary into a
 //! [`Font`](font::Font): its encoding, CMaps, widths and descriptor, and
 //! the characters of a string shown with it, with their Unicode text.
+//! [`content`] runs a page's content stream and tells a device what it
+//! paints.
 
 mod action;
 mod active;
 mod attachments;
 pub mod build;
+pub mod content;
 pub mod crypt;
 mod destination;
 mod diagnostic;

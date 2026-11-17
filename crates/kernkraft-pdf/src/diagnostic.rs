@@ -214,6 +214,56 @@ pub enum DiagnosticKind {
     DescendantFontCount,
     /// A `CIDToGIDMap` that is not a stream: the identity map is used.
     CidToGidUnreadable,
+    /// A byte in a content stream that starts no token (an unmatched `)`
+    /// or `>`), skipped.
+    ContentByteSkipped,
+    /// More operands before one operator than the operand stack holds
+    /// ([`MAX_OPERANDS`](crate::content::MAX_OPERANDS)): the earliest are
+    /// dropped.
+    OperandsDropped,
+    /// An operator that is none of Table 51 (or one of the inline-image
+    /// keywords outside an inline image). The operation is skipped.
+    OperatorUnknown { operator: Name },
+    /// An operator whose operands are too few or of the wrong kind
+    /// (7.8.2). The operation is skipped.
+    OperandsInvalid { operator: Name },
+    /// An operator where the format does not allow it: a path segment
+    /// with no current point, a text operator in the middle of a path,
+    /// `BT` inside a text object. The operation is skipped unless its
+    /// meaning is plain, and then it is done.
+    OperatorMisplaced { operator: Name },
+    /// A `Q` with no `q` before it. It is ignored.
+    GraphicsStateUnderflow,
+    /// A `q` with no `Q` before the end of its content stream. The state
+    /// is restored as the stream ends.
+    GraphicsStateUnclosed,
+    /// A resource a content stream names that its resource dictionaries
+    /// do not hold (`category` is `Font`, `XObject`, `ExtGState`,
+    /// `ColorSpace`, `Pattern`, `Shading` or `Properties`). The
+    /// operation is skipped.
+    ResourceMissing { category: Name, name: Name },
+    /// A form XObject that, directly or through others, paints itself.
+    /// The inner painting is skipped.
+    FormRecursion,
+    /// An inline image whose data ends the stream before `EI`, or whose
+    /// dictionary cannot be read. It is skipped.
+    InlineImageDamaged,
+    /// A `BMC` or `BDC` with no `EMC`, or an `EMC` with no `BMC` or
+    /// `BDC`, in a content stream. The extra `EMC` is ignored and the
+    /// unclosed sequences end with their stream.
+    MarkedContentUnbalanced,
+    /// A content stream that cannot be decoded. It is skipped.
+    ContentStreamUnreadable,
+    /// An optional-content group or membership dictionary that cannot be
+    /// read. The content it governs is taken as visible.
+    OptionalContentInvalid,
+    /// A font in the `Font` resources that cannot be read as one. Text
+    /// shown while it is the current font is skipped: no other font is
+    /// put in its place.
+    FontUnreadable { name: Name },
+    /// A `Do` of an XObject whose `Subtype` is neither `Image` nor `Form`
+    /// (a PostScript XObject, 8.8.2, or a damaged one). It is skipped.
+    XObjectSubtypeUnsupported { subtype: Name },
 }
 
 /// One tolerant decision.

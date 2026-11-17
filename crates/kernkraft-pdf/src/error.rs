@@ -6,7 +6,8 @@ use std::fmt;
 use crate::syntax::ObjectId;
 
 use crate::syntax::limits::{
-    MAX_FILTERS, MAX_NAME_BYTES, MAX_NESTING_DEPTH, MAX_STRING_BYTES, MAX_TOKEN_BYTES,
+    MAX_FILTERS, MAX_FORM_DEPTH, MAX_GRAPHICS_STATE_DEPTH, MAX_NAME_BYTES, MAX_NESTING_DEPTH,
+    MAX_STRING_BYTES, MAX_TOKEN_BYTES,
 };
 
 /// A hard limit of the reader and the writer. Input that passes one is
@@ -23,6 +24,14 @@ pub enum Limit {
     StringBytes,
     /// The filters one stream chains.
     FilterCount,
+    /// The `q` operators open at once in a content stream.
+    GraphicsStateDepth,
+    /// The form XObjects (and patterns and glyph procedures) open at once,
+    /// one inside another.
+    FormNesting,
+    /// The operations one interpreter run executes, forms included. The
+    /// caller sets `max` ([`InterpretOptions`](crate::content::InterpretOptions)).
+    Operations { max: u64 },
     /// The array items and dictionary entries of one object, nested ones
     /// included. The caller sets `max`
     /// ([`ReadLimits`](crate::file::ReadLimits)).
@@ -41,7 +50,11 @@ impl Limit {
             Limit::TokenBytes => MAX_TOKEN_BYTES,
             Limit::StringBytes => MAX_STRING_BYTES,
             Limit::FilterCount => MAX_FILTERS,
-            Limit::ObjectElements { max } | Limit::XrefEntries { max } => return max,
+            Limit::GraphicsStateDepth => MAX_GRAPHICS_STATE_DEPTH,
+            Limit::FormNesting => MAX_FORM_DEPTH,
+            Limit::ObjectElements { max }
+            | Limit::XrefEntries { max }
+            | Limit::Operations { max } => return max,
         };
         // A usize is at most 64 bits wide on every supported target.
         max as u64
@@ -56,6 +69,9 @@ impl fmt::Display for Limit {
             Limit::TokenBytes => "token length",
             Limit::StringBytes => "string length",
             Limit::FilterCount => "filter count",
+            Limit::GraphicsStateDepth => "graphics state depth",
+            Limit::FormNesting => "form nesting depth",
+            Limit::Operations { .. } => "operation count",
             Limit::ObjectElements { .. } => "element count of an object",
             Limit::XrefEntries { .. } => "cross-reference entry count",
         })

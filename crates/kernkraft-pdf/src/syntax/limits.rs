@@ -39,6 +39,19 @@ pub const MAX_STRING_BYTES: usize = 1 << 26;
 /// an image filter).
 pub const MAX_FILTERS: usize = 16;
 
+/// The `q` operators a content stream may have open at once, form XObjects
+/// included. Table C.1 says 28 is what every consumer accepts; a stream
+/// that nests deeper is read as far as this bound, which keeps the saved
+/// states (each holds a clone of the graphics state) from growing without
+/// end.
+pub const MAX_GRAPHICS_STATE_DEPTH: usize = 4096;
+
+/// The form XObjects, tiling patterns and Type 3 glyph procedures one
+/// content stream may have open at once, one inside another. A cycle is
+/// found and skipped before this is reached; this bounds a chain that is
+/// long and not a cycle.
+pub const MAX_FORM_DEPTH: usize = 64;
+
 /// Table C.1, integer: the largest integer value.
 pub const PORTABLE_INTEGER_MAX: i64 = i32::MAX as i64;
 

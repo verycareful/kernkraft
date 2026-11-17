@@ -46,6 +46,11 @@ const INFO_KEY: &[u8] = b"Info";
 const SIZE_KEY: &[u8] = b"Size";
 const FILTER_KEY: &[u8] = b"Filter";
 const DECODE_PARMS_KEY: &[u8] = b"DecodeParms";
+/// The most bytes the `JBIG2Globals` stream of an image decodes to. The
+/// symbol dictionaries shared by the pages of a scanned book run to a few
+/// megabytes; this leaves room above them while bounding what a small
+/// compressed stream can ask for.
+const MAX_GLOBALS_BYTES: usize = 64 << 20;
 
 /// What opening a document may cost, set by the application: the format
 /// sets no bound, and what is reasonable depends on the device.
@@ -645,9 +650,19 @@ impl Document {
         stream: &DocStream,
         max_output: usize,
     ) -> Result<Decoded<'static>, PdfError> {
-        let filter = self.direct_filter_entry(&stream.dictionary, FILTER_KEY)?;
-        let parms = self.direct_filter_entry(&stream.dictionary, DECODE_PARMS_KEY)?;
-        let pipeline = Pipeline::from_objects(filter.as_ref(), parms.as_ref())?;
+        self.decode_stream_codec(id, stream, max_output)
+            .map(|(decoded, _)| decoded)
+    }
+
+    /// [`decode_stream`](Self::decode_stream), and what the stream's image
+    /// codec says about its image.
+    pub(crate) fn decode_stream_codec(
+        &self,
+        id: ObjectId,
+        stream: &DocStream,
+        max_output: usize,
+    ) -> Result<(Decoded<'static>, Option<crate::filter::CodecInfo>), PdfError> {
+        let pipeline = self.stream_pipeline(&stream.dictionary, true)?;
         let data = self.stream_data(id, stream)?;
         let offset = match stream.data {
             StreamData::File(span) => span.start,
@@ -655,14 +670,57 @@ impl Document {
         };
         let mut diagnostics = Diagnostics::new();
         diagnostics.set_object(Some(id));
-        let decoded = pipeline.decode(&data, max_output, offset, &mut diagnostics);
+        let decoded = pipeline.decode_image(&data, max_output, offset, &mut diagnostics);
         diagnostics.set_object(None);
         lock(&self.base.log).record_decode(id, diagnostics);
-        let decoded = decoded?;
-        Ok(Decoded {
-            data: Cow::Owned(decoded.data.into_owned()),
-            complete: decoded.complete,
-        })
+        let (decoded, codec) = decoded?;
+        Ok((
+            Decoded {
+                data: Cow::Owned(decoded.data.into_owned()),
+                complete: decoded.complete,
+            },
+            codec,
+        ))
+    }
+
+    /// The pipeline of a stream dictionary: its `Filter` and `DecodeParms`
+    /// with every reference followed, and the stream a JBIG2Decode filter
+    /// names as its `JBIG2Globals` decoded and given to it. The globals
+    /// stream is not itself allowed to name globals: `allow_globals` is
+    /// false for it.
+    pub(crate) fn stream_pipeline(
+        &self,
+        dictionary: &Dictionary,
+        allow_globals: bool,
+    ) -> Result<Pipeline, PdfError> {
+        let filter = self.direct_filter_entry(dictionary, FILTER_KEY)?;
+        let parms = self.direct_filter_entry(dictionary, DECODE_PARMS_KEY)?;
+        let mut pipeline = Pipeline::from_objects(filter.as_ref(), parms.as_ref())?;
+        if let Some(globals) = pipeline.pending_jbig2_globals() {
+            let loaded = self.object(globals)?;
+            let stream = match loaded.as_ref().map(|loaded| &loaded.content) {
+                Some(Content::Stream(stream)) if allow_globals => stream,
+                _ => {
+                    return Err(PdfError::InvalidEntry {
+                        object: Some(globals),
+                        key: "JBIG2Globals",
+                    })
+                }
+            };
+            let nested = self.stream_pipeline(&stream.dictionary, false)?;
+            let data = self.stream_data(globals, stream)?;
+            let mut diagnostics = Diagnostics::new();
+            diagnostics.set_object(Some(globals));
+            let offset = match stream.data {
+                StreamData::File(span) => span.start,
+                StreamData::Memory(_) => 0,
+            };
+            let decoded = nested.decode(&data, MAX_GLOBALS_BYTES, offset, &mut diagnostics);
+            diagnostics.set_object(None);
+            lock(&self.base.log).record_decode(globals, diagnostics);
+            pipeline.provide_jbig2_globals(globals, decoded?.data.into_owned().into());
+        }
+        Ok(pipeline)
     }
 
     /// The entry `key` of a stream dictionary with every reference in it

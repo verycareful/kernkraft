@@ -95,6 +95,26 @@ pub struct IccBased {
 }
 
 impl IccBased {
+    /// The space of an ICC profile that is not in an ICCBased stream (a
+    /// JPEG 2000 file's), of `components` channels with the default range.
+    /// A profile that cannot be used leaves the device space of that many
+    /// components in its place; [`Self::uses_profile`] says which.
+    pub fn from_profile(profile: &[u8], components: usize) -> Option<ColourSpace> {
+        let alternate = match components {
+            1 => ColourSpace::DeviceGray,
+            3 => ColourSpace::DeviceRgb,
+            4 => ColourSpace::DeviceCmyk,
+            _ => return None,
+        };
+        let range = vec![[0.0, 1.0]; components];
+        Some(ColourSpace::IccBased(IccBased {
+            components,
+            transform: IccTransform::new(profile, components, range.clone()),
+            range,
+            alternate: Box::new(alternate),
+        }))
+    }
+
     /// Whether the profile is in use: false when [`Self::alternate`] stands
     /// in for it.
     pub fn uses_profile(&self) -> bool {

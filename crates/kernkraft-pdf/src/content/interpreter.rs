@@ -25,7 +25,7 @@ use crate::content::device::{
 };
 use crate::content::load::DEFAULT_MAX_CONTENT_BYTES;
 use crate::content::matrix::Matrix;
-use crate::content::operation::{operand_number, ContentParser, Operation};
+use crate::content::operation::{operand_number, ContentParser, InlineImage, Operation};
 use crate::content::optional::OptionalContent;
 use crate::content::state::{
     ColorSpace, Dash, GraphicsState, LineCap, LineJoin, Paint, RenderMode, SoftMask, TextFont,
@@ -600,7 +600,7 @@ impl<'d> Interpreter<'d> {
             // Inline images (8.9.7).
             b"BI" => match &operation.inline_image {
                 Some(image) => {
-                    let image = ImageSource::Inline(image.clone());
+                    let image = ImageSource::Inline(self.inline_in_resources(image)?);
                     let ctx = self.context(span);
                     env.device.image(&ctx, &image);
                 }
@@ -932,6 +932,29 @@ impl<'d> Interpreter<'d> {
             return Ok(None);
         };
         Ok(dictionary.get(name.as_bytes()).cloned())
+    }
+
+    /// An inline image whose `ColorSpace` is the name of a colour space
+    /// resource (8.9.7, Table 93) with that resource in its place, so that
+    /// the device need not know which resources were current.
+    fn inline_in_resources(&self, image: &InlineImage) -> Result<InlineImage, PdfError> {
+        let mut image = image.clone();
+        let Some(Value::Name(name)) = image.dictionary.get(b"ColorSpace").map(Object::value) else {
+            return Ok(image);
+        };
+        if matches!(
+            name.as_bytes(),
+            b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK" | b"Pattern"
+        ) {
+            return Ok(image);
+        }
+        let name = name.clone();
+        if let Some(object) = self.lookup(b"ColorSpace", &name)? {
+            image
+                .dictionary
+                .insert(Name::new(b"ColorSpace".to_vec()), object);
+        }
+        Ok(image)
     }
 
     /// Reads the font `object` names or gives, once for each indirect

@@ -12,6 +12,7 @@
 mod pdf_fixture;
 
 mod geometry;
+mod images;
 mod paths;
 mod robustness;
 mod text;
@@ -76,6 +77,12 @@ pub fn square_page(content: &str, resources: &str, extra: &[(u32, &[u8])]) -> Do
 
 pub fn render(doc: &Document) -> Raster {
     render_with(doc, &RenderOptions::default()).expect("the page renders")
+}
+
+/// Opens `bytes` and draws page 1: for the tests that damage a file.
+pub fn robustness_render(bytes: Vec<u8>) -> Result<(), PdfError> {
+    let doc = Document::from_bytes(bytes, &OPTIONS, "")?;
+    render_with(&doc, &RenderOptions::default()).map(drop)
 }
 
 pub fn render_with(doc: &Document, options: &RenderOptions<'_>) -> Result<Raster, PdfError> {

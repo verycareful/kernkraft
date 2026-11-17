@@ -41,6 +41,11 @@ impl<'d> Colours<'d> {
         })
     }
 
+    /// The page's default colour spaces, for the images it paints.
+    pub fn defaults(&self) -> &DefaultSpaces {
+        &self.defaults
+    }
+
     pub fn resolve(&mut self, paint: &Paint) -> Result<Resolved, PdfError> {
         if paint.pattern.is_some() || matches!(paint.space, ColorSpace::Pattern) {
             return Ok(Resolved::Pattern);

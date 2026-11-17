@@ -25,6 +25,24 @@ pub enum PortableLimit {
     ObjectNumber,
 }
 
+/// Why an image or a mask of an image is not used (8.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFault {
+    /// `Width`, `Height` or `BitsPerComponent` is missing or not valid.
+    Dimensions,
+    /// More pixels than the limit the caller set allows.
+    TooLarge,
+    /// The colour space is missing, cannot be read, is a Pattern space or
+    /// has a number of components the data does not.
+    ColourSpace,
+    /// The stream's data cannot be decoded.
+    Data,
+    /// The stream is not an image with the entries the use calls for (a
+    /// soft mask that is not DeviceGray, an explicit mask that is not an
+    /// image mask).
+    NotAnImage,
+}
+
 /// What was found, and with it what the reader did.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -290,6 +308,17 @@ pub enum DiagnosticKind {
     /// of paint, a blend mode, a soft mask, an image). Raised once per page
     /// for each `feature`; what it paints is left out.
     NotRendered { feature: &'static str },
+    /// An image that is not painted, for the `fault`.
+    ImageUnusable { fault: ImageFault },
+    /// An image whose data ends before the samples its dimensions call for.
+    /// The samples that are missing read as 0.
+    ImageDataShort,
+    /// An image whose codec data states a size other than the image
+    /// dictionary's `Width` and `Height`. The codec's size is used.
+    ImageSizeDiffers,
+    /// A mask of an image that is not applied, for the `fault`; the image
+    /// is painted without it.
+    ImageMaskUnusable { fault: ImageFault },
     /// A colour that cannot be turned into a screen colour: its components
     /// do not fit its colour space, or its transform failed. The mark it
     /// would have made is left out.

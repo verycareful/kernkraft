@@ -68,13 +68,17 @@ fn array_of_example_2() {
 }
 
 #[test]
-fn all_five_names() {
+fn all_nine_names() {
     let kinds = [
         ("ASCIIHexDecode", FilterKind::AsciiHex),
         ("ASCII85Decode", FilterKind::Ascii85),
         ("LZWDecode", FilterKind::Lzw),
         ("FlateDecode", FilterKind::Flate),
         ("RunLengthDecode", FilterKind::RunLength),
+        ("CCITTFaxDecode", FilterKind::Ccitt),
+        ("JBIG2Decode", FilterKind::Jbig2),
+        ("DCTDecode", FilterKind::Dct),
+        ("JPXDecode", FilterKind::Jpx),
     ];
     for (name, kind) in kinds {
         let found = filters(&format!("<</Filter /{name}>>"));
@@ -84,7 +88,7 @@ fn all_five_names() {
 
 #[test]
 fn names_not_decoded_here() {
-    for name in ["DCTDecode", "Fl", "Bogus", "flatedecode", "FlateDecodeX"] {
+    for name in ["JPXDecodeX", "Fl", "Bogus", "flatedecode", "FlateDecodeX"] {
         match pipeline(&format!("<</Filter [/ASCIIHexDecode /{name}]>>")) {
             Err(PdfError::UnknownFilter { name: found }) => assert_eq!(found, name),
             other => panic!("expected UnknownFilter {name}, got {other:?}"),

@@ -56,6 +56,9 @@ pub enum Limit {
     /// The pixels of one render. The caller sets `max`
     /// ([`RenderOptions`](crate::render::RenderOptions)).
     RenderPixels { max: u64 },
+    /// The pixels of one image, a mask or the picture itself. The caller
+    /// sets `max` ([`ImageOptions`](crate::image::ImageOptions)).
+    ImagePixels { max: u64 },
 }
 
 impl Limit {
@@ -77,7 +80,8 @@ impl Limit {
             | Limit::XrefEntries { max }
             | Limit::Operations { max }
             | Limit::TextGlyphs { max }
-            | Limit::RenderPixels { max } => return max,
+            | Limit::RenderPixels { max }
+            | Limit::ImagePixels { max } => return max,
         };
         // A usize is at most 64 bits wide on every supported target.
         max as u64
@@ -103,6 +107,7 @@ impl fmt::Display for Limit {
             Limit::XrefEntries { .. } => "cross-reference entry count",
             Limit::TextGlyphs { .. } => "glyph count of a page",
             Limit::RenderPixels { .. } => "pixel count of a render",
+            Limit::ImagePixels { .. } => "pixel count of an image",
         })
     }
 }

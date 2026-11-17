@@ -7,15 +7,19 @@
 //!
 //! Colours reach the device as the stream wrote them; they are turned into
 //! sRGB here, one paint at a time. What a later version of the renderer
-//! draws (images, shadings, patterns, blend modes, soft masks) is reported
+//! draws (shadings, patterns, blend modes, soft masks) is reported
 //! with [`DiagnosticKind::NotRendered`] once for each kind on a page, and
 //! the mark is left out.
 
-use std::collections::HashSet;
+mod images;
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use kernkraft_fs::Progress;
 use tiny_skia::{Path as Path2, PathBuilder, Transform};
 
+use crate::content::ContentStream;
 use crate::content::{
     Context, Device, FillRule, FormInfo, GraphicsState, ImageSource, InterpretOptions, Interpreter,
     Matrix, Paint, Path, PathPaint, PlacedGlyph, RenderMode, SoftMask, TextRun,
@@ -24,11 +28,12 @@ use crate::diagnostic::{DiagnosticKind, Diagnostics};
 use crate::doc::Document;
 use crate::error::Limit;
 use crate::font::FontKind;
+use crate::image::{DecodedImage, ImageOptions};
 use crate::render::canvas::{Canvas, Colour, StrokeStyle};
 use crate::render::colour::{Colours, Resolved};
 use crate::render::glyphs::Glyphs;
 use crate::render::shape;
-use crate::syntax::{Dictionary, Name, Object};
+use crate::syntax::{Dictionary, Name, Object, ObjectId};
 
 /// The blend modes that paint as Normal does (11.3.5: `Compatible` is
 /// `Normal`).
@@ -63,6 +68,12 @@ pub(super) struct Painter<'d, 'p> {
     /// it runs, so a description that shows Type 3 text makes its own.
     glyph_interpreter: Option<Interpreter<'d>>,
     glyph_nesting: usize,
+    image_options: ImageOptions,
+    /// The images drawn so far, by object, while they fit the budget.
+    images: HashMap<ObjectId, Arc<DecodedImage>>,
+    image_bytes: usize,
+    /// The content stream the last inline image was read from.
+    inline_source: Option<ContentStream>,
     /// The first error a callback met; the callbacks cannot return one.
     pub error: Option<crate::PdfError>,
     progress: &'p dyn Progress,
@@ -75,6 +86,7 @@ impl<'d, 'p> Painter<'d, 'p> {
         canvas: Canvas,
         colours: Colours<'d>,
         glyphs: Glyphs<'d>,
+        image_options: ImageOptions,
         progress: &'p dyn Progress,
     ) -> Self {
         Self {
@@ -88,6 +100,10 @@ impl<'d, 'p> Painter<'d, 'p> {
             text_clip: None,
             glyph_interpreter: None,
             glyph_nesting: 0,
+            image_options,
+            images: HashMap::new(),
+            image_bytes: 0,
+            inline_source: None,
             error: None,
             progress,
         }
@@ -352,8 +368,8 @@ impl Device for Painter<'_, '_> {
         }
     }
 
-    fn image(&mut self, _ctx: &Context<'_>, _image: &ImageSource) {
-        self.note("image");
+    fn image(&mut self, ctx: &Context<'_>, image: &ImageSource) {
+        self.paint_image(ctx, image);
     }
 
     fn shading(&mut self, _ctx: &Context<'_>, _name: &Name, _object: &Object) {

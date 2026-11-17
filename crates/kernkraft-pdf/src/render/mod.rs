@@ -12,7 +12,9 @@
 //! rendering mode with the glyphs of embedded Type 1, CFF and TrueType
 //! programs, Type 3 glyph descriptions, and a face from the application's
 //! font list for a font with no program. Colours of every space are
-//! converted to sRGB; constant alpha applies.
+//! converted to sRGB; constant alpha applies. Images are drawn at their
+//! place in the unit square of user space, with their masks, smoothed
+//! when they are shrunk or when `Interpolate` asks for it.
 //!
 //! What a later step draws is reported, not drawn: see
 //! [`DiagnosticKind::NotRendered`](crate::DiagnosticKind::NotRendered).
@@ -34,6 +36,7 @@ use crate::diagnostic::Diagnostics;
 use crate::display::PageView;
 use crate::doc::Document;
 use crate::error::Limit;
+use crate::image::ImageOptions;
 use crate::syntax::Dictionary;
 use crate::{PdfError, Rect};
 
@@ -61,6 +64,9 @@ pub struct RenderOptions<'f> {
     pub fonts: Option<&'f FontList>,
     /// The most pixels the picture may have ([`Limit::RenderPixels`]).
     pub max_pixels: u64,
+    /// The most pixels an image of the page may have; one with more is
+    /// left out and reported ([`Limit::ImagePixels`]).
+    pub max_image_pixels: u64,
 }
 
 impl Default for RenderOptions<'_> {
@@ -70,6 +76,7 @@ impl Default for RenderOptions<'_> {
             region: None,
             fonts: None,
             max_pixels: DEFAULT_MAX_PIXELS,
+            max_image_pixels: crate::image::DEFAULT_MAX_IMAGE_PIXELS,
         }
     }
 }
@@ -149,12 +156,18 @@ pub fn render_page(
             .unwrap_or_default(),
         None => Dictionary::new(),
     };
+    let colours = Colours::new(doc, &resources)?;
+    let image_options = ImageOptions {
+        max_pixels: options.max_image_pixels,
+        defaults: colours.defaults().clone(),
+    };
     let mut painter = Painter::new(
         doc,
         resources.clone(),
         canvas,
-        Colours::new(doc, &resources)?,
+        colours,
         Glyphs::new(doc, options.fonts),
+        image_options,
         progress,
     );
     let mut interpreter = Interpreter::new(

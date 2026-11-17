@@ -15,8 +15,8 @@
 use std::sync::Arc;
 
 use tiny_skia::{
-    FillRule as SkiaFillRule, LineCap as SkiaCap, LineJoin as SkiaJoin, Mask, Paint, Path, Pixmap,
-    Stroke, StrokeDash, Transform,
+    FillRule as SkiaFillRule, FilterQuality, LineCap as SkiaCap, LineJoin as SkiaJoin, Mask, Paint,
+    Path, Pattern, Pixmap, PixmapRef, Rect, SpreadMode, Stroke, StrokeDash, Transform,
 };
 
 use crate::content::{FillRule, LineCap, LineJoin};
@@ -161,6 +161,44 @@ impl Canvas {
         }
         self.pixmap
             .stroke_path(path, &paint, &stroke, transform, self.clip.as_deref());
+    }
+
+    /// Draws `pixels` (premultiplied RGBA8, `width` by `height`), moved
+    /// to the canvas by `transform`, at `opacity` (the constant alpha of
+    /// 11.6.4.4). `smooth` filters the samples; without it each pixel of the
+    /// canvas takes the nearest sample.
+    pub fn draw_pixels(
+        &mut self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        transform: Transform,
+        opacity: f32,
+        smooth: bool,
+    ) {
+        let (Some(source), Some(area)) = (
+            PixmapRef::from_bytes(pixels, width, height),
+            Rect::from_xywh(0.0, 0.0, width as f32, height as f32),
+        ) else {
+            return;
+        };
+        let paint = Paint {
+            shader: Pattern::new(
+                source,
+                SpreadMode::Pad,
+                if smooth {
+                    FilterQuality::Bilinear
+                } else {
+                    FilterQuality::Nearest
+                },
+                opacity.clamp(0.0, 1.0),
+                Transform::identity(),
+            ),
+            anti_alias: true,
+            ..Paint::default()
+        };
+        self.pixmap
+            .fill_rect(area, &paint, transform, self.clip.as_deref());
     }
 
     /// The pixels as straight (not premultiplied) RGBA8, row by row from

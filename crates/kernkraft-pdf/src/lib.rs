@@ -16,7 +16,8 @@
 //! ([`MemorySource`]) or read from disk by offset ([`FileSource`]).
 //! [`syntax`] reads PDF objects from a source and writes them, reporting
 //! what it accepted against the format as [`Diagnostic`]s. [`filter`]
-//! decodes stream data, never past the size the caller allows. [`file`]
+//! decodes stream data, image codecs (DCT, JPEG 2000, JBIG2, CCITT fax)
+//! included, never past the size the caller allows. [`file`]
 //! reads a file's header and cross-reference and loads its objects one at
 //! a time, within the limits the caller sets. [`crypt`] reads the
 //! encryption dictionary of an encrypted file, checks a password against
@@ -42,8 +43,10 @@
 //! spaces (device, CIE-based, ICC profiles, Indexed, Separation, DeviceN)
 //! and functions (sampled, exponential, stitching and PostScript
 //! calculator) and converts a colour of any space to sRGB.
-//! [`render`] draws a page, or a region of it, at a scale: paths, clipping,
-//! and text in embedded and substituted fonts, as RGBA pixels.
+//! [`image`] decodes an image XObject or an inline image, with its masks, to
+//! RGBA pixels. [`render`] draws a page, or a region of it, at a scale:
+//! paths, clipping, text in embedded and substituted fonts and images, as
+//! RGBA pixels.
 
 mod action;
 mod active;
@@ -61,6 +64,7 @@ pub mod file;
 mod filespec;
 pub mod filter;
 pub mod font;
+pub mod image;
 mod labels;
 mod links;
 #[cfg(feature = "render")]
@@ -82,7 +86,7 @@ pub use action::{Action, ActionKind};
 pub use active::{ActiveAction, ActiveContent};
 pub use attachments::{Attachment, AttachmentPlace, Check, Extracted};
 pub use destination::{Destination, DestinationPage, NamedDestination, View};
-pub use diagnostic::{Diagnostic, DiagnosticKind, Diagnostics, PortableLimit};
+pub use diagnostic::{Diagnostic, DiagnosticKind, Diagnostics, ImageFault, PortableLimit};
 pub use display::Rect;
 pub use error::{Limit, PdfError};
 pub use filespec::FileSpec;

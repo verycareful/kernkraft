@@ -18,6 +18,9 @@ render = ["dep:mupdf"]
 aes.workspace = true
 cbc.workspace = true
 flate2.workspace = true
+hayro-ccitt.workspace = true
+hayro-jbig2.workspace = true
+hayro-jpeg2000.workspace = true
 kernkraft-font.workspace = true
 kernkraft-fs.workspace = true
 md-5.workspace = true
@@ -29,6 +32,7 @@ unicode-normalization.workspace = true
 thiserror.workspace = true
 tiny-skia.workspace = true
 weezl.workspace = true
+zune-jpeg.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

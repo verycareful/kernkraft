@@ -9,7 +9,11 @@
 
 mod ascii85;
 mod ascii_hex;
+mod ccitt;
+mod dct;
 mod flate;
+mod jbig2;
+mod jpx;
 mod lzw;
 mod pipeline;
 mod predictor;
@@ -424,6 +428,10 @@ fn filter_names_are_those_of_table_6() {
         (FilterKind::Lzw, "LZWDecode"),
         (FilterKind::Flate, "FlateDecode"),
         (FilterKind::RunLength, "RunLengthDecode"),
+        (FilterKind::Ccitt, "CCITTFaxDecode"),
+        (FilterKind::Jbig2, "JBIG2Decode"),
+        (FilterKind::Dct, "DCTDecode"),
+        (FilterKind::Jpx, "JPXDecode"),
     ];
     for (kind, name) in names {
         assert_eq!(kind.name(), name);
@@ -453,9 +461,9 @@ fn error_messages() {
     );
     assert_eq!(
         PdfError::UnknownFilter {
-            name: "DCTDecode".into()
+            name: "ImageDecode".into()
         }
         .to_string(),
-        "DCTDecode is not a filter this library decodes"
+        "ImageDecode is not a filter this library decodes"
     );
 }

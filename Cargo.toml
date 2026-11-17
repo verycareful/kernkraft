@@ -10,7 +10,7 @@ resolver = "2"
 # commit index on a dev branch) is written as its first three parts with the
 # rest as build metadata: label 0.1.0.0 is 0.1.0+0, label 0.1.0.0.3 is
 # 0.1.0+0.3. The kernkraft-fs version test checks the two agree.
-version = "0.1.3+1.16"
+version = "0.1.3+1.17"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -52,6 +52,13 @@ tiny-skia = { version = "0.12", default-features = false, features = ["std", "si
 # FontFile3 of a PDF) and the name and cmap tables of a font read in part.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 read-fonts = { version = "0.41", default-features = false, features = ["std"] }
+# Image codecs behind the PDF filter interface (kernkraft-pdf filter/): DCT,
+# JPEG 2000, JBIG2 and CCITT fax. No `image` feature on the hayro crates: pixels
+# leave as raw bytes.
+zune-jpeg = { version = "0.5", default-features = false, features = ["std", "x86", "neon"] }
+hayro-jpeg2000 = { version = "0.5", default-features = false, features = ["std"] }
+hayro-jbig2 = { version = "0.4", default-features = false, features = ["std"] }
+hayro-ccitt = "0.5"
 thiserror = "2"
 tempfile = "3"
 rustix = { version = "1", features = ["fs", "process", "event"] }

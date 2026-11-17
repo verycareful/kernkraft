@@ -9,10 +9,14 @@
 //! more than the size its caller allows, at any stage: a few bytes of
 //! encoded data can stand for gigabytes.
 //!
-//! The filters decoded here are those of Table 6 that are not image codecs:
-//! ASCIIHexDecode, ASCII85Decode and RunLengthDecode, decoded by this
-//! module, LZWDecode, whose codes the `weezl` crate decodes, and
-//! FlateDecode, whose DEFLATE blocks the `flate2` crate decodes.
+//! The filters of Table 6 are decoded here: ASCIIHexDecode, ASCII85Decode
+//! and RunLengthDecode by this module, LZWDecode by the `weezl` crate and
+//! FlateDecode by the `flate2` crate, and the image codecs through the
+//! crates that implement them: CCITTFaxDecode (`hayro-ccitt`),
+//! JBIG2Decode (`hayro-jbig2`), DCTDecode (`zune-jpeg`) and JPXDecode
+//! (`hayro-jpeg2000`). An image codec gives the samples of its image, not
+//! a picture: DCT its components as one byte each, JPX its colour channels
+//! as one byte each, CCITT and JBIG2 one bit a pixel.
 //!
 //! The Crypt filter (7.4.10) is read and changes no data here: it names
 //! how the security handler decrypts the stream, which
@@ -26,7 +30,11 @@
 
 mod ascii85;
 mod ascii_hex;
+mod ccitt;
+mod dct;
 mod flate;
+mod jbig2;
+mod jpx;
 mod lzw;
 mod output;
 mod predictor;
@@ -35,11 +43,18 @@ mod run_length;
 use std::borrow::Cow;
 use std::fmt;
 
+pub use ccitt::CcittParams;
+pub use dct::DctParams;
+pub use jbig2::Jbig2Globals;
+pub use jpx::JpxColour;
 pub use predictor::{Predictor, PredictorFunction};
+
+pub(crate) use dct::DctInfo;
+pub(crate) use jpx::JpxInfo;
 
 use crate::syntax::lexer::shown;
 use crate::syntax::limits::MAX_FILTERS;
-use crate::syntax::{Dictionary, Name, Object, Value};
+use crate::syntax::{Dictionary, Name, Object, ObjectId, Value};
 use crate::{DiagnosticKind, Diagnostics, Limit, PdfError};
 use output::Output;
 
@@ -62,17 +77,25 @@ pub enum FilterKind {
     Lzw,
     Flate,
     RunLength,
+    Ccitt,
+    Jbig2,
+    Dct,
+    Jpx,
     /// Decrypted by the security handler, not decoded (7.4.10).
     Crypt,
 }
 
 impl FilterKind {
-    const ALL: [FilterKind; 6] = [
+    const ALL: [FilterKind; 10] = [
         FilterKind::AsciiHex,
         FilterKind::Ascii85,
         FilterKind::Lzw,
         FilterKind::Flate,
         FilterKind::RunLength,
+        FilterKind::Ccitt,
+        FilterKind::Jbig2,
+        FilterKind::Dct,
+        FilterKind::Jpx,
         FilterKind::Crypt,
     ];
 
@@ -84,6 +107,10 @@ impl FilterKind {
             FilterKind::Lzw => "LZWDecode",
             FilterKind::Flate => "FlateDecode",
             FilterKind::RunLength => "RunLengthDecode",
+            FilterKind::Ccitt => "CCITTFaxDecode",
+            FilterKind::Jbig2 => "JBIG2Decode",
+            FilterKind::Dct => "DCTDecode",
+            FilterKind::Jpx => "JPXDecode",
             FilterKind::Crypt => "Crypt",
         }
     }
@@ -116,6 +143,12 @@ pub enum Filter {
     Flate {
         predictor: Predictor,
     },
+    Ccitt(CcittParams),
+    Jbig2 {
+        globals: Jbig2Globals,
+    },
+    Dct(DctParams),
+    Jpx,
     /// The data was decrypted before it came to the pipeline, which
     /// passes it on as it is.
     Crypt,
@@ -129,6 +162,10 @@ impl Filter {
             Filter::RunLength => FilterKind::RunLength,
             Filter::Lzw { .. } => FilterKind::Lzw,
             Filter::Flate { .. } => FilterKind::Flate,
+            Filter::Ccitt(_) => FilterKind::Ccitt,
+            Filter::Jbig2 { .. } => FilterKind::Jbig2,
+            Filter::Dct(_) => FilterKind::Dct,
+            Filter::Jpx => FilterKind::Jpx,
             Filter::Crypt => FilterKind::Crypt,
         }
     }
@@ -136,7 +173,14 @@ impl Filter {
     fn predictor(&self) -> Option<&Predictor> {
         match self {
             Filter::Lzw { predictor, .. } | Filter::Flate { predictor } => Some(predictor),
-            Filter::AsciiHex | Filter::Ascii85 | Filter::RunLength | Filter::Crypt => None,
+            Filter::AsciiHex
+            | Filter::Ascii85
+            | Filter::RunLength
+            | Filter::Ccitt(_)
+            | Filter::Jbig2 { .. }
+            | Filter::Dct(_)
+            | Filter::Jpx
+            | Filter::Crypt => None,
         }
     }
 
@@ -154,6 +198,12 @@ impl Filter {
             FilterKind::Ascii85 => Filter::Ascii85,
             FilterKind::RunLength => Filter::RunLength,
             FilterKind::Crypt => Filter::Crypt,
+            FilterKind::Ccitt => Filter::Ccitt(CcittParams::read(parms)?),
+            FilterKind::Jbig2 => Filter::Jbig2 {
+                globals: Jbig2Globals::read(parms)?,
+            },
+            FilterKind::Dct => Filter::Dct(DctParams::read(parms)?),
+            FilterKind::Jpx => Filter::Jpx,
             FilterKind::Flate => Filter::Flate {
                 predictor: predictor()?,
             },
@@ -255,6 +305,29 @@ impl Pipeline {
         &self.filters
     }
 
+    /// The stream `JBIG2Globals` names, when a JBIG2Decode filter of the
+    /// pipeline names one and its data has not been given yet.
+    pub fn pending_jbig2_globals(&self) -> Option<ObjectId> {
+        self.filters.iter().find_map(|filter| match filter {
+            Filter::Jbig2 {
+                globals: Jbig2Globals::Reference(id),
+            } => Some(*id),
+            _ => None,
+        })
+    }
+
+    /// Gives the decoded data of the stream `JBIG2Globals` names, which
+    /// [`pending_jbig2_globals`](Self::pending_jbig2_globals) found.
+    pub fn provide_jbig2_globals(&mut self, id: ObjectId, data: std::sync::Arc<[u8]>) {
+        for filter in &mut self.filters {
+            if let Filter::Jbig2 { globals } = filter {
+                if *globals == Jbig2Globals::Reference(id) {
+                    *globals = Jbig2Globals::Data(data.clone());
+                }
+            }
+        }
+    }
+
     /// Decodes `data` through every filter in turn.
     ///
     /// `max_output` is the most bytes any filter may produce; data that
@@ -268,6 +341,19 @@ impl Pipeline {
         offset: u64,
         diagnostics: &mut Diagnostics,
     ) -> Result<Decoded<'a>, PdfError> {
+        self.decode_image(data, max_output, offset, diagnostics)
+            .map(|(decoded, _)| decoded)
+    }
+
+    /// [`decode`](Self::decode), and what the last image codec of the
+    /// pipeline says about its image.
+    pub(crate) fn decode_image<'a>(
+        &self,
+        data: &'a [u8],
+        max_output: usize,
+        offset: u64,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<(Decoded<'a>, Option<CodecInfo>), PdfError> {
         let mut decoding = self
             .filters
             .iter()
@@ -278,13 +364,30 @@ impl Pipeline {
         }
         let mut data = Cow::Borrowed(data);
         let mut complete = true;
+        let mut codec = None;
         for filter in decoding {
-            let (decoded, stage_complete) = run(filter, &data, max_output, offset, diagnostics)?;
-            data = Cow::Owned(decoded);
-            complete &= stage_complete;
+            let stage = run(filter, &data, max_output, offset, diagnostics)?;
+            data = Cow::Owned(stage.data);
+            complete &= stage.complete;
+            if stage.codec.is_some() {
+                codec = stage.codec;
+            }
         }
-        Ok(Decoded { data, complete })
+        Ok((Decoded { data, complete }, codec))
     }
+}
+
+/// What an image codec reports about the image it decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodecInfo {
+    /// DCTDecode: the frame header.
+    Dct(DctInfo),
+    /// JPXDecode: the file's size, colour space and opacity channel.
+    Jpx(JpxInfo),
+    /// JBIG2Decode: the page's size.
+    Jbig2 { width: u32, height: u32 },
+    /// CCITTFaxDecode: the width and the rows that were decoded.
+    Ccitt { columns: u32, rows: u32 },
 }
 
 /// A filter's name and its parameters, as a stream dictionary gives them.
@@ -365,6 +468,13 @@ pub fn crypt_filter_name(dictionary: &Dictionary) -> Result<Option<Name>, PdfErr
     }
 }
 
+/// One filter's output.
+struct StageOutput {
+    data: Vec<u8>,
+    complete: bool,
+    codec: Option<CodecInfo>,
+}
+
 /// Runs one filter over `input`. Returns the decoded bytes and whether all
 /// of the input was decoded.
 fn run(
@@ -373,20 +483,50 @@ fn run(
     max_output: usize,
     offset: u64,
     diagnostics: &mut Diagnostics,
-) -> Result<(Vec<u8>, bool), PdfError> {
+) -> Result<StageOutput, PdfError> {
     let kind = filter.kind();
     let removed = filter
         .predictor()
         .map_or(0, |predictor| predictor.removed_bytes(max_output));
     let mut out = Output::new(max_output, removed);
+    let mut codec = None;
     let stop = match filter {
         Filter::AsciiHex => ascii_hex::decode(input, &mut out)?,
         Filter::Ascii85 => ascii85::decode(input, &mut out)?,
         Filter::RunLength => run_length::decode(input, &mut out)?,
         Filter::Lzw { early_change, .. } => lzw::decode(input, *early_change, &mut out)?,
         Filter::Flate { .. } => flate::decode(input, &mut out)?,
+        Filter::Ccitt(params) => {
+            let stop = ccitt::decode(input, params, &mut out)?;
+            codec = Some(CodecInfo::Ccitt {
+                columns: params.columns(),
+                rows: (out.len() / params.row_bytes()) as u32,
+            });
+            stop
+        }
+        Filter::Jbig2 { globals } => {
+            let (stop, width, height) = jbig2::decode(input, globals, &mut out)?;
+            codec = Some(CodecInfo::Jbig2 { width, height });
+            stop
+        }
+        Filter::Dct(params) => {
+            let (stop, info) = dct::decode(input, params, &mut out)?;
+            codec = Some(CodecInfo::Dct(info));
+            stop
+        }
+        Filter::Jpx => {
+            let (stop, info) = jpx::decode(input, &mut out)?;
+            codec = Some(CodecInfo::Jpx(info));
+            stop
+        }
         // `Pipeline::decode` runs no Crypt filter: its data is passed on.
-        Filter::Crypt => return Ok((input.to_vec(), true)),
+        Filter::Crypt => {
+            return Ok(StageOutput {
+                data: input.to_vec(),
+                complete: true,
+                codec: None,
+            })
+        }
     };
     let mut complete = true;
     match stop {
@@ -408,5 +548,9 @@ fn run(
     if !complete {
         diagnostics.push(DiagnosticKind::FilterDataDamaged { filter: kind }, offset);
     }
-    Ok((decoded, complete))
+    Ok(StageOutput {
+        data: decoded,
+        complete,
+        codec,
+    })
 }

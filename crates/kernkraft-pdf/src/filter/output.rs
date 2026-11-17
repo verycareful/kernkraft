@@ -48,6 +48,16 @@ impl Output {
         Ok(())
     }
 
+    /// The bytes held so far.
+    pub(super) fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Fails, adding nothing, when `more` bytes would pass the limit.
+    pub(super) fn check_room(&self, more: usize) -> Result<(), PdfError> {
+        self.room_for(more)
+    }
+
     pub(super) fn into_vec(self) -> Vec<u8> {
         self.bytes
     }

@@ -35,7 +35,10 @@
 //! [`Font`](font::Font): its encoding, CMaps, widths and descriptor, and
 //! the characters of a string shown with it, with their Unicode text.
 //! [`content`] runs a page's content stream and tells a device what it
-//! paints.
+//! paints. [`text`] reads a page's text as lines and blocks in reading
+//! order, searches it, and [`Document::links`] and [`Document::locate`]
+//! give a page's links and where a destination leads, all with geometry as
+//! fractions of the displayed page ([`Rect`]).
 
 mod action;
 mod active;
@@ -45,6 +48,7 @@ pub mod content;
 pub mod crypt;
 mod destination;
 mod diagnostic;
+mod display;
 pub mod doc;
 mod error;
 pub mod file;
@@ -52,6 +56,7 @@ mod filespec;
 pub mod filter;
 pub mod font;
 mod labels;
+mod links;
 mod outline;
 mod pages;
 mod pdf_doc;
@@ -63,17 +68,20 @@ mod session;
 mod signatures;
 mod source;
 pub mod syntax;
+pub mod text;
 pub mod write;
 
 pub use action::{Action, ActionKind};
 pub use active::{ActiveAction, ActiveContent};
 pub use attachments::{Attachment, AttachmentPlace, Check, Extracted};
-pub use destination::{Destination, DestinationPage, View};
+pub use destination::{Destination, DestinationPage, NamedDestination, View};
 pub use diagnostic::{Diagnostic, DiagnosticKind, Diagnostics, PortableLimit};
+pub use display::Rect;
 pub use error::{Limit, PdfError};
 pub use filespec::FileSpec;
 pub use kernkraft_fs::FileStamp;
 pub use labels::{LabelStyle, PageLabel};
+pub use links::{Link, Located};
 pub use outline::OutlineItem;
 pub use pages::{
     extract, merge, remove, reorder, rotate, split_by_bookmarks, split_per_page, split_ranges,
@@ -86,3 +94,4 @@ pub use revisions::Revision;
 pub use session::{Appended, EditSession, SaveOptions};
 pub use signatures::{Coverage, Signature, SignatureKind};
 pub use source::{FileSource, MemorySource, Source};
+pub use text::TextOptions;

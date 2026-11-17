@@ -264,6 +264,11 @@ pub enum DiagnosticKind {
     /// A `Do` of an XObject whose `Subtype` is neither `Image` nor `Form`
     /// (a PostScript XObject, 8.8.2, or a damaged one). It is skipped.
     XObjectSubtypeUnsupported { subtype: Name },
+    /// A glyph shown on a page that its font gives no Unicode text for.
+    /// The text layer reads it as U+FFFD, the replacement character, so
+    /// that the glyph keeps its place. Raised once for a page, at the
+    /// first such glyph's operation.
+    TextUnmapped,
 }
 
 /// One tolerant decision.

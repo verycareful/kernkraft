@@ -70,6 +70,15 @@ pub struct Destination {
     pub view: View,
 }
 
+/// A destination the document names (12.3.2.3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamedDestination {
+    /// The name, as bytes: a name of the catalog's `Dests` dictionary, or
+    /// a string key of the `Dests` name tree.
+    pub name: Vec<u8>,
+    pub destination: Destination,
+}
+
 /// Where a destination is to be found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DestinationFile {
@@ -112,6 +121,50 @@ impl Document {
             diagnostics.push(DiagnosticKind::InvalidDestination, offset);
         }
         Ok(explicit)
+    }
+
+    /// The destinations the document names: those of the catalog's
+    /// `Dests` dictionary, then those of the `Dests` name tree of its
+    /// name dictionary, each in the order its source gives. A value that
+    /// is not a destination is left out and reported.
+    pub fn named_destinations(&self) -> Result<Vec<NamedDestination>, PdfError> {
+        let catalog = self.catalog()?;
+        let Some(catalog) = catalog.dictionary() else {
+            return Ok(Vec::new());
+        };
+        let mut diagnostics = Diagnostics::new();
+        // Each destination with the object of the dictionary or tree it is
+        // listed in, which a diagnostic is raised against.
+        let mut named: Vec<(Vec<u8>, Object, Option<ObjectId>)> = Vec::new();
+        let dests = self.get(catalog, DESTS_KEY)?;
+        if let Some(dictionary) = dests.dictionary() {
+            for (name, value) in dictionary.iter() {
+                named.push((name.as_bytes().to_vec(), value.clone(), dests.id()));
+            }
+        }
+        let names = self.get(catalog, NAMES_KEY)?;
+        if let Some(root) = names.dictionary().and_then(|names| names.get(DESTS_KEY)) {
+            let tree = self.resolve(root)?.id();
+            for (name, value) in NameTree::new(self, root.clone()).entries()? {
+                named.push((name, value, tree));
+            }
+        }
+        let mut out = Vec::with_capacity(named.len());
+        for (name, value, source) in named {
+            let destination = match self.destination_array(&value)? {
+                Some(array) => self.explicit(&array, DestinationFile::This)?,
+                None => None,
+            };
+            match destination {
+                Some(destination) => out.push(NamedDestination { name, destination }),
+                None => {
+                    diagnostics.set_object(source);
+                    diagnostics.push(DiagnosticKind::InvalidDestination, self.offset_of(source));
+                }
+            }
+        }
+        self.record_diagnostics(diagnostics);
+        Ok(out)
     }
 
     /// The destination array the catalog's `Dests` gives `name`.

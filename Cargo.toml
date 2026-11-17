@@ -10,7 +10,7 @@ resolver = "2"
 # commit index on a dev branch) is written as its first three parts with the
 # rest as build metadata: label 0.1.0.0 is 0.1.0+0, label 0.1.0.0.3 is
 # 0.1.0+0.3. The kernkraft-fs version test checks the two agree.
-version = "0.1.3+1.13"
+version = "0.1.3+1.14"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -40,6 +40,9 @@ cbc = "0.2"
 rc4 = "0.2"
 sha2 = "0.10"
 unicode-normalization = "0.1"
+# ICC profile colour transforms (ICCBased colour spaces); no unsafe in the
+# transform path we call, BSD-3-Clause OR Apache-2.0.
+moxcms = "0.8"
 mupdf = "0.6"
 # Font parsing, outlines and metrics (Google fontations; no unsafe, maintained).
 # skrifa reads TrueType and OpenType; read-fonts reads a bare CFF program (the

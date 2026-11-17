@@ -21,6 +21,7 @@ flate2.workspace = true
 kernkraft-font.workspace = true
 kernkraft-fs.workspace = true
 md-5.workspace = true
+moxcms.workspace = true
 mupdf = { workspace = true, optional = true }
 rc4.workspace = true
 sha2.workspace = true

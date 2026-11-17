@@ -269,6 +269,23 @@ pub enum DiagnosticKind {
     /// that the glyph keeps its place. Raised once for a page, at the
     /// first such glyph's operation.
     TextUnmapped,
+    /// An `ICCBased` colour space whose profile cannot be used: its stream
+    /// is unreadable, its data colour space does not have the `N`
+    /// components the stream states, or the profile has no usable
+    /// transform. The space's `Alternate`, or the device space of `N`
+    /// components, stands in for it.
+    IccProfileUnusable,
+    /// A sampled function (type 0) whose `Order` is 3 (cubic spline
+    /// interpolation, 7.10.2). Linear interpolation is used.
+    FunctionOrderIgnored,
+    /// An `Indexed` colour space whose lookup table has fewer bytes than
+    /// `hival + 1` entries of the base space need. The entries past its
+    /// end are all zero.
+    IndexedTableShort,
+    /// A sampled function (type 0) whose stream has fewer bytes than the
+    /// sample table `Size`, `Range` and `BitsPerSample` call for. The
+    /// samples past its end are all zero.
+    FunctionSamplesShort,
 }
 
 /// One tolerant decision.

@@ -52,6 +52,12 @@ pub const MAX_GRAPHICS_STATE_DEPTH: usize = 4096;
 /// long and not a cycle.
 pub const MAX_FORM_DEPTH: usize = 64;
 
+/// The functions one function may have open at once, one inside another (a
+/// stitching function names its subfunctions, which may stitch in turn). A
+/// cycle of references would otherwise recurse without end. Functions
+/// nest two or three deep in practice.
+pub const MAX_FUNCTION_DEPTH: usize = 16;
+
 /// Table C.1, integer: the largest integer value.
 pub const PORTABLE_INTEGER_MAX: i64 = i32::MAX as i64;
 

@@ -38,12 +38,16 @@
 //! paints. [`text`] reads a page's text as lines and blocks in reading
 //! order, searches it, and [`Document::links`] and [`Document::locate`]
 //! give a page's links and where a destination leads, all with geometry as
-//! fractions of the displayed page ([`Rect`]).
+//! fractions of the displayed page ([`Rect`]). [`colour`] reads colour
+//! spaces (device, CIE-based, ICC profiles, Indexed, Separation, DeviceN)
+//! and functions (sampled, exponential, stitching and PostScript
+//! calculator) and converts a colour of any space to sRGB.
 
 mod action;
 mod active;
 mod attachments;
 pub mod build;
+pub mod colour;
 pub mod content;
 pub mod crypt;
 mod destination;

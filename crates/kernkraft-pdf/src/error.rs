@@ -5,9 +5,10 @@ use std::fmt;
 
 use crate::syntax::ObjectId;
 
+use crate::colour::FunctionFault;
 use crate::syntax::limits::{
-    MAX_FILTERS, MAX_FORM_DEPTH, MAX_GRAPHICS_STATE_DEPTH, MAX_NAME_BYTES, MAX_NESTING_DEPTH,
-    MAX_STRING_BYTES, MAX_TOKEN_BYTES,
+    MAX_FILTERS, MAX_FORM_DEPTH, MAX_FUNCTION_DEPTH, MAX_GRAPHICS_STATE_DEPTH, MAX_NAME_BYTES,
+    MAX_NESTING_DEPTH, MAX_STRING_BYTES, MAX_TOKEN_BYTES,
 };
 
 /// A hard limit of the reader and the writer. Input that passes one is
@@ -29,6 +30,16 @@ pub enum Limit {
     /// The form XObjects (and patterns and glyph procedures) open at once,
     /// one inside another.
     FormNesting,
+    /// The functions open at once, one inside another.
+    FunctionNesting,
+    /// The colour spaces open at once, one inside another.
+    ColourSpaceNesting,
+    /// The inputs of a sampled function (7.10.2): each doubles the samples
+    /// one evaluation reads.
+    SampledInputs,
+    /// The bytes of a sampled function's sample table, or of a PostScript
+    /// calculator function's code.
+    FunctionData,
     /// The operations one interpreter run executes, forms included. The
     /// caller sets `max` ([`InterpretOptions`](crate::content::InterpretOptions)).
     Operations { max: u64 },
@@ -55,6 +66,10 @@ impl Limit {
             Limit::FilterCount => MAX_FILTERS,
             Limit::GraphicsStateDepth => MAX_GRAPHICS_STATE_DEPTH,
             Limit::FormNesting => MAX_FORM_DEPTH,
+            Limit::FunctionNesting => MAX_FUNCTION_DEPTH,
+            Limit::ColourSpaceNesting => crate::colour::MAX_COLOUR_SPACE_DEPTH,
+            Limit::SampledInputs => crate::colour::MAX_SAMPLED_INPUTS,
+            Limit::FunctionData => crate::colour::MAX_FUNCTION_BYTES,
             Limit::ObjectElements { max }
             | Limit::XrefEntries { max }
             | Limit::Operations { max }
@@ -75,6 +90,10 @@ impl fmt::Display for Limit {
             Limit::FilterCount => "filter count",
             Limit::GraphicsStateDepth => "graphics state depth",
             Limit::FormNesting => "form nesting depth",
+            Limit::FunctionNesting => "function nesting depth",
+            Limit::ColourSpaceNesting => "colour space nesting depth",
+            Limit::SampledInputs => "input count of a sampled function",
+            Limit::FunctionData => "data size of a function",
             Limit::Operations { .. } => "operation count",
             Limit::ObjectElements { .. } => "element count of an object",
             Limit::XrefEntries { .. } => "cross-reference entry count",
@@ -249,6 +268,14 @@ pub enum PdfError {
     /// Bytes appended since a length that no save of the session ended at.
     #[error("no save of the session left the file {length} bytes long")]
     UnknownAppendPoint { length: u64 },
+    /// A function (7.10) that could not be evaluated for the input given,
+    /// or that failed while it ran.
+    #[error("a function cannot be evaluated: {0}")]
+    Function(FunctionFault),
+    /// A colour given in a colour space that has a different number of
+    /// components.
+    #[error("a colour of {found} components was given to a colour space of {expected}")]
+    ColourComponents { expected: usize, found: usize },
     /// The operation was cancelled through its progress handle.
     #[error("the operation was cancelled")]
     Cancelled,

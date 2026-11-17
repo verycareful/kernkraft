@@ -14,7 +14,10 @@
 //! The text layer, the renderer and the text editor are devices.
 //!
 //! Colours are kept as the stream gave them, in the colour space it chose;
-//! turning them into device colours is the colour layer's. Type 3 glyph
+//! turning them into device colours is the colour layer's
+//! ([`Document::paint_colour_space`](crate::doc::Document::paint_colour_space)
+//! reads the space, [`ColourSpace::to_rgb`](crate::colour::ColourSpace::to_rgb)
+//! converts a colour). Type 3 glyph
 //! descriptions are not run by the interpreter: a glyph of a Type 3 font is
 //! reported with the text, and a renderer runs the description it names.
 

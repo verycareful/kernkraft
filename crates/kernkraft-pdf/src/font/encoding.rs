@@ -43,6 +43,12 @@ impl BaseEncoding {
         })
     }
 
+    /// The code the encoding gives the glyph `name`, when it has one.
+    pub(crate) fn code_of(self, name: &str) -> Option<u8> {
+        let at = self.table().iter().position(|entry| *entry == name)?;
+        u8::try_from(at).ok()
+    }
+
     fn table(self) -> &'static [&'static str; CODES] {
         match self {
             BaseEncoding::Standard => &encodings::STANDARD,

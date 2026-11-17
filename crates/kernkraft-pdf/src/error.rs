@@ -53,6 +53,9 @@ pub enum Limit {
     /// The glyphs one page shows, when its text is read. The caller sets
     /// `max` ([`TextOptions`](crate::TextOptions)).
     TextGlyphs { max: u64 },
+    /// The pixels of one render. The caller sets `max`
+    /// ([`RenderOptions`](crate::render::RenderOptions)).
+    RenderPixels { max: u64 },
 }
 
 impl Limit {
@@ -73,7 +76,8 @@ impl Limit {
             Limit::ObjectElements { max }
             | Limit::XrefEntries { max }
             | Limit::Operations { max }
-            | Limit::TextGlyphs { max } => return max,
+            | Limit::TextGlyphs { max }
+            | Limit::RenderPixels { max } => return max,
         };
         // A usize is at most 64 bits wide on every supported target.
         max as u64
@@ -98,6 +102,7 @@ impl fmt::Display for Limit {
             Limit::ObjectElements { .. } => "element count of an object",
             Limit::XrefEntries { .. } => "cross-reference entry count",
             Limit::TextGlyphs { .. } => "glyph count of a page",
+            Limit::RenderPixels { .. } => "pixel count of a render",
         })
     }
 }

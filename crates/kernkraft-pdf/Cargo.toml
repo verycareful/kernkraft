@@ -27,6 +27,7 @@ rc4.workspace = true
 sha2.workspace = true
 unicode-normalization.workspace = true
 thiserror.workspace = true
+tiny-skia.workspace = true
 weezl.workspace = true
 
 [dev-dependencies]

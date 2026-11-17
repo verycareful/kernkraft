@@ -41,6 +41,7 @@ use std::sync::Arc;
 pub use cmap::{CMap, CidSystemInfo};
 pub use descriptor::{FontDescriptor, FontFile, FontFlags, ProgramKind};
 pub use encoding::BaseEncoding;
+pub(crate) use glyphlist::text_for_name;
 pub use widths::VerticalMetrics;
 
 use crate::diagnostic::{DiagnosticKind, Diagnostics};

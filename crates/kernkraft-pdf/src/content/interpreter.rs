@@ -152,6 +152,12 @@ pub struct Interpreter<'d> {
     /// run began.
     pub(super) base_saved: usize,
     pub(super) base_marked: usize,
+    /// Whether the stream being run is a Type 3 glyph description (9.6.5),
+    /// the only place `d0` and `d1` belong.
+    pub(super) in_glyph: bool,
+    /// Set by `d1`: the glyph takes the colour of the text that shows it,
+    /// so the colour operators of the description are ignored (9.6.5.1).
+    pub(super) uncoloured: bool,
     operations: u64,
 }
 
@@ -184,6 +190,8 @@ impl<'d> Interpreter<'d> {
             compat: 0,
             base_saved: 0,
             base_marked: 0,
+            in_glyph: false,
+            uncoloured: false,
             operations: 0,
         })
     }
@@ -225,6 +233,57 @@ impl<'d> Interpreter<'d> {
         result
     }
 
+    /// Runs the glyph description `procedure` of a Type 3 font (9.6.5) with
+    /// `matrix` taking glyph space to the space the device draws in.
+    ///
+    /// The description starts in the state of the text that shows it,
+    /// `outer`: its colour as both fill and stroke colour, its constant
+    /// alpha, blend mode and soft mask. Its `d0` or `d1` is accepted; after
+    /// `d1` the colour operators of the description are ignored (9.6.5.1).
+    /// `resources` are the font's, or the page's when it has none.
+    pub fn run_glyph(
+        &mut self,
+        procedure: ObjectId,
+        resources: &Dictionary,
+        matrix: Matrix,
+        outer: &GraphicsState,
+        device: &mut dyn Device,
+        progress: &dyn Progress,
+    ) -> Result<(), PdfError> {
+        self.reset(matrix);
+        self.state.fill = outer.fill.clone();
+        self.state.stroke = outer.fill.clone();
+        self.state.fill_alpha = outer.fill_alpha;
+        self.state.stroke_alpha = outer.fill_alpha;
+        self.state.blend_mode = outer.blend_mode.clone();
+        self.state.soft_mask = outer.soft_mask.clone();
+        self.in_glyph = true;
+        let result = self.run_glyph_inner(procedure, resources, &mut Env { device, progress });
+        self.in_glyph = false;
+        self.uncoloured = false;
+        self.flush();
+        result
+    }
+
+    fn run_glyph_inner(
+        &mut self,
+        procedure: ObjectId,
+        resources: &Dictionary,
+        env: &mut Env<'_>,
+    ) -> Result<(), PdfError> {
+        let content = self.doc.load_content_stream(
+            StreamId::Object(procedure),
+            self.options.max_stream_bytes,
+            &mut self.diagnostics,
+        )?;
+        self.resources.push(resources.clone());
+        self.diagnostics.set_object(Some(procedure));
+        let result = self.run_content(StreamId::Object(procedure), content.data, env);
+        self.diagnostics.set_object(None);
+        self.resources.pop();
+        result
+    }
+
     /// Hands the diagnostics of the run to the document.
     fn flush(&mut self) {
         let diagnostics = std::mem::take(&mut self.diagnostics);
@@ -243,6 +302,8 @@ impl<'d> Interpreter<'d> {
         self.compat = 0;
         self.base_saved = 0;
         self.base_marked = 0;
+        self.in_glyph = false;
+        self.uncoloured = false;
         self.operations = 0;
     }
 
@@ -365,6 +426,29 @@ impl<'d> Interpreter<'d> {
             },
             operation.span.start,
         );
+    }
+
+    /// `d0` and `d1` (9.6.5, Table 113): the first operator of a Type 3
+    /// glyph description. Anywhere else they are misplaced.
+    fn glyph_metrics(&mut self, operation: &Operation) {
+        if !self.in_glyph {
+            self.misplaced(operation);
+            return;
+        }
+        let uncoloured = operation.operator == b"d1";
+        let wanted = if uncoloured { 6 } else { 2 };
+        if operation.operands.len() != wanted
+            || operation
+                .operands
+                .iter()
+                .any(|operand| operand_number(operand).is_none())
+        {
+            self.invalid(operation);
+            return;
+        }
+        if uncoloured {
+            self.uncoloured = true;
+        }
     }
 
     pub(super) fn misplaced(&mut self, operation: &Operation) {
@@ -503,8 +587,11 @@ impl<'d> Interpreter<'d> {
             b"Td" | b"TD" | b"Tm" | b"T*" => self.position_text(operation),
             b"Tj" | b"TJ" | b"'" | b"\"" => self.show_text(operation, span, env)?,
             // Type 3 fonts (9.6.5): only a glyph description may use these.
-            b"d0" | b"d1" => self.misplaced(operation),
+            b"d0" | b"d1" => self.glyph_metrics(operation),
             // Colour (8.6.8).
+            b"CS" | b"cs" | b"SC" | b"SCN" | b"sc" | b"scn" | b"G" | b"g" | b"RG" | b"rg"
+            | b"K" | b"k"
+                if self.uncoloured => {}
             b"CS" | b"cs" => self.set_colour_space(operation),
             b"SC" | b"SCN" | b"sc" | b"scn" => self.set_colour(operation)?,
             b"G" | b"g" | b"RG" | b"rg" | b"K" | b"k" => self.set_device_colour(operation),
@@ -677,6 +764,15 @@ impl<'d> Interpreter<'d> {
         value: &Object,
         operation: &Operation,
     ) -> Result<(), PdfError> {
+        // The transfer, halftone, black-generation and colour-removal entries
+        // (8.4.5) are not acted on, and are often functions, which are
+        // streams that `resolve` does not follow: they are not read at all.
+        if matches!(
+            key.as_bytes(),
+            b"BG" | b"BG2" | b"UCR" | b"UCR2" | b"TR" | b"TR2" | b"HT" | b"SM"
+        ) {
+            return Ok(());
+        }
         let doc = self.doc;
         let resolved = doc.resolve(value)?;
         let object = resolved.object();

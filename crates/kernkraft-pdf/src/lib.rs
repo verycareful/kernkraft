@@ -42,6 +42,8 @@
 //! spaces (device, CIE-based, ICC profiles, Indexed, Separation, DeviceN)
 //! and functions (sampled, exponential, stitching and PostScript
 //! calculator) and converts a colour of any space to sRGB.
+//! [`render`] draws a page, or a region of it, at a scale: paths, clipping,
+//! and text in embedded and substituted fonts, as RGBA pixels.
 
 mod action;
 mod active;
@@ -61,12 +63,13 @@ pub mod filter;
 pub mod font;
 mod labels;
 mod links;
+#[cfg(feature = "render")]
+mod mupdf_render;
 mod outline;
 mod pages;
 mod pdf_doc;
 mod ranges;
-#[cfg(feature = "render")]
-mod render;
+pub mod render;
 mod revisions;
 mod session;
 mod signatures;
@@ -86,14 +89,14 @@ pub use filespec::FileSpec;
 pub use kernkraft_fs::FileStamp;
 pub use labels::{LabelStyle, PageLabel};
 pub use links::{Link, Located};
+#[cfg(feature = "render")]
+pub use mupdf_render::{page_size_pt, render_page, RenderedPage, Renderer, MAX_RENDER_DIMENSION};
 pub use outline::OutlineItem;
 pub use pages::{
     extract, merge, remove, reorder, rotate, split_by_bookmarks, split_per_page, split_ranges,
     Rotation, START_PART_TITLE,
 };
 pub use ranges::{parse_ranges, PageRange};
-#[cfg(feature = "render")]
-pub use render::{page_size_pt, render_page, RenderedPage, Renderer, MAX_RENDER_DIMENSION};
 pub use revisions::Revision;
 pub use session::{Appended, EditSession, SaveOptions};
 pub use signatures::{Coverage, Signature, SignatureKind};

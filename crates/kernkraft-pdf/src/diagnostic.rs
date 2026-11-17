@@ -286,6 +286,24 @@ pub enum DiagnosticKind {
     /// sample table `Size`, `Range` and `BitsPerSample` call for. The
     /// samples past its end are all zero.
     FunctionSamplesShort,
+    /// Something a page paints that the renderer does not draw yet (a kind
+    /// of paint, a blend mode, a soft mask, an image). Raised once per page
+    /// for each `feature`; what it paints is left out.
+    NotRendered { feature: &'static str },
+    /// A colour that cannot be turned into a screen colour: its components
+    /// do not fit its colour space, or its transform failed. The mark it
+    /// would have made is left out.
+    ColourUnusable,
+    /// Text shown in a font that has no embedded program, drawn with a
+    /// font from the application's list (`family` is the one used).
+    FontSubstituted { name: Name, family: String },
+    /// Text shown in a font that has no embedded program, when the
+    /// application gave no font list or the list holds no usable face. The
+    /// text is not drawn.
+    FontUnavailable { name: Name },
+    /// A glyph the font program does not hold, or holds without an
+    /// outline. Nothing is drawn for it. Raised once for each font.
+    GlyphMissing { name: Name },
 }
 
 /// One tolerant decision.

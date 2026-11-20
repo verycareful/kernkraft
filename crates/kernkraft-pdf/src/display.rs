@@ -13,8 +13,9 @@
 
 use crate::content::Matrix;
 use crate::diagnostic::{DiagnosticKind, Diagnostics};
-use crate::doc::{Page, Rectangle};
+use crate::doc::{Document, Page, Rectangle};
 use crate::syntax::Name;
+use crate::PdfError;
 
 /// The size a page is taken to have when its `MediaBox` is missing or has
 /// no area, in points: US Letter, the size readers of the format fall back
@@ -88,6 +89,40 @@ impl Rect {
         let dx = (self.left - x).max(0.0).max(x - self.right);
         let dy = (self.top - y).max(0.0).max(y - self.bottom);
         dx.hypot(dy)
+    }
+}
+
+/// How a page is shown: the size of the displayed page and the box of user
+/// space it shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageGeometry {
+    /// The displayed page's width, in points, after `Rotate`.
+    pub width: f64,
+    /// The displayed page's height, in points, after `Rotate`.
+    pub height: f64,
+    /// `Rotate`, in degrees clockwise: 0, 90, 180 or 270.
+    pub rotate: u16,
+    /// The visible box in user space: the `CropBox` clipped to the
+    /// `MediaBox`, or the `MediaBox` when there is no `CropBox`.
+    pub bounds: Rectangle,
+}
+
+impl Document {
+    /// The geometry of page `number`, counted from 1: the same size every
+    /// fraction of the displayed page ([`Rect`]) and every render is
+    /// measured against. A `MediaBox` or `CropBox` that has no area is left
+    /// out and reported in the document's diagnostics.
+    pub fn page_geometry(&self, number: u32) -> Result<PageGeometry, PdfError> {
+        let page = self.page(number)?;
+        let mut diagnostics = Diagnostics::new();
+        let view = PageView::of(&page, &mut diagnostics);
+        self.record_diagnostics(diagnostics);
+        Ok(PageGeometry {
+            width: view.width,
+            height: view.height,
+            rotate: view.rotate,
+            bounds: view.bounds,
+        })
     }
 }
 

@@ -10,6 +10,7 @@
 mod pdf_fixture;
 
 mod changes;
+mod display;
 mod open;
 mod pages;
 mod tree;

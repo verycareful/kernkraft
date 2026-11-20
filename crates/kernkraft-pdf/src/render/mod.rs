@@ -111,24 +111,10 @@ pub struct Raster {
     pub rgba: Vec<u8>,
 }
 
-/// Draws page `number` (counted from 1) of `doc`.
-///
-/// A region or scale that gives no pixels, or more than
-/// [`RenderOptions::max_pixels`], is [`PdfError::LimitExceeded`] (or
-/// [`PdfError::Invalid`] for a scale or region that is not a positive,
-/// finite size). A page whose content is damaged draws as far as it can,
-/// and what was left out is in the document's diagnostics.
-pub fn render_page(
-    doc: &Document,
-    number: u32,
-    options: &RenderOptions<'_>,
-    progress: &dyn Progress,
-) -> Result<Raster, PdfError> {
-    let page = doc.page(number)?;
-    let mut diagnostics = Diagnostics::new();
-    let view = PageView::of(&page, &mut diagnostics);
-    doc.record_diagnostics(diagnostics);
-
+/// The origin of the region on the displayed page, in points, and the size
+/// in pixels of the picture [`render_page`] makes of it: the region at the
+/// scale, rounded up to whole pixels.
+fn target(view: &PageView, options: &RenderOptions<'_>) -> Result<(f64, f64, u32, u32), PdfError> {
     let region = options.region.unwrap_or(Rect {
         left: 0.0,
         top: 0.0,
@@ -159,7 +145,47 @@ pub fn render_page(
             },
         });
     }
-    let canvas = Canvas::new(width as u32, height as u32)
+    // Both are whole numbers within `u32`, checked above.
+    Ok((origin_x, origin_y, width as u32, height as u32))
+}
+
+/// The width and height in pixels of the picture [`render_page`] makes of
+/// page `number` with `options`, with the errors it gives for a region,
+/// scale or size it refuses. A caller that must hold the pixels before
+/// they are made (a buffer it allocates) asks this first.
+pub fn raster_size(
+    doc: &Document,
+    number: u32,
+    options: &RenderOptions<'_>,
+) -> Result<(u32, u32), PdfError> {
+    let page = doc.page(number)?;
+    let mut diagnostics = Diagnostics::new();
+    let view = PageView::of(&page, &mut diagnostics);
+    doc.record_diagnostics(diagnostics);
+    let (_, _, width, height) = target(&view, options)?;
+    Ok((width, height))
+}
+
+/// Draws page `number` (counted from 1) of `doc`.
+///
+/// A region or scale that gives no pixels, or more than
+/// [`RenderOptions::max_pixels`], is [`PdfError::LimitExceeded`] (or
+/// [`PdfError::Invalid`] for a scale or region that is not a positive,
+/// finite size). A page whose content is damaged draws as far as it can,
+/// and what was left out is in the document's diagnostics.
+pub fn render_page(
+    doc: &Document,
+    number: u32,
+    options: &RenderOptions<'_>,
+    progress: &dyn Progress,
+) -> Result<Raster, PdfError> {
+    let page = doc.page(number)?;
+    let mut diagnostics = Diagnostics::new();
+    let view = PageView::of(&page, &mut diagnostics);
+    doc.record_diagnostics(diagnostics);
+
+    let (origin_x, origin_y, width, height) = target(&view, options)?;
+    let canvas = Canvas::new(width, height)
         .ok_or_else(|| PdfError::Invalid(format!("a render of {width} by {height} pixels")))?;
 
     let base_matrix = view

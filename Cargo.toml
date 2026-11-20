@@ -10,7 +10,7 @@ resolver = "2"
 # commit index on a dev branch) is written as its first three parts with the
 # rest as build metadata: label 0.1.0.0 is 0.1.0+0, label 0.1.0.0.3 is
 # 0.1.0+0.3. The kernkraft-fs version test checks the two agree.
-version = "0.1.3+1.22"
+version = "0.1.3+1.23"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -22,6 +22,7 @@ publish = false
 kernkraft-fs = { path = "crates/kernkraft-fs" }
 kernkraft-text = { path = "crates/kernkraft-text" }
 kernkraft-font = { path = "crates/kernkraft-font" }
+kernkraft-pdf = { path = "crates/kernkraft-pdf" }
 kernkraft-xdg-apps = { path = "crates/kernkraft-xdg-apps" }
 kernkraft-thumb = { path = "crates/kernkraft-thumb" }
 kernkraft-bus = { path = "crates/kernkraft-bus" }
@@ -31,6 +32,11 @@ kernkraft-volumes = { path = "crates/kernkraft-volumes" }
 # Default features stay off here: the application chooses its windowing backend.
 tauri = { version = "2.12", default-features = false }
 tauri-plugin = { version = "2.5", features = ["build"] }
+# Adapter crate only (kernkraft-jni): the JNI bindings; no core crate may depend on jni
+# (scripts/check-boundary.sh).
+jni = "0.21"
+# The operating system's random bytes, for the seed a save takes from its caller.
+getrandom = "0.3"
 base64 = "0.22"
 # DEFLATE through miniz_oxide only: no C zlib is linked.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

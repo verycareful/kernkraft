@@ -100,7 +100,7 @@ pub use destination::{Destination, DestinationPage, NamedDestination, View};
 pub use diagnostic::{
     Diagnostic, DiagnosticKind, Diagnostics, ImageFault, PaintFault, PortableLimit,
 };
-pub use display::Rect;
+pub use display::{PageGeometry, Rect};
 pub use edit_text::{
     delete_text_block, edit_text, EditBlocker, Editability, Edited, TextEdit, TextStyle,
 };

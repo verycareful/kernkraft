@@ -186,3 +186,63 @@ fn the_same_page_renders_to_the_same_bytes() {
     let doc = square_page("0 0 1 rg 3 3 9.5 9.5 re f 1 w 0 0 m 20 20 l S", "", &[]);
     assert_eq!(render(&doc), render(&doc));
 }
+
+/// The size a caller asks for before it allocates the pixels is the size of
+/// the picture `render_page` makes, for the options that change it.
+#[test]
+fn raster_size_is_the_size_of_the_render() {
+    let doc = square_page("", "", &[]);
+    let right_half = Some(Rect {
+        left: 0.5,
+        top: 0.0,
+        right: 1.0,
+        bottom: 1.0,
+    });
+    let cases = [
+        (1.0, None, (20, 20)),
+        (2.0, None, (40, 40)),
+        (2.0, right_half, (20, 40)),
+        // 20 points at 0.55 is 11 pixels: whole pixels, rounded up.
+        (0.55, None, (11, 11)),
+    ];
+    for (scale, region, expected) in cases {
+        let options = RenderOptions {
+            scale,
+            region,
+            ..Default::default()
+        };
+        let size = kernkraft_pdf::render::raster_size(&doc, 1, &options).unwrap();
+        let raster = render_with(&doc, &options).unwrap();
+        assert_eq!(size, expected, "scale {scale}");
+        assert_eq!((raster.width, raster.height), expected, "scale {scale}");
+    }
+}
+
+#[test]
+fn raster_size_refuses_what_render_refuses() {
+    let doc = square_page("", "", &[]);
+    let too_big = RenderOptions {
+        max_pixels: 399,
+        ..Default::default()
+    };
+    let no_scale = RenderOptions {
+        scale: 0.0,
+        ..Default::default()
+    };
+
+    assert!(matches!(
+        kernkraft_pdf::render::raster_size(&doc, 1, &too_big),
+        Err(PdfError::LimitExceeded {
+            limit: Limit::RenderPixels { max: 399 },
+            ..
+        })
+    ));
+    assert!(matches!(
+        kernkraft_pdf::render::raster_size(&doc, 1, &no_scale),
+        Err(PdfError::Invalid(_))
+    ));
+    assert!(matches!(
+        kernkraft_pdf::render::raster_size(&doc, 2, &RenderOptions::default()),
+        Err(PdfError::PageOutOfRange { page: 2, count: 1 })
+    ));
+}

@@ -13,15 +13,15 @@ use crate::PdfError;
 pub struct FontFlags(pub u32);
 
 impl FontFlags {
-    const FIXED_PITCH: u32 = 1 << 0;
-    const SERIF: u32 = 1 << 1;
-    const SYMBOLIC: u32 = 1 << 2;
-    const SCRIPT: u32 = 1 << 3;
-    const NONSYMBOLIC: u32 = 1 << 5;
-    const ITALIC: u32 = 1 << 6;
-    const ALL_CAP: u32 = 1 << 16;
-    const SMALL_CAP: u32 = 1 << 17;
-    const FORCE_BOLD: u32 = 1 << 18;
+    pub(crate) const FIXED_PITCH: u32 = 1 << 0;
+    pub(crate) const SERIF: u32 = 1 << 1;
+    pub(crate) const SYMBOLIC: u32 = 1 << 2;
+    pub(crate) const SCRIPT: u32 = 1 << 3;
+    pub(crate) const NONSYMBOLIC: u32 = 1 << 5;
+    pub(crate) const ITALIC: u32 = 1 << 6;
+    pub(crate) const ALL_CAP: u32 = 1 << 16;
+    pub(crate) const SMALL_CAP: u32 = 1 << 17;
+    pub(crate) const FORCE_BOLD: u32 = 1 << 18;
 
     pub fn fixed_pitch(self) -> bool {
         self.0 & Self::FIXED_PITCH != 0

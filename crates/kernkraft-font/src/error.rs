@@ -34,6 +34,9 @@ pub enum FontError {
     /// colour emoji font) or has outlines for no glyph at all.
     #[error("glyph {} has no vector outline", .0.0)]
     NoOutline(GlyphId),
+    /// The font cannot be reduced to a subset, for the reason given.
+    #[error("cannot subset the font: {0}")]
+    Subset(&'static str),
     /// A glyph description that cannot be turned into an outline.
     #[error("damaged outline of glyph {}: {reason}", .glyph.0)]
     Outline {

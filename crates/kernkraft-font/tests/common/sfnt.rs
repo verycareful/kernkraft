@@ -409,3 +409,70 @@ pub fn collection(fonts: &[Vec<u8>]) -> Vec<u8> {
     out.extend(body);
     out
 }
+
+/// The font with the tables in `drop` removed and `add` put in, under the
+/// sfnt version `version` (`0x0001_0000` for glyf outlines, `OTTO` for CFF).
+pub fn retable(
+    font: &[u8],
+    version: [u8; 4],
+    drop: &[&[u8; 4]],
+    add: Vec<([u8; 4], Vec<u8>)>,
+) -> Vec<u8> {
+    let count = u16::from_be_bytes([font[4], font[5]]) as usize;
+    let mut tables: Vec<([u8; 4], Vec<u8>)> = Vec::new();
+    for i in 0..count {
+        let tag: [u8; 4] = font[12 + i * 16..16 + i * 16].try_into().unwrap();
+        if drop.contains(&&tag) {
+            continue;
+        }
+        let (off, len) = table(font, &tag).unwrap();
+        tables.push((tag, font[off..off + len].to_vec()));
+    }
+    tables.extend(add);
+    tables.sort_by_key(|t| t.0);
+    let n = tables.len();
+    let mut out = Vec::new();
+    out.extend(version);
+    out.extend((n as u16).to_be_bytes());
+    let mut pow = 1usize;
+    let mut log = 0u16;
+    while pow * 2 <= n {
+        pow *= 2;
+        log += 1;
+    }
+    out.extend(((pow * 16) as u16).to_be_bytes());
+    out.extend(log.to_be_bytes());
+    out.extend(((n * 16 - pow * 16) as u16).to_be_bytes());
+    let mut body = Vec::new();
+    for (tag, data) in &tables {
+        out.extend(tag);
+        out.extend(0u32.to_be_bytes());
+        out.extend(((12 + n * 16 + body.len()) as u32).to_be_bytes());
+        out.extend((data.len() as u32).to_be_bytes());
+        body.extend(data);
+        while body.len() % 4 != 0 {
+            body.push(0);
+        }
+    }
+    out.extend(body);
+    out
+}
+
+/// An OpenType font with `cff` as its outlines, one glyph for each advance
+/// (the CFF must hold as many glyphs), reached from `unicode`: `(character,
+/// glyph index)`.
+pub fn open_type_with_cff(cff: Vec<u8>, advances: &[u16], unicode: &[(u16, u16)]) -> Vec<u8> {
+    let mut spec = SfntSpec::new(
+        advances
+            .iter()
+            .map(|&advance| Glyph {
+                name: "g",
+                advance,
+                contours: vec![],
+            })
+            .collect(),
+    );
+    spec.unicode = unicode.to_vec();
+    let base = build(&spec);
+    retable(&base, *b"OTTO", &[b"glyf", b"loca"], vec![(*b"CFF ", cff)])
+}

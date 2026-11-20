@@ -297,6 +297,12 @@ pub enum PdfError {
     /// components.
     #[error("a colour of {found} components was given to a colour space of {expected}")]
     ColourComponents { expected: usize, found: usize },
+    /// A font program that `kernkraft-font` cannot read or reduce.
+    #[error("font program: {0}")]
+    Font(#[from] kernkraft_font::FontError),
+    /// A character the font being embedded has no glyph for.
+    #[error("the font has no glyph for U+{:04X}", u32::from(*.character))]
+    NoGlyphForCharacter { character: char },
     /// The operation was cancelled through its progress handle.
     #[error("the operation was cancelled")]
     Cancelled,

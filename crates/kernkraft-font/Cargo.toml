@@ -16,6 +16,7 @@ kernkraft-fs.workspace = true
 thiserror.workspace = true
 read-fonts.workspace = true
 skrifa.workspace = true
+subsetter.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

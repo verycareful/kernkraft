@@ -17,6 +17,10 @@
 //! itself; and for a CID font of an Adobe character collection, the
 //! collection's Unicode CMap. A character with none has no text.
 //!
+//! [`FontEmbedder`] is the write side: it embeds a TrueType or OpenType font
+//! as a subset, with the descriptor, widths and ToUnicode map a reader
+//! needs, and gives the string bytes that show text with it.
+//!
 //! Widths are in thousandths of a text space unit. A font whose dictionary
 //! has no `Widths` and that is, or is named like, one of the standard 14
 //! gets the widths of Adobe's metrics files (9.6.2.2).
@@ -26,6 +30,7 @@ mod cmap_parse;
 mod composite;
 mod data;
 mod descriptor;
+mod embed;
 mod encoding;
 mod glyphlist;
 mod range_map;
@@ -40,6 +45,7 @@ use std::sync::Arc;
 
 pub use cmap::{CMap, CidSystemInfo};
 pub use descriptor::{FontDescriptor, FontFile, FontFlags, ProgramKind};
+pub use embed::FontEmbedder;
 pub use encoding::BaseEncoding;
 pub(crate) use glyphlist::text_for_name;
 pub use widths::VerticalMetrics;

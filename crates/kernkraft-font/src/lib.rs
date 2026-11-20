@@ -9,6 +9,9 @@
 //! segments in design units, and font-wide metrics. The crate knows nothing
 //! of PDF.
 //!
+//! [`subset`] reduces a TrueType or OpenType font to a [`GlyphSet`] for
+//! embedding in a document.
+//!
 //! [`FontList::index`] reads the fonts an application hands in (paths) and
 //! [`FontList::best`], [`FontList::by_family`] and [`FontList::covering`]
 //! choose from them by family, width, slant, weight and character coverage.
@@ -19,6 +22,7 @@ mod list;
 mod matching;
 mod outline;
 mod program;
+mod subset;
 pub mod type1;
 
 pub use coverage::Coverage;
@@ -27,3 +31,4 @@ pub use list::{FaceInfo, FontList, Skipped};
 pub use matching::Query;
 pub use outline::{Outline, Point, Segment};
 pub use program::{CmapSelector, Format, GlyphId, Metrics, Names, Program};
+pub use subset::{subset, GlyphSet, Subset};

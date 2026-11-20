@@ -337,3 +337,178 @@ pub fn linearized_file(
     out[prev_at..prev_at + WIDTH].copy_from_slice(format!("{main:010}").as_bytes());
     (Fixture { bytes: out, spans }, first_page, main)
 }
+
+// Fonts and pages for the tests of font embedding.
+
+#[path = "../../../kernkraft-font/tests/common/mod.rs"]
+pub mod fontkit;
+
+use fontkit::cff::{self, CffGlyph, CffSpec, Cs2};
+use fontkit::sfnt::{self, Glyph, SfntSpec};
+use kernkraft_pdf::build::{ContentBuilder, ObjectBuilder, StreamEncoding};
+use kernkraft_pdf::font::FontEmbedder;
+use kernkraft_pdf::syntax::{Dictionary, Name, Object, ObjectId, Value};
+
+/// The test fonts' glyphs on an em of 1000 units: `A` is a rectangle 500 by
+/// 700 with advance 700, `B` a square of 200 with advance 450, the space has
+/// no marks and advance 250, and `l` is a stem 80 wide and 700 high.
+pub const EMBED_A_ADVANCE: u16 = 700;
+pub const EMBED_B_ADVANCE: u16 = 450;
+pub const EMBED_SPACE_ADVANCE: u16 = 250;
+pub const EMBED_STEM: i16 = 80;
+
+fn rectangle(width: i16, height: i16) -> Vec<Vec<(i16, i16, bool)>> {
+    vec![vec![
+        (0, 0, true),
+        (width, 0, true),
+        (width, height, true),
+        (0, height, true),
+    ]]
+}
+
+/// A TrueType font of `.notdef`, `A` (glyph 1, also reached from `a`), `B`
+/// (2), the space (3) and `l` (4). `stem` leaves `l` out when false.
+pub fn embed_truetype(stem: bool) -> Vec<u8> {
+    let mut glyphs = vec![
+        Glyph {
+            name: ".notdef",
+            advance: 500,
+            contours: vec![],
+        },
+        Glyph {
+            name: "A",
+            advance: EMBED_A_ADVANCE,
+            contours: rectangle(500, 700),
+        },
+        Glyph {
+            name: "B",
+            advance: EMBED_B_ADVANCE,
+            contours: rectangle(200, 200),
+        },
+        Glyph {
+            name: "space",
+            advance: EMBED_SPACE_ADVANCE,
+            contours: vec![],
+        },
+    ];
+    let mut unicode = vec![(0x41, 1), (0x61, 1), (0x42, 2), (0x20, 3)];
+    if stem {
+        glyphs.push(Glyph {
+            name: "l",
+            advance: 300,
+            contours: rectangle(EMBED_STEM, 700),
+        });
+        unicode.push((0x6C, 4));
+    }
+    let mut spec = SfntSpec::new(glyphs);
+    spec.unicode = unicode;
+    sfnt::build(&spec)
+}
+
+/// The same `A`, `B` and space as OpenType with CFF outlines.
+pub fn embed_opentype() -> Vec<u8> {
+    let glyph = |id: u16, code: Cs2| CffGlyph { id, code };
+    let box_of = |width: i32, height: i32| {
+        Cs2::new()
+            .with(&[0, 0], "rmoveto")
+            .with(&[width], "hlineto")
+            .with(&[height], "vlineto")
+            .with(&[-width], "hlineto")
+            .op("endchar")
+    };
+    // The standard strings 34, 35 and 1 are A, B and space.
+    let program = cff::build(&CffSpec {
+        glyphs: vec![
+            glyph(0, Cs2::new().op("endchar")),
+            glyph(34, box_of(500, 700)),
+            glyph(35, box_of(200, 200)),
+            glyph(1, Cs2::new().op("endchar")),
+        ],
+        default_width: 600,
+        nominal_width: 500,
+        matrix: None,
+        cid_keyed: false,
+        encoding: None,
+    });
+    sfnt::open_type_with_cff(
+        program,
+        &[500, EMBED_A_ADVANCE, EMBED_B_ADVANCE, EMBED_SPACE_ADVANCE],
+        &[(0x41, 1), (0x42, 2), (0x20, 3)],
+    )
+}
+
+fn entry(dictionary: &mut Dictionary, key: &str, value: Value) {
+    dictionary.insert(Name::new(key.as_bytes()), Object::new(value));
+}
+
+fn object_id(number: u32) -> ObjectId {
+    ObjectId {
+        number,
+        generation: 0,
+    }
+}
+
+/// The content that shows `codes` with the font `/F1` at `size` points, its
+/// origin at `(x, y)`.
+pub fn show_codes(codes: &[u8], size: f64, x: f64, y: f64) -> Vec<u8> {
+    let mut content = ContentBuilder::new();
+    content
+        .begin_text()
+        .unwrap()
+        .font(b"F1", size)
+        .unwrap()
+        .text_position(x, y)
+        .unwrap()
+        .show_text(codes)
+        .unwrap()
+        .end_text()
+        .unwrap();
+    content.finish()
+}
+
+/// A 20 by 20 point one-page file (page 10, contents 11) whose page shows
+/// `content` with `embedder`'s font as `/F1`, and the font's object.
+pub fn embedded_page(embedder: &FontEmbedder, content: Vec<u8>) -> (Document, ObjectId) {
+    let objects: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [10 0 R] /Count 1 >>".to_vec()),
+        (
+            10,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Contents 11 0 R >>".to_vec(),
+        ),
+        (11, stream("", b"")),
+    ];
+    let base = table_file(&borrowed(&objects), "/Root 1 0 R").open();
+    let mut builder = ObjectBuilder::new(&base);
+    let font = embedder.write(&mut builder).expect("the font is written");
+
+    let mut fonts = Dictionary::new();
+    entry(&mut fonts, "F1", Value::Reference(font));
+    let mut resources = Dictionary::new();
+    entry(&mut resources, "Font", Value::Dictionary(fonts));
+    let mut page = Dictionary::new();
+    entry(&mut page, "Type", Value::Name(Name::new(&b"Page"[..])));
+    entry(&mut page, "Parent", Value::Reference(object_id(2)));
+    entry(
+        &mut page,
+        "MediaBox",
+        Value::Array(
+            [0, 0, 20, 20]
+                .map(|v| Object::new(Value::Integer(v)))
+                .to_vec(),
+        ),
+    );
+    entry(&mut page, "Contents", Value::Reference(object_id(11)));
+    entry(&mut page, "Resources", Value::Dictionary(resources));
+    builder.set(object_id(10), Object::new(Value::Dictionary(page)));
+    builder
+        .set_stream(
+            object_id(11),
+            Dictionary::new(),
+            content,
+            StreamEncoding::AsGiven,
+        )
+        .expect("the contents are set");
+    let doc = base.apply(builder.finish()).expect("the changes apply");
+    (doc, font)
+}

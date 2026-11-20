@@ -12,6 +12,7 @@
 mod pdf_fixture;
 
 mod annotations;
+mod embed;
 mod geometry;
 mod images;
 mod paths;

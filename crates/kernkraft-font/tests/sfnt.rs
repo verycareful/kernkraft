@@ -305,3 +305,33 @@ fn a_font_with_no_vector_outlines_says_so() {
     assert_eq!(prog.advance(GlyphId(1)), Some(700.0));
     assert_eq!(prog.glyph_by_unicode('A'), Some(GlyphId(1)));
 }
+
+#[test]
+fn an_open_type_font_maps_cids_through_its_cff_charset() {
+    use common::cff::{self, CffGlyph, CffSpec, Cs2};
+    // The CID-keyed program of the CFF tests: glyphs 0, 1 and 2 have the
+    // CIDs 0, 500 and 3.
+    let glyph = |id: u16| CffGlyph {
+        id,
+        code: Cs2::new()
+            .with(&[5, 5], "rmoveto")
+            .with(&[50], "hlineto")
+            .op("endchar"),
+    };
+    let cff = cff::build(&CffSpec {
+        glyphs: vec![glyph(0), glyph(500), glyph(3)],
+        default_width: 600,
+        nominal_width: 500,
+        matrix: None,
+        cid_keyed: true,
+        encoding: None,
+    });
+    let bytes = sfnt::open_type_with_cff(cff, &[500, 500, 500], &[]);
+    let prog = Program::parse(&bytes, 0).unwrap();
+    assert_eq!(prog.format(), Format::OpenTypeCff);
+    assert_eq!(prog.glyph_by_cid(500), Some(GlyphId(1)));
+    assert_eq!(prog.glyph_by_cid(3), Some(GlyphId(2)));
+    assert_eq!(prog.glyph_by_cid(4), None);
+    // A TrueType font has no charset.
+    assert_eq!(Program::parse(&font(), 0).unwrap().glyph_by_cid(1), None);
+}

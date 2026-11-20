@@ -51,6 +51,9 @@
 //! [`add_annotation`], [`edit_annotation`] and [`delete_annotation`] write
 //! highlights, underlines, strikeouts, ink strokes and notes with their
 //! appearance streams, each as a new snapshot for [`EditSession::push`].
+//! A [`FontEmbedder`](font::FontEmbedder) reduces a TrueType or OpenType font
+//! to the glyphs shown with it, gives the bytes that show text in it, and
+//! writes it as an embedded Type 0 font through an [`ObjectBuilder`](build::ObjectBuilder).
 
 mod action;
 mod active;

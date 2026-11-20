@@ -10,9 +10,6 @@
 //! is 600, so at size 20 a letter covers 10 by 14 points and the pen moves
 //! 12.
 
-#[path = "../../../kernkraft-font/tests/common/mod.rs"]
-mod fontkit;
-
 use fontkit::sfnt::{self, Glyph, SfntSpec};
 use kernkraft_font::FontList;
 

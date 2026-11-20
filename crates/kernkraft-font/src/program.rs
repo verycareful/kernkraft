@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 
 use read_fonts::ps::cff::{CffFontRef, Subfont};
 use read_fonts::ps::string::Sid;
+use read_fonts::types::Tag;
 use read_fonts::{FileRef, ReadError, TableProvider};
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{
@@ -97,6 +98,9 @@ type NameMap = OnceLock<HashMap<String, GlyphId>>;
 
 struct Sfnt<'a> {
     font: FontRef<'a>,
+    /// The `CFF ` table of an OpenType font with CFF outlines, read as the
+    /// bare program it holds.
+    cff: Option<CffFontRef<'a>>,
     outlines: OutlineGlyphCollection<'a>,
     glyph_count: u16,
     units_per_em: u16,
@@ -155,9 +159,13 @@ impl<'a> Program<'a> {
         let units_per_em = font.head().map_err(|e| sfnt_reason(&e))?.units_per_em();
         let glyph_count = font.maxp().map_err(|e| sfnt_reason(&e))?.num_glyphs();
         let outlines = font.outline_glyphs();
+        let cff = font
+            .table_data(Tag::new(b"CFF "))
+            .and_then(|table| CffFontRef::new(table.as_bytes(), 0, None).ok());
         Ok(Program {
             inner: Inner::Sfnt(Box::new(Sfnt {
                 font,
+                cff,
                 outlines,
                 glyph_count,
                 units_per_em,
@@ -296,16 +304,20 @@ impl<'a> Program<'a> {
         }
     }
 
-    /// The glyph of a CID in a CID-keyed CFF program (through its charset).
-    /// `None` for any other program, and for a CID the font does not hold.
+    /// The glyph of a CID in a CID-keyed CFF program, bare or inside an
+    /// OpenType font (through its charset). `None` for any other program,
+    /// and for a CID the font does not hold.
     pub fn glyph_by_cid(&self, cid: u16) -> Option<GlyphId> {
-        match &self.inner {
-            Inner::Cff(c) if c.cff.is_cid() => {
-                let g = c.cff.charset()?.glyph_id(Sid::new(cid)).ok()?;
-                GlyphId::from_skrifa(g)
-            }
-            _ => None,
+        let cff = match &self.inner {
+            Inner::Cff(c) => &c.cff,
+            Inner::Sfnt(s) => s.cff.as_ref()?,
+            Inner::Type1(_) => return None,
+        };
+        if !cff.is_cid() {
+            return None;
         }
+        let g = cff.charset()?.glyph_id(Sid::new(cid)).ok()?;
+        GlyphId::from_skrifa(g)
     }
 
     /// The horizontal advance in design units.

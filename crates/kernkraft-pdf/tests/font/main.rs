@@ -15,6 +15,7 @@ mod pdf_fixture;
 
 mod cmap;
 mod composite;
+mod embed;
 mod robustness;
 mod simple;
 mod type1;

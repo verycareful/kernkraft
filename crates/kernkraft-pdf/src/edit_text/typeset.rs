@@ -5,9 +5,20 @@
 //! 9.3.2 (`Tc`), 9.3.3 (`Tw`), 9.3.4 (`Tz`) and 9.4.4 (the glyph
 //! displacement `tx = ((w0 * Tfs + Tc + Tw) * Th)`).
 //!
-//! Text breaks only where the new text has a line feed or where a space
-//! lets a word move to the next line. A word wider than the block stays
-//! whole on a line of its own.
+//! Where a line may end is the Unicode Line Breaking Algorithm, UAX #14, as
+//! the tables of `unicode-linebreak` give it (Unicode 15.0): a hard break
+//! (LB4, LB5: line feed, carriage return, CR LF, vertical tab, form feed, NEL,
+//! U+2028, U+2029) always ends a line; spaces never start one (LB7) and an
+//! opportunity after them (LB18) is the usual place to wrap; a no-break
+//! space joins its neighbours (LB12, LB12a); a hyphen cannot start a line
+//! (LB21); ideographs break between any two (LB31). A run of text between
+//! two opportunities moves to the next line whole. One wider than the block
+//! stays whole on a line of its own. The spaces that end a line at a wrap
+//! are dropped and do not count towards the width; at a hard break or the end
+//! of the text they are kept. A soft hyphen (U+00AD) is not text and is
+//! dropped, as in the text search.
+
+use unicode_linebreak::{linebreaks, BreakOpportunity};
 
 use crate::PdfError;
 
@@ -23,16 +34,61 @@ fn fit_slack(characters: usize) -> f64 {
     f64::EPSILON * (characters + 1) as f64
 }
 
+/// The characters UAX #14 ends a line at, whatever the width (LB4, LB5).
+const HARD_BREAKS: [char; 7] = [
+    '\n', '\r', '\u{000B}', '\u{000C}', '\u{0085}', '\u{2028}', '\u{2029}',
+];
+
+/// The soft hyphen: a break opportunity that shows nothing unless the line
+/// breaks there. It is not text here, as in the text search.
+const SOFT_HYPHEN: char = '\u{00AD}';
+
+/// The characters of `text` that are drawn: neither a hard break, which ends
+/// a line, nor a soft hyphen. What the font has to show is this.
+pub(super) fn shown(text: &str) -> String {
+    text.chars()
+        .filter(|&c| c != SOFT_HYPHEN && !HARD_BREAKS.contains(&c))
+        .collect()
+}
+
 /// `text` broken into lines no wider than `width` (text space units), or
-/// not broken but at its line feeds when `width` is not a positive number.
+/// not broken but at its hard breaks when `width` is not a positive number.
+/// A hard break at the very end of the text leaves an empty last line.
 pub(super) fn lines(
     text: &str,
     width: f64,
     advance: &Advance<'_>,
 ) -> Result<Vec<String>, PdfError> {
+    let text: String = text.chars().filter(|&c| c != SOFT_HYPHEN).collect();
+    let limit = width * (1.0 + fit_slack(text.chars().count()));
     let mut out = Vec::new();
-    for paragraph in text.split('\n') {
-        wrap(paragraph, width, advance, &mut out)?;
+    let mut line = String::new();
+    let mut taken = 0.0;
+    let mut start = 0;
+    for (end, kind) in linebreaks(&text) {
+        let segment = &text[start..end];
+        start = end;
+        let body = segment.trim_end_matches(HARD_BREAKS);
+        let ink = body.trim_end_matches(' ');
+        let ink_width = measure(ink, advance)?;
+        let line_has_ink = !line.trim_end_matches(' ').is_empty();
+        if width > 0.0 && line_has_ink && taken + ink_width > limit {
+            out.push(line.trim_end_matches(' ').to_owned());
+            line.clear();
+            taken = 0.0;
+        }
+        line.push_str(body);
+        taken += ink_width + measure(&body[ink.len()..], advance)?;
+        if kind == BreakOpportunity::Mandatory {
+            out.push(std::mem::take(&mut line));
+            taken = 0.0;
+            if end == text.len() && segment.len() != body.len() {
+                out.push(String::new());
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push(String::new());
     }
     Ok(out)
 }
@@ -41,33 +97,111 @@ fn measure(text: &str, advance: &Advance<'_>) -> Result<f64, PdfError> {
     text.chars().map(advance).sum()
 }
 
-fn wrap(
-    paragraph: &str,
-    width: f64,
-    advance: &Advance<'_>,
-    out: &mut Vec<String>,
-) -> Result<(), PdfError> {
-    let limit = width * (1.0 + fit_slack(paragraph.chars().count()));
-    let mut line = String::new();
-    let mut taken = 0.0;
-    for (index, word) in paragraph.split(' ').enumerate() {
-        let word_width = measure(word, advance)?;
-        if index == 0 {
-            line.push_str(word);
-            taken = word_width;
-            continue;
-        }
-        let space = advance(' ')?;
-        if width > 0.0 && !line.is_empty() && taken + space + word_width > limit {
-            out.push(std::mem::take(&mut line));
-            line.push_str(word);
-            taken = word_width;
-        } else {
-            line.push(' ');
-            line.push_str(word);
-            taken += space + word_width;
-        }
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    /// Every character one unit wide, so a width is a count of characters.
+    fn unit(_: char) -> Result<f64, PdfError> {
+        Ok(1.0)
     }
-    out.push(line);
-    Ok(())
+
+    fn wrapped(text: &str, width: f64) -> Vec<String> {
+        lines(text, width, &unit).expect("unit advance never fails")
+    }
+
+    #[test]
+    fn wraps_after_a_space_lb18() {
+        assert_eq!(wrapped("ab cd ef", 5.0), ["ab cd", "ef"]);
+    }
+
+    #[test]
+    fn a_line_that_fills_the_width_exactly_fits() {
+        assert_eq!(wrapped("abcde", 5.0), ["abcde"]);
+        assert_eq!(wrapped("ab cd ef", 8.0), ["ab cd ef"]);
+    }
+
+    #[test]
+    fn the_spaces_that_end_a_wrapped_line_do_not_count_lb7() {
+        assert_eq!(wrapped("abcde f", 5.0), ["abcde", "f"]);
+        assert_eq!(wrapped("ab   cd", 4.0), ["ab", "cd"]);
+    }
+
+    #[test]
+    fn spaces_at_the_end_of_the_text_stay_and_start_no_line_lb7() {
+        assert_eq!(wrapped("abcde ", 5.0), ["abcde "]);
+    }
+
+    #[test]
+    fn a_hyphen_stays_on_the_line_it_ends_lb21_lb31() {
+        assert_eq!(wrapped("ab-cd", 3.0), ["ab-", "cd"]);
+    }
+
+    #[test]
+    fn ideographs_break_between_any_two_lb31() {
+        assert_eq!(
+            wrapped("\u{65E5}\u{672C}\u{8A9E}", 2.0),
+            ["\u{65E5}\u{672C}", "\u{8A9E}"]
+        );
+    }
+
+    #[test]
+    fn a_no_break_space_joins_its_neighbours_lb12_lb12a() {
+        assert_eq!(wrapped("ab\u{00A0}cd ef", 3.0), ["ab\u{00A0}cd", "ef"]);
+        assert_eq!(wrapped("ab\u{00A0}cd ef", 5.0), ["ab\u{00A0}cd", "ef"]);
+        assert_eq!(wrapped("ab cd", 3.0), ["ab", "cd"]);
+    }
+
+    #[test]
+    fn every_hard_break_ends_a_line_lb4_lb5() {
+        assert_eq!(wrapped("a\nb", 9.0), ["a", "b"]);
+        assert_eq!(wrapped("a\r\nb", 9.0), ["a", "b"]);
+        assert_eq!(wrapped("a\rb", 9.0), ["a", "b"]);
+        assert_eq!(wrapped("a\u{2028}b", 9.0), ["a", "b"]);
+        assert_eq!(wrapped("a\u{000B}b", 9.0), ["a", "b"]);
+        assert_eq!(wrapped("a\n\nb", 9.0), ["a", "", "b"]);
+    }
+
+    #[test]
+    fn a_hard_break_at_the_end_leaves_an_empty_last_line() {
+        assert_eq!(wrapped("a\n", 9.0), ["a", ""]);
+        assert_eq!(wrapped("a\r\n", 9.0), ["a", ""]);
+    }
+
+    #[test]
+    fn a_word_wider_than_the_block_stays_whole() {
+        assert_eq!(wrapped("ab abcdefgh cd", 4.0), ["ab", "abcdefgh", "cd"]);
+    }
+
+    #[test]
+    fn leading_spaces_stay_with_the_first_word() {
+        assert_eq!(wrapped("   abcdefgh", 4.0), ["   abcdefgh"]);
+    }
+
+    #[test]
+    fn no_width_breaks_only_at_hard_breaks() {
+        assert_eq!(wrapped("ab cd\nef", 0.0), ["ab cd", "ef"]);
+        assert_eq!(wrapped("ab cd", -1.0), ["ab cd"]);
+    }
+
+    #[test]
+    fn a_soft_hyphen_is_dropped() {
+        assert_eq!(wrapped("ab\u{00AD}cd", 2.0), ["abcd"]);
+    }
+
+    #[test]
+    fn empty_text_is_one_empty_line() {
+        assert_eq!(wrapped("", 5.0), [""]);
+    }
+
+    #[test]
+    fn a_failing_advance_is_the_error() {
+        let refuse = |c: char| Err(PdfError::NoGlyphForCharacter { character: c });
+        assert!(matches!(
+            lines("ab", 5.0, &refuse),
+            Err(PdfError::NoGlyphForCharacter { character: 'a' })
+        ));
+    }
 }

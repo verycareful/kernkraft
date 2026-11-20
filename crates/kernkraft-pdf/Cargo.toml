@@ -24,6 +24,7 @@ md-5.workspace = true
 moxcms.workspace = true
 rc4.workspace = true
 sha2.workspace = true
+unicode-linebreak.workspace = true
 unicode-normalization.workspace = true
 thiserror.workspace = true
 tiny-skia.workspace = true

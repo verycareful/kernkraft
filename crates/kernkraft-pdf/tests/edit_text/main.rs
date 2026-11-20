@@ -17,6 +17,7 @@ mod edit;
 mod editability;
 mod form;
 mod remove;
+mod rotated;
 mod session;
 
 use kernkraft_fs::NoProgress;

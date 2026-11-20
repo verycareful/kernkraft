@@ -116,6 +116,37 @@ fn a_line_feed_ends_a_line() {
 }
 
 #[test]
+fn every_hard_break_ends_a_line_without_changing_the_font_chosen() {
+    // Courier in WinAnsiEncoding has no code for a carriage return or for
+    // U+2028, and none is drawn: they end the line (UAX #14, LB4 and LB5),
+    // so the block's font still shows the text and no font list is needed.
+    let fixture = one_page("BT /F1 10 Tf 100 700 Td (Hello) Tj ET");
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    for text in ["ab\r\ncd", "ab\rcd", "ab\u{2028}cd", "ab\u{000B}cd"] {
+        let edited = edit_text(&doc, 1, &block, &TextEdit::new(text), &NoProgress).unwrap();
+        assert_eq!(edited.lines, 2, "{text:?}");
+        assert!(
+            content(&edited.document)
+                .ends_with("1 0 0 1 100 700 Tm (ab) Tj 1 0 0 1 100 690 Tm (cd) Tj ET Q"),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn a_soft_hyphen_is_not_shown_and_does_not_change_the_font_chosen() {
+    // The soft hyphen is dropped from the text, so "abcd" is set in the
+    // block's font: 4 glyphs, 24 points, one line of a 30 point block.
+    let fixture = one_page("BT /F1 10 Tf 100 700 Td (Hello) Tj ET");
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    let edited = edit_text(&doc, 1, &block, &TextEdit::new("ab\u{00AD}cd"), &NoProgress).unwrap();
+    assert_eq!(edited.lines, 1);
+    assert!(content(&edited.document).ends_with("1 0 0 1 100 700 Tm (abcd) Tj ET Q"));
+}
+
+#[test]
 fn lines_are_as_far_apart_as_the_blocks_first_two() {
     // 14 points between the baselines of Hello and World.
     let fixture = one_page("BT /F1 10 Tf 14 TL 100 700 Td (Hello) Tj T* (World) Tj ET");

@@ -734,8 +734,8 @@ fn choose_face(
     edit: &TextEdit<'_>,
     diagnostics: &mut Diagnostics,
 ) -> Result<Face, PdfError> {
-    // A line feed is not shown: it ends a line.
-    let shown: String = edit.text.chars().filter(|c| *c != '\n').collect();
+    // A hard break ends a line and a soft hyphen is dropped: neither is drawn.
+    let shown = typeset::shown(&edit.text);
     if edit.style.family.is_none() {
         if let Some(reused) = face::reuse(document, op, &shown, diagnostics)? {
             return Ok(Face::Reused(reused));

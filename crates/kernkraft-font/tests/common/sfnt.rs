@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
 //! A TrueType font written table by table (OpenType 1.9: head, hhea, maxp,
-//! hmtx, loca, glyf, cmap, name, OS/2, post).
+//! hmtx, loca, glyf, cmap, name, OS/2, post), and with one variation axis
+//! (fvar, gvar).
 #![allow(dead_code)]
 
 pub struct Glyph {
@@ -12,8 +13,42 @@ pub struct Glyph {
     pub contours: Vec<Vec<(i16, i16, bool)>>,
 }
 
+/// How one glyph moves at the maximum of the axis, in design units: a delta
+/// for each point of its contours in order, and the change of its advance.
+/// Between the default and the maximum the deltas scale linearly.
+#[derive(Clone)]
+pub struct Move {
+    pub dx: Vec<i16>,
+    pub dy: Vec<i16>,
+    pub advance: i16,
+}
+
+/// A named instance of the axis: its subfamily name (`name` ID `name_id`, from
+/// 256 up), the axis value, and optionally the ID of its PostScript name.
+#[derive(Clone)]
+pub struct Instance {
+    pub name_id: u16,
+    pub value: i32,
+    pub postscript_name_id: Option<u16>,
+}
+
+/// One variation axis: `min <= default < max`, and a [`Move`] for each glyph
+/// that moves (`None` for one that does not). Below the default nothing moves.
+#[derive(Clone)]
+pub struct Variable {
+    pub tag: [u8; 4],
+    pub min: i32,
+    pub default: i32,
+    pub max: i32,
+    pub moves: Vec<Option<Move>>,
+    pub instances: Vec<Instance>,
+}
+
 pub struct SfntSpec {
     pub glyphs: Vec<Glyph>,
+    pub variable: Option<Variable>,
+    /// More `name` records, Windows English: `(name ID, string)`.
+    pub extra_names: Vec<(u16, &'static str)>,
     pub units_per_em: u16,
     pub ascender: i16,
     pub descender: i16,
@@ -37,6 +72,8 @@ impl SfntSpec {
     pub fn new(glyphs: Vec<Glyph>) -> SfntSpec {
         SfntSpec {
             glyphs,
+            variable: None,
+            extra_names: Vec::new(),
             units_per_em: 1000,
             ascender: 800,
             descender: -200,
@@ -163,15 +200,17 @@ fn cmap_format0(map: &[(u8, u16)]) -> Vec<u8> {
 }
 
 fn name_table(spec: &SfntSpec) -> Vec<u8> {
-    let records = [
+    let mut records = vec![
         (1u16, spec.family),
         (2, spec.subfamily),
         (4, spec.full),
         (6, spec.postscript),
     ];
+    records.extend(spec.extra_names.iter().copied());
+    records.sort_by_key(|r| r.0);
     let mut strings = Vec::new();
     let mut recs = Vec::new();
-    for (id, s) in records {
+    for &(id, s) in &records {
         let utf16: Vec<u8> = s.encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
         recs.extend(u16b(3));
         recs.extend(u16b(1));
@@ -242,6 +281,114 @@ fn os2_table(spec: &SfntSpec) -> Vec<u8> {
     t.extend(u16b(0));
     t.extend(u16b(0x20));
     t.extend(u16b(0));
+    t
+}
+
+fn fixed(v: i32) -> [u8; 4] {
+    (v << 16).to_be_bytes()
+}
+
+/// The `fvar` table (OpenType 1.9): one axis and its named instances; every
+/// instance record carries a PostScript name ID when any does (0xFFFF for
+/// none).
+fn fvar_table(v: &Variable) -> Vec<u8> {
+    const AXIS_ARRAY_OFFSET: u16 = 16;
+    const AXIS_SIZE: u16 = 20;
+    const NAME_ID: u16 = 256;
+    const NO_NAME: u16 = 0xFFFF;
+    let with_postscript = v.instances.iter().any(|i| i.postscript_name_id.is_some());
+    let instance_size: u16 = 4 + 4 + if with_postscript { 2 } else { 0 };
+    let mut t = Vec::new();
+    t.extend(u16b(1));
+    t.extend(u16b(0));
+    t.extend(u16b(AXIS_ARRAY_OFFSET));
+    t.extend(u16b(2));
+    t.extend(u16b(1));
+    t.extend(u16b(AXIS_SIZE));
+    t.extend(u16b(v.instances.len() as u16));
+    t.extend(u16b(instance_size));
+    t.extend(v.tag);
+    t.extend(fixed(v.min));
+    t.extend(fixed(v.default));
+    t.extend(fixed(v.max));
+    t.extend(u16b(0));
+    t.extend(u16b(NAME_ID));
+    for i in &v.instances {
+        t.extend(u16b(i.name_id));
+        t.extend(u16b(0));
+        t.extend(fixed(i.value));
+        if with_postscript {
+            t.extend(u16b(i.postscript_name_id.unwrap_or(NO_NAME)));
+        }
+    }
+    t
+}
+
+/// Packed point deltas: runs of at most 64 words.
+fn packed_deltas(deltas: &[i16]) -> Vec<u8> {
+    const WORDS: u8 = 0x40;
+    const RUN: usize = 64;
+    let mut out = Vec::new();
+    for run in deltas.chunks(RUN) {
+        out.push(WORDS | (run.len() as u8 - 1));
+        for d in run {
+            out.extend(i16b(*d));
+        }
+    }
+    out
+}
+
+/// The `gvar` table (OpenType 1.9): one tuple a moving glyph, peaking at the
+/// axis maximum (1.0), over all points, the four phantom points last. The
+/// advance changes through the right phantom point.
+fn gvar_table(spec: &SfntSpec, v: &Variable) -> Vec<u8> {
+    const HEADER: usize = 20;
+    const EMBEDDED_PEAK: u16 = 0x8000;
+    const PRIVATE_POINTS: u16 = 0x2000;
+    const PEAK_ONE: u16 = 0x4000;
+    const ALL_POINTS: u8 = 0;
+    let n = spec.glyphs.len();
+    let mut data = Vec::new();
+    let mut offsets = vec![0u16];
+    for (i, g) in spec.glyphs.iter().enumerate() {
+        if let Some(Some(m)) = v.moves.get(i) {
+            let points: usize = g.contours.iter().map(Vec::len).sum();
+            assert_eq!((m.dx.len(), m.dy.len()), (points, points));
+            let mut dx = m.dx.clone();
+            dx.extend([0, m.advance, 0, 0]);
+            let mut dy = m.dy.clone();
+            dy.extend([0; 4]);
+            let mut body = vec![ALL_POINTS];
+            body.extend(packed_deltas(&dx));
+            body.extend(packed_deltas(&dy));
+            let mut entry = Vec::new();
+            entry.extend(u16b(1));
+            entry.extend(u16b(4 + 6));
+            entry.extend(u16b(body.len() as u16));
+            entry.extend(u16b(EMBEDDED_PEAK | PRIVATE_POINTS));
+            entry.extend(u16b(PEAK_ONE));
+            entry.extend(body);
+            if entry.len() % 2 != 0 {
+                entry.push(0);
+            }
+            data.extend(entry);
+        }
+        offsets.push((data.len() / 2) as u16);
+    }
+    let array = HEADER + (n + 1) * 2;
+    let mut t = Vec::new();
+    t.extend(u16b(1));
+    t.extend(u16b(0));
+    t.extend(u16b(1));
+    t.extend(u16b(0));
+    t.extend(u32b(array as u32));
+    t.extend(u16b(n as u16));
+    t.extend(u16b(0));
+    t.extend(u32b(array as u32));
+    for o in offsets {
+        t.extend(u16b(o));
+    }
+    t.extend(data);
     t
 }
 
@@ -325,6 +472,10 @@ pub fn build(spec: &SfntSpec) -> Vec<u8> {
         (b"name", name_table(spec)),
         (b"post", post_table(spec)),
     ];
+    if let Some(v) = &spec.variable {
+        tables.push((b"fvar", fvar_table(v)));
+        tables.push((b"gvar", gvar_table(spec, v)));
+    }
     tables.sort_by_key(|t| *t.0);
 
     let count = tables.len();

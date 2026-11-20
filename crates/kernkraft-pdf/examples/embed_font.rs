@@ -4,18 +4,20 @@
 //! Shows text with an embedded font on a one-page PDF, for
 //! scripts/check-font.sh.
 //!
-//!     embed_font FONT INDEX OUTPUT TEXT
+//!     embed_font FONT INDEX OUTPUT TEXT [TAG=VALUE]...
 //!
 //! FONT is a TrueType or OpenType file (INDEX picks a font out of a
-//! collection). The page is 400 by 100 points and shows TEXT at 14 points
+//! collection). Each TAG=VALUE (such as wght=700) sets an axis of a variable
+//! font; an axis not given keeps its default. The page is 400 by 100 points and shows TEXT at 14 points
 //! with the font embedded as a subset. Exits with 0 when the file is written,
 //! 3 when the font has no glyph for a character of TEXT, 4 when the font is
-//! one that cannot be reduced to a subset (a `CFF2` font, a font of bitmaps),
+//! one that cannot be reduced to a subset (a font of bitmaps),
 //! and 1 on any other failure. The seed is fixed, so the same input gives the same output.
 
 use std::path::Path;
 use std::process::ExitCode;
 
+use kernkraft_font::Variations;
 use kernkraft_fs::{Expect, NoProgress};
 use kernkraft_pdf::build::{ContentBuilder, ObjectBuilder, StreamEncoding};
 use kernkraft_pdf::doc::{Document, OpenOptions};
@@ -85,8 +87,14 @@ fn id(number: u32) -> ObjectId {
     }
 }
 
-fn run(program: Vec<u8>, index: u32, output: &Path, text: &str) -> Result<(), PdfError> {
-    let mut embedder = FontEmbedder::new(program, index)?;
+fn run(
+    program: Vec<u8>,
+    index: u32,
+    output: &Path,
+    text: &str,
+    variations: &Variations,
+) -> Result<(), PdfError> {
+    let mut embedder = FontEmbedder::with_variations(program, index, variations)?;
     let codes = embedder.encode(text)?;
     let mut content = ContentBuilder::new();
     content
@@ -133,9 +141,21 @@ fn main() -> ExitCode {
     let (Some(font), Some(index), Some(output), Some(text)) =
         (args.get(1), args.get(2), args.get(3), args.get(4))
     else {
-        eprintln!("usage: embed_font FONT INDEX OUTPUT TEXT");
+        eprintln!("usage: embed_font FONT INDEX OUTPUT TEXT [TAG=VALUE]...");
         return ExitCode::FAILURE;
     };
+    let mut variations = Variations::new();
+    for setting in &args[5.min(args.len())..] {
+        let parsed = setting.split_once('=').and_then(|(tag, value)| {
+            let tag: [u8; 4] = tag.as_bytes().try_into().ok()?;
+            Some((tag, value.parse::<f32>().ok()?))
+        });
+        let Some((tag, value)) = parsed else {
+            eprintln!("not TAG=VALUE with a four-letter TAG and a number: {setting}");
+            return ExitCode::FAILURE;
+        };
+        variations = variations.with(tag, value);
+    }
     let Ok(index) = index.parse::<u32>() else {
         eprintln!("INDEX is not a number: {index}");
         return ExitCode::FAILURE;
@@ -147,7 +167,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match run(program, index, Path::new(output), text) {
+    match run(program, index, Path::new(output), text, &variations) {
         Ok(()) => ExitCode::SUCCESS,
         Err(PdfError::NoGlyphForCharacter { character }) => {
             eprintln!("{font}: no glyph for U+{:04X}", u32::from(character));

@@ -7,19 +7,25 @@
 //! programs, Table 126) and 9.10.3 (ToUnicode CMaps); Adobe Technical Note
 //! 5411 (ToUnicode mapping file tutorial).
 //!
-//! A [`FontEmbedder`] holds a TrueType or OpenType font and the characters
-//! shown with it so far. [`FontEmbedder::encode`] turns text into the bytes
-//! of a string for `Tj`, and [`FontEmbedder::write`] writes the font as a
-//! Type 0 font with an `Identity-H` encoding: every character is two bytes,
-//! the glyph's number in the subset, which is also its CID. The descendant is
-//! a CIDFontType2 (TrueType outlines, `CIDToGIDMap` `Identity`) or a
-//! CIDFontType0 (CFF outlines). The subset keeps only the glyphs shown, and
-//! a ToUnicode CMap keeps their text so that the font can be searched and
-//! copied from.
+//! A [`FontEmbedder`] holds a TrueType or OpenType font, the instance of it
+//! when it is a variable font, and the characters shown with it so far.
+//! [`FontEmbedder::encode`] turns text into the bytes of a string for `Tj`,
+//! and [`FontEmbedder::write`] writes the font as a Type 0 font with an
+//! `Identity-H` encoding: every character is two bytes, the glyph's number in
+//! the subset, which is also its CID. The descendant is a CIDFontType2
+//! (TrueType outlines, `CIDToGIDMap` `Identity`) or a CIDFontType0 (CFF
+//! outlines). The subset keeps only the glyphs shown, and a ToUnicode CMap
+//! keeps their text so that the font can be searched and copied from.
+//!
+//! A variable font is embedded at the one instance chosen, as a static font:
+//! a PDF font program has no variation tables. A `CFF2` font, and a `glyf`
+//! font at an instance other than its default, come out as `glyf` outlines
+//! (a CIDFontType2). The widths, the descriptor and the font's name (Adobe
+//! Technical Note 5902) are those of the instance.
 
 use std::collections::BTreeMap;
 
-use kernkraft_font::{subset, Format, GlyphId, GlyphSet, Outline, Program, Segment};
+use kernkraft_font::{subset, Format, GlyphId, GlyphSet, Outline, Program, Segment, Variations};
 use md5::{Digest, Md5};
 
 use super::descriptor::FontFlags;
@@ -56,6 +62,8 @@ const CAP_GLYPH: char = 'H';
 pub struct FontEmbedder {
     program: Vec<u8>,
     index: u32,
+    /// The instance of a variable font; empty for the default instance.
+    variations: Variations,
     glyphs: GlyphSet,
     /// The character that first selected each glyph of the subset, for the
     /// ToUnicode CMap: a glyph two characters select (a space and a no-break
@@ -65,33 +73,59 @@ pub struct FontEmbedder {
 
 impl FontEmbedder {
     /// A font of `program`, a TrueType or OpenType file (`index` picks a font
-    /// out of a collection) with `glyf` or `CFF ` outlines.
+    /// out of a collection) with `glyf`, `CFF ` or `CFF2` outlines, at its
+    /// default instance if it is a variable font.
     ///
     /// [`PdfError::Font`] for a program that cannot be read or that cannot be
     /// reduced to a subset: a bare CFF or Type 1 program, a font with no
-    /// outlines, a `CFF2` font.
+    /// outlines.
     pub fn new(program: Vec<u8>, index: u32) -> Result<FontEmbedder, PdfError> {
+        Self::with_variations(program, index, &Variations::new())
+    }
+
+    /// As [`Self::new`], for the instance `variations` picks of a variable
+    /// font ([`Program::axes`] lists the axes).
+    ///
+    /// [`PdfError::Font`] also for an instance the font does not have: an
+    /// axis it lacks or a font with no axes, an axis given twice, a value
+    /// outside the axis's range.
+    pub fn with_variations(
+        program: Vec<u8>,
+        index: u32,
+        variations: &Variations,
+    ) -> Result<FontEmbedder, PdfError> {
         let parsed = Program::parse(&program, index)?;
         match parsed.format() {
             Format::TrueType | Format::OpenTypeCff => {}
             // The reason is the one `kernkraft_font::subset` gives.
             _ => {
-                subset(&program, index, &GlyphSet::new(parsed.glyph_count()))?;
+                subset(
+                    &program,
+                    index,
+                    &GlyphSet::new(parsed.glyph_count()),
+                    variations,
+                )?;
             }
         }
         let glyphs = GlyphSet::new(parsed.glyph_count());
-        drop(parsed);
+        parsed.with_variations(variations)?;
         Ok(FontEmbedder {
             program,
             index,
+            variations: variations.clone(),
             glyphs,
             text: BTreeMap::new(),
         })
     }
 
+    /// The font program at the instance chosen.
+    fn parsed(&self) -> Result<Program<'_>, PdfError> {
+        Ok(Program::parse(&self.program, self.index)?.with_variations(&self.variations)?)
+    }
+
     /// Whether the font has a glyph for `character`.
     pub fn covers(&self, character: char) -> Result<bool, PdfError> {
-        let program = Program::parse(&self.program, self.index)?;
+        let program = self.parsed()?;
         Ok(glyph_of(&program, character).is_some())
     }
 
@@ -102,7 +136,7 @@ impl FontEmbedder {
     /// [`PdfError::NoGlyphForCharacter`] for a character the font has no
     /// glyph for; nothing is added then.
     pub fn encode(&mut self, text: &str) -> Result<Vec<u8>, PdfError> {
-        let program = Program::parse(&self.program, self.index)?;
+        let program = self.parsed()?;
         let found = text
             .chars()
             .map(|c| {
@@ -126,7 +160,7 @@ impl FontEmbedder {
     ///
     /// [`PdfError::NoGlyphForCharacter`] as for [`Self::encode`].
     pub fn width(&self, text: &str) -> Result<f64, PdfError> {
-        let program = Program::parse(&self.program, self.index)?;
+        let program = self.parsed()?;
         let scale = glyph_scale(&program);
         let mut total = 0.0;
         for character in text.chars() {
@@ -142,8 +176,8 @@ impl FontEmbedder {
     /// 0 font's object, for a page's `Font` resources. The output is a
     /// function of the font and of the glyphs encoded, in the order they were.
     pub fn write(&self, builder: &mut ObjectBuilder) -> Result<ObjectId, PdfError> {
-        let program = Program::parse(&self.program, self.index)?;
-        let reduced = subset(&self.program, self.index, &self.glyphs)?;
+        let program = self.parsed()?;
+        let reduced = subset(&self.program, self.index, &self.glyphs, &self.variations)?;
         let truetype = reduced.format == Format::TrueType;
         let base = format!(
             "{}+{}",

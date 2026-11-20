@@ -4,10 +4,11 @@
 
 # Checks the fonts kernkraft-pdf embeds against other readers.
 #
-#     scripts/check-font.sh OUT_DIR FONT[:INDEX]...
+#     scripts/check-font.sh OUT_DIR FONT[:INDEX][@TAG=VALUE[,TAG=VALUE]...]...
 #
 # Each font (a TrueType or OpenType file; INDEX picks a font out of a
-# collection, default 0) is embedded as a subset in a one-page PDF that shows
+# collection, default 0; each TAG=VALUE, such as wght=700, sets an axis of a
+# variable font) is embedded as a subset in a one-page PDF that shows
 # a line of text with it. Every result must pass `qpdf --check` and
 # `mutool info`, be reported by `pdffonts` as an embedded subset with a
 # ToUnicode map, give the line back through `pdftotext`, and be drawn by
@@ -15,7 +16,7 @@
 # with poppler's pictures of them by scripts/check-render.sh, so that the
 # subsets are drawn by the two renderers alike. A font that lacks a character
 # of the line is skipped, and a font that cannot be reduced to a subset (a
-# CFF2 font, a font of bitmaps) is reported as unsupported; neither fails the
+# font of bitmaps) is reported as unsupported; neither fails the
 # run. Exits with 1 when any check fails.
 
 set -euo pipefail
@@ -23,7 +24,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [ "$#" -lt 2 ]; then
-    echo "usage: scripts/check-font.sh OUT_DIR FONT[:INDEX]..." >&2
+    echo "usage: scripts/check-font.sh OUT_DIR FONT[:INDEX][@TAG=VALUE,...]..." >&2
     exit 2
 fi
 out_dir="$1"
@@ -53,6 +54,11 @@ fail() {
 index=0
 for spec in "$@"; do
     index=$((index + 1))
+    axis_args=()
+    if [[ "$spec" =~ @([A-Za-z]{4}=[^@]*)$ ]]; then
+        IFS=, read -ra axis_args <<<"${BASH_REMATCH[1]}"
+        spec="${spec%@*}"
+    fi
     font="${spec%%:*}"
     face=0
     if [ "$spec" != "$font" ]; then
@@ -61,7 +67,7 @@ for spec in "$@"; do
     name="$(printf '%04d' "$index")-$(basename "$font")-$face"
     copy="$out_dir/$name.pdf"
     status=0
-    "$embed" "$font" "$face" "$copy" "$TEXT" 2>"$out_dir/$name.txt" || status=$?
+    "$embed" "$font" "$face" "$copy" "$TEXT" ${axis_args[@]+"${axis_args[@]}"} 2>"$out_dir/$name.txt" || status=$?
     if [ "$status" -eq "$MISSING_GLYPH" ]; then
         skipped=$((skipped + 1))
         continue

@@ -7,7 +7,7 @@
 //! (`embed_truetype`, `embed_opentype`), so the glyph numbers, advances and
 //! boxes each test expects are the ones its font was built with.
 
-use kernkraft_font::{Format, GlyphId, Program};
+use kernkraft_font::{Format, GlyphId, Program, Variations, AXIS_WEIGHT};
 use kernkraft_pdf::build::ObjectBuilder;
 use kernkraft_pdf::doc::Document;
 use kernkraft_pdf::font::{FontEmbedder, FontKind, ProgramKind};
@@ -15,7 +15,8 @@ use kernkraft_pdf::syntax::{Dictionary, ObjectId, Value};
 use kernkraft_pdf::PdfError;
 
 use super::*;
-use fontkit::sfnt::{self, Glyph, SfntSpec};
+use fontkit::cff::{self, Cs2};
+use fontkit::sfnt::{self, Glyph, Move, SfntSpec, Variable};
 
 fn embedder() -> FontEmbedder {
     FontEmbedder::new(embed_truetype(true), 0).unwrap()
@@ -399,4 +400,179 @@ fn damaged_fonts_are_typed_errors_never_panics() {
             let _ = use_font(damaged);
         }
     }
+}
+
+/// A font with one `wght` axis, 400 (the default) to 900: glyph 1 is the
+/// triangle (0,0) (100,0) (50,100) of advance 700, which at 900 has its
+/// points moved by (0,0) (200,0) (100,50) and an advance of 1000.
+fn variable_font() -> Vec<u8> {
+    let mut spec = SfntSpec::new(vec![
+        Glyph {
+            name: ".notdef",
+            advance: 500,
+            contours: vec![],
+        },
+        Glyph {
+            name: "tri",
+            advance: 700,
+            contours: sfnt::triangle(),
+        },
+    ]);
+    spec.unicode = vec![(0x41, 1)];
+    spec.variable = Some(Variable {
+        tag: *b"wght",
+        min: 400,
+        default: 400,
+        max: 900,
+        instances: vec![],
+        moves: vec![
+            None,
+            Some(Move {
+                dx: vec![0, 200, 100],
+                dy: vec![0, 0, 50],
+                advance: 300,
+            }),
+        ],
+    });
+    sfnt::build(&spec)
+}
+
+fn weight(value: f32) -> Variations {
+    Variations::new().with(AXIS_WEIGHT, value)
+}
+
+#[test]
+fn a_variable_font_is_embedded_at_the_instance_chosen_with_its_widths_and_box() {
+    // (weight, advance of A, box of A): halfway is 650, with half the deltas.
+    for (value, advance, bbox) in [
+        (400.0, 700.0, [0.0, 0.0, 100.0, 100.0]),
+        (650.0, 850.0, [0.0, 0.0, 200.0, 125.0]),
+        (900.0, 1000.0, [0.0, 0.0, 300.0, 150.0]),
+    ] {
+        let mut e = FontEmbedder::with_variations(variable_font(), 0, &weight(value)).unwrap();
+        assert_eq!(e.width("A").unwrap(), advance, "width at {value}");
+        let (doc, font_id, codes) = shown(&mut e, "A");
+        let font = load(&doc, font_id.number).unwrap();
+        assert_eq!(widths(&font, &codes), [advance], "W at {value}");
+        let d = font.descriptor().unwrap();
+        assert_eq!(d.font_bbox, Some(bbox), "box at {value}");
+        // The program is a static subset at the instance.
+        let program = font.embedded_program(&doc).unwrap().unwrap();
+        assert_eq!(program.kind, ProgramKind::TrueType);
+        let parsed = Program::parse(&program.data, 0).unwrap();
+        assert!(parsed.axes().is_empty());
+        assert_eq!(f64::from(parsed.advance(GlyphId(1)).unwrap()), advance);
+        let outline = parsed.outline(GlyphId(1)).unwrap();
+        assert_eq!(outline.control_box().map(|b| b.map(f64::from)), Some(bbox));
+    }
+}
+
+#[test]
+fn the_default_instance_is_what_new_embeds() {
+    let program_of = |mut e: FontEmbedder| {
+        let (doc, font_id, _) = shown(&mut e, "A");
+        let font = load(&doc, font_id.number).unwrap();
+        font.embedded_program(&doc).unwrap().unwrap().data
+    };
+    let plain = program_of(FontEmbedder::new(variable_font(), 0).unwrap());
+    let named =
+        program_of(FontEmbedder::with_variations(variable_font(), 0, &weight(400.0)).unwrap());
+    assert_eq!(plain, named);
+}
+
+#[test]
+fn different_instances_of_one_font_get_different_tags_and_names() {
+    let names = |value: f32| {
+        let mut e = FontEmbedder::with_variations(variable_font(), 0, &weight(value)).unwrap();
+        let (doc, font_id, _) = shown(&mut e, "A");
+        let font = load(&doc, font_id.number).unwrap();
+        let base =
+            String::from_utf8(name_of(&descendant(&doc, font_id), "BaseFont").to_vec()).unwrap();
+        // The descriptor names the same font.
+        assert_eq!(font.descriptor().unwrap().font_name, Some(base.clone()));
+        base
+    };
+    let (regular, bold) = (names(400.0), names(900.0));
+    assert_ne!(regular[..6], bold[..6]);
+    // The default instance keeps the font's own name; any other is named by
+    // Adobe TN 5902 (the test font has no named instance and no name ID 25).
+    assert_eq!(&regular[6..], "+TestSans-Regular");
+    assert_eq!(&bold[6..], "+TestSans_900wght");
+}
+
+#[test]
+fn an_instance_the_font_does_not_have_is_refused_when_the_embedder_is_made() {
+    use kernkraft_font::FontError;
+    let make = |v: Variations| FontEmbedder::with_variations(variable_font(), 0, &v).map(drop);
+    assert!(matches!(
+        make(weight(901.0)),
+        Err(PdfError::Font(FontError::AxisOutOfRange { .. }))
+    ));
+    assert!(matches!(
+        make(Variations::new().with(*b"wdth", 100.0)),
+        Err(PdfError::Font(FontError::UnknownAxis { .. }))
+    ));
+    assert!(matches!(
+        make(weight(500.0).with(AXIS_WEIGHT, 600.0)),
+        Err(PdfError::Font(FontError::DuplicateAxis { .. }))
+    ));
+    assert!(matches!(
+        FontEmbedder::with_variations(embed_truetype(true), 0, &weight(400.0)),
+        Err(PdfError::Font(FontError::NoVariationAxes))
+    ));
+}
+
+#[test]
+fn a_cff2_font_is_a_cidfonttype2_with_a_font_file_2() {
+    let triangle = Cs2::new()
+        .with(&[0, 0], "rmoveto")
+        .with(&[100, 0], "rlineto")
+        .with(&[-50, 100], "rlineto");
+    let table = cff::build_cff2(&[Cs2::new(), triangle]);
+    let mut spec = SfntSpec::new(vec![
+        Glyph {
+            name: ".notdef",
+            advance: 500,
+            contours: vec![],
+        },
+        Glyph {
+            name: "tri",
+            advance: 700,
+            contours: vec![],
+        },
+    ]);
+    spec.unicode = vec![(0x41, 1)];
+    let base = sfnt::build(&spec);
+    let bytes = sfnt::retable(
+        &base,
+        *b"OTTO",
+        &[b"glyf", b"loca"],
+        vec![(*b"CFF2", table)],
+    );
+
+    let mut e = FontEmbedder::new(bytes, 0).unwrap();
+    let (doc, font_id, codes) = shown(&mut e, "A");
+    let type0 = dictionary_of(&doc, font_id);
+    let cid_font = descendant(&doc, font_id);
+    // The outlines are redrawn as glyf: a TrueType CIDFont, not a CFF one.
+    assert_eq!(name_of(&cid_font, "Subtype"), b"CIDFontType2");
+    assert_eq!(name_of(&cid_font, "CIDToGIDMap"), b"Identity");
+    assert_eq!(
+        type0.get(b"BaseFont").map(|o| o.value().clone()),
+        cid_font.get(b"BaseFont").map(|o| o.value().clone())
+    );
+    let font = load(&doc, font_id.number).unwrap();
+    assert_eq!(
+        font.descriptor().unwrap().font_file.unwrap().kind,
+        ProgramKind::TrueType
+    );
+    let program = font.embedded_program(&doc).unwrap().unwrap();
+    assert_eq!(program.kind, ProgramKind::TrueType);
+    let parsed = Program::parse(&program.data, 0).unwrap();
+    assert_eq!(parsed.format(), Format::TrueType);
+    assert_eq!(widths(&font, &codes), [700.0]);
+    assert_eq!(
+        font.descriptor().unwrap().font_bbox,
+        Some([0.0, 0.0, 100.0, 100.0])
+    );
 }

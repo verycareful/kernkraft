@@ -24,6 +24,7 @@ mod outline;
 mod program;
 mod subset;
 pub mod type1;
+mod variation;
 
 pub use coverage::Coverage;
 pub use error::FontError;
@@ -32,3 +33,4 @@ pub use matching::Query;
 pub use outline::{Outline, Point, Segment};
 pub use program::{CmapSelector, Format, GlyphId, Metrics, Names, Program};
 pub use subset::{subset, GlyphSet, Subset};
+pub use variation::{Axis, AxisTag, Variations, AXIS_ITALIC, AXIS_SLANT, AXIS_WEIGHT};

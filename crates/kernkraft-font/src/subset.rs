@@ -3,9 +3,9 @@
 
 //! Reducing a font to the glyphs a document shows, for embedding.
 //!
-//! Formats: OpenType 1.9 (`glyf`, `loca`, `CFF `, `hmtx`, `head`, `maxp`,
-//! `post`, `name`); ISO 32000-1:2008, 9.9 (embedded font programs) and
-//! 9.7.4.2 (glyph selection in CIDFonts).
+//! Formats: OpenType 1.9 (`glyf`, `loca`, `CFF `, `CFF2`, `fvar`, `gvar`,
+//! `hmtx`, `head`, `maxp`, `post`, `name`); ISO 32000-1:2008, 9.9 (embedded
+//! font programs) and 9.7.4.2 (glyph selection in CIDFonts).
 //!
 //! A [`GlyphSet`] numbers the glyphs in the order they are added; the number
 //! is the glyph's index in the subset and, for a PDF CIDFont, its CID.
@@ -13,11 +13,17 @@
 //! among them (components take the numbers after the set's own). The
 //! subset has no `cmap`, `OS/2` or `GSUB` table: a PDF font addresses glyphs
 //! through its own encoding, so it is only fit to be embedded.
+//!
+//! A variable font is reduced at one instance ([`Variations`]) and the subset
+//! is static: a `PDF` font program has no variation tables. A `CFF2` font, and
+//! a `glyf` font at an instance other than its default, are redrawn as `glyf`
+//! outlines (cubic curves become quadratic, hinting is dropped).
 
 use subsetter::GlyphRemapper;
 
 use crate::error::FontError;
-use crate::program::{Format, GlyphId, Program};
+use crate::program::{face_index, Format, GlyphId, Program};
+use crate::variation::Variations;
 
 /// The glyphs to keep, numbered from 0 in the order they were added. Glyph 0,
 /// `.notdef`, is always the first.
@@ -75,7 +81,8 @@ impl GlyphSet {
 /// A font reduced to a [`GlyphSet`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subset {
-    /// [`Format::TrueType`] or [`Format::OpenTypeCff`]. An OpenType subset's
+    /// [`Format::TrueType`] or [`Format::OpenTypeCff`], read from the subset
+    /// itself: a `CFF2` font gives [`Format::TrueType`]. An OpenType subset's
     /// CFF table is CID-keyed with CID equal to glyph number, whatever the
     /// original's charset was.
     pub format: Format,
@@ -84,16 +91,22 @@ pub struct Subset {
 }
 
 /// Reduces the font program `data` (`index` picks a font out of a
-/// collection) to the glyphs of `glyphs`.
+/// collection) to the glyphs of `glyphs`, at the instance `variations` picks
+/// (an empty one is the font's default instance).
 ///
-/// [`FontError::Subset`] for a program that is not an sfnt with `glyf` or
-/// `CFF ` outlines (a bare CFF or Type 1 program cannot be reduced here), a
-/// `CFF2` font, and a set made for a font of another glyph count; the other
+/// [`FontError::Subset`] for a program that is not an sfnt with `glyf`,
+/// `CFF ` or `CFF2` outlines (a bare CFF or Type 1 program cannot be reduced
+/// here) and a set made for a font of another glyph count; the errors of
+/// [`Variations::check`] for an instance the font does not have; the other
 /// errors are those of [`Program::parse`].
-pub fn subset(data: &[u8], index: u32, glyphs: &GlyphSet) -> Result<Subset, FontError> {
+pub fn subset(
+    data: &[u8],
+    index: u32,
+    glyphs: &GlyphSet,
+    variations: &Variations,
+) -> Result<Subset, FontError> {
     let program = Program::parse(data, index)?;
-    let format = program.format();
-    match format {
+    match program.format() {
         Format::TrueType | Format::OpenTypeCff => {}
         Format::SfntNoOutlines => return Err(FontError::Subset("the font has no outlines")),
         Format::Cff => return Err(FontError::Subset("a bare CFF program is not an sfnt")),
@@ -104,7 +117,19 @@ pub fn subset(data: &[u8], index: u32, glyphs: &GlyphSet) -> Result<Subset, Font
             "the glyph set is for a font of another glyph count",
         ));
     }
-    let bytes = subsetter::subset(data, index, &glyphs.remapper).map_err(|e| {
+    variations.check(&program.axes())?;
+    let coordinates: Vec<(subsetter::Tag, f32)> = variations
+        .settings()
+        .iter()
+        .map(|(tag, value)| (subsetter::Tag::new(tag), *value))
+        .collect();
+    let bytes = subsetter::subset_with_variations(
+        data,
+        face_index(data, index),
+        &coordinates,
+        &glyphs.remapper,
+    )
+    .map_err(|e| {
         FontError::Subset(match e {
             subsetter::Error::Unimplemented => "the font uses a feature that cannot be reduced",
             subsetter::Error::UnknownKind => {
@@ -116,6 +141,7 @@ pub fn subset(data: &[u8], index: u32, glyphs: &GlyphSet) -> Result<Subset, Font
             }
         })
     })?;
+    let format = Program::parse(&bytes, 0)?.format();
     Ok(Subset {
         format,
         data: bytes,

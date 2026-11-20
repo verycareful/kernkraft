@@ -252,3 +252,60 @@ pub fn build(spec: &CffSpec) -> Vec<u8> {
     }
     out
 }
+
+/// A `CFF2` table (OpenType 1.9, CFF2): header, Top DICT with `CharStrings`
+/// and `FDArray`, an empty global subroutine INDEX, the charstrings (no width,
+/// no `endchar`) and one Font DICT whose Private DICT is empty.
+pub fn build_cff2(charstrings: &[Cs2]) -> Vec<u8> {
+    const HEADER: usize = 5;
+    const TOP_DICT: usize = 13;
+    const GLOBAL_SUBRS: usize = 4;
+    const OP_CHARSTRINGS: u8 = 17;
+    const OP_PRIVATE: u8 = 18;
+    const OP_ESCAPE: u8 = 12;
+    const OP_FDARRAY: u8 = 36;
+    const INT32: u8 = 29;
+    fn index(items: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = (items.len() as u32).to_be_bytes().to_vec();
+        out.push(2);
+        let mut at = 1u16;
+        out.extend(at.to_be_bytes());
+        for item in items {
+            at += item.len() as u16;
+            out.extend(at.to_be_bytes());
+        }
+        for item in items {
+            out.extend(item);
+        }
+        out
+    }
+    let int32 = |v: usize| {
+        let mut b = vec![INT32];
+        b.extend((v as i32).to_be_bytes());
+        b
+    };
+    let strings = index(&charstrings.iter().map(|c| c.0.clone()).collect::<Vec<_>>());
+    let strings_at = HEADER + TOP_DICT + GLOBAL_SUBRS;
+    let font_dicts_at = strings_at + strings.len();
+    // The Font DICT: Private size 0 (the number 139 is 0), then its offset.
+    let font_dict_len = 1 + 5 + 1;
+    let font_dicts_len = 4 + 1 + 2 * 2 + font_dict_len;
+    let private_at = font_dicts_at + font_dicts_len;
+    let mut font_dict = vec![139];
+    font_dict.extend(int32(private_at));
+    font_dict.push(OP_PRIVATE);
+    let mut top = int32(strings_at);
+    top.push(OP_CHARSTRINGS);
+    top.extend(int32(font_dicts_at));
+    top.extend([OP_ESCAPE, OP_FDARRAY]);
+    assert_eq!(top.len(), TOP_DICT);
+    let mut out = vec![2, 0, HEADER as u8];
+    out.extend((TOP_DICT as u16).to_be_bytes());
+    out.extend(top);
+    out.extend(0u32.to_be_bytes());
+    out.extend(strings);
+    let font_dicts = index(&[font_dict]);
+    assert_eq!(font_dicts.len(), font_dicts_len);
+    out.extend(font_dicts);
+    out
+}

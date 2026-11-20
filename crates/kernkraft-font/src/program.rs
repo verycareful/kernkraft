@@ -16,7 +16,7 @@ use read_fonts::ps::cff::{CffFontRef, Subfont};
 use read_fonts::ps::string::Sid;
 use read_fonts::types::Tag;
 use read_fonts::{FileRef, ReadError, TableProvider};
-use skrifa::instance::{LocationRef, Size};
+use skrifa::instance::{Location, Size};
 use skrifa::outline::{
     DrawError, DrawSettings, OutlineGlyphCollection, OutlineGlyphFormat, OutlinePen,
 };
@@ -26,6 +26,10 @@ use skrifa::{FontRef, MetadataProvider};
 use crate::error::FontError;
 use crate::outline::Outline;
 use crate::type1::Type1Font;
+use crate::variation::{
+    arbitrary_instance_name, ascii_alphanumeric, named_instance_name, Axis, Variations,
+    AXIS_ITALIC, AXIS_SLANT, AXIS_WEIGHT,
+};
 
 /// A glyph number in a font program: the glyph's index in its outline table
 /// (`loca`, the CFF CharStrings INDEX, or the order of a Type 1 font's
@@ -94,6 +98,9 @@ pub struct CmapSelector {
     pub encoding: u16,
 }
 
+/// Axis values are compared as the 16.16 fixed numbers a font stores.
+const FIXED_ONE: f64 = 65536.0;
+
 type NameMap = OnceLock<HashMap<String, GlyphId>>;
 
 struct Sfnt<'a> {
@@ -105,6 +112,11 @@ struct Sfnt<'a> {
     glyph_count: u16,
     units_per_em: u16,
     names: NameMap,
+    /// The instance outlines, advances and metrics are read at: normalised
+    /// coordinates, all zero (the default instance) until
+    /// [`Program::with_variations`].
+    location: Location,
+    variations: Variations,
 }
 
 struct BareCff<'a> {
@@ -126,6 +138,17 @@ pub struct Program<'a> {
     inner: Inner<'a>,
 }
 
+/// The face of `data` that `index` picks. Only a TrueType collection holds
+/// more than one font; for any other file the index is ignored (fontconfig
+/// numbers a variable font's named instances in the high bits of an index).
+pub(crate) fn face_index(data: &[u8], index: u32) -> u32 {
+    if data.starts_with(b"ttcf") {
+        index
+    } else {
+        0
+    }
+}
+
 impl<'a> Program<'a> {
     /// Reads a font program, telling the format from its first bytes.
     /// `index` picks a font out of a TrueType collection and is ignored
@@ -135,7 +158,7 @@ impl<'a> Program<'a> {
             [0x00, 0x01, 0x00, 0x00, ..]
             | [b't', b'r', b'u', b'e', ..]
             | [b'O', b'T', b'T', b'O', ..] => Self::sfnt(data, 0),
-            [b't', b't', b'c', b'f', ..] => Self::sfnt(data, index),
+            [b't', b't', b'c', b'f', ..] => Self::sfnt(data, face_index(data, index)),
             [0x01, _, hdr, off, ..] if *hdr >= 4 && (1..=4).contains(off) => Self::cff(data),
             [b'%', b'!', ..] | [0x80, 0x01, ..] => Ok(Program {
                 inner: Inner::Type1(Box::new(Type1Font::parse(data)?)),
@@ -170,6 +193,8 @@ impl<'a> Program<'a> {
                 glyph_count,
                 units_per_em,
                 names: OnceLock::new(),
+                location: Location::default(),
+                variations: Variations::new(),
             })),
         })
     }
@@ -191,6 +216,45 @@ impl<'a> Program<'a> {
                 names: OnceLock::new(),
             })),
         })
+    }
+
+    /// The axes of a variable font, in the order of its `fvar` table; empty
+    /// for a font with none and for a bare CFF or Type 1 program.
+    pub fn axes(&self) -> Vec<Axis> {
+        match &self.inner {
+            Inner::Sfnt(s) => s
+                .font
+                .axes()
+                .iter()
+                .map(|a| Axis {
+                    tag: a.tag().to_be_bytes(),
+                    min: a.min_value(),
+                    default: a.default_value(),
+                    max: a.max_value(),
+                })
+                .collect(),
+            Inner::Cff(_) | Inner::Type1(_) => Vec::new(),
+        }
+    }
+
+    /// The program at the instance `variations` picks: [`Self::advance`],
+    /// [`Self::outline`] and [`Self::metrics`] describe that instance from
+    /// then on, and [`Self::names`] gives its PostScript name (Adobe TN 5902).
+    /// An empty `variations` is the default instance.
+    ///
+    /// The errors of [`Variations::check`].
+    pub fn with_variations(mut self, variations: &Variations) -> Result<Program<'a>, FontError> {
+        variations.check(&self.axes())?;
+        if let Inner::Sfnt(s) = &mut self.inner {
+            s.location = s.font.axes().location(
+                variations
+                    .settings()
+                    .iter()
+                    .map(|&(tag, value)| (Tag::new(&tag), value)),
+            );
+            s.variations = variations.clone();
+        }
+        Ok(self)
     }
 
     pub fn format(&self) -> Format {
@@ -328,7 +392,7 @@ impl<'a> Program<'a> {
         match &self.inner {
             Inner::Sfnt(s) => s
                 .font
-                .glyph_metrics(Size::unscaled(), LocationRef::default())
+                .glyph_metrics(Size::unscaled(), &s.location)
                 .advance_width(glyph.to_skrifa()),
             Inner::Cff(c) => c.draw(glyph, &mut Outline::default()).ok().flatten(),
             Inner::Type1(t) => t.advance(glyph),
@@ -349,7 +413,7 @@ impl<'a> Program<'a> {
                     return Err(FontError::NoOutline(glyph));
                 };
                 g.draw(
-                    DrawSettings::unhinted(Size::unscaled(), LocationRef::default()),
+                    DrawSettings::unhinted(Size::unscaled(), &s.location),
                     &mut out,
                 )
                 .map_err(|e| FontError::Outline {
@@ -369,18 +433,34 @@ impl<'a> Program<'a> {
     pub fn metrics(&self) -> Metrics {
         match &self.inner {
             Inner::Sfnt(s) => {
-                let m = s.font.metrics(Size::unscaled(), LocationRef::default());
+                let m = s.font.metrics(Size::unscaled(), &s.location);
                 let attrs = s.font.attributes();
+                let named = |tag| s.variations.get(tag);
+                // The OS/2 weight and the italic flags describe the default
+                // instance; an axis the caller set moves them.
+                let weight = named(AXIS_WEIGHT).unwrap_or_else(|| attrs.weight.value());
+                // `slnt` is the instance's italic angle (OpenType, registered
+                // axes: it matches `post` italicAngle at the default and
+                // "can be used" for an instance), whatever its value, zero
+                // included. `ital` is 0 for Roman and 1 for italic, and
+                // nothing between is defined: a value that is not Roman is
+                // italic. An axis the caller left alone does not decide.
+                let slant = named(AXIS_SLANT);
+                let italic = match (named(AXIS_ITALIC), slant) {
+                    (Some(ital), _) => ital > 0.0,
+                    (None, Some(slnt)) => slnt != 0.0,
+                    (None, None) => !matches!(attrs.style, skrifa::attribute::Style::Normal),
+                };
                 Metrics {
                     ascent: Some(m.ascent),
                     descent: Some(m.descent),
                     cap_height: m.cap_height,
                     x_height: m.x_height,
-                    italic_angle: Some(m.italic_angle),
+                    italic_angle: Some(slant.unwrap_or(m.italic_angle)),
                     bbox: m.bounds.map(|b| [b.x_min, b.y_min, b.x_max, b.y_max]),
                     is_monospaced: Some(m.is_monospace),
-                    is_italic: Some(!matches!(attrs.style, skrifa::attribute::Style::Normal)),
-                    weight: Some(attrs.weight.value().round().clamp(1.0, 1000.0) as u16),
+                    is_italic: Some(italic),
+                    weight: Some(weight.round().clamp(1.0, 1000.0) as u16),
                 }
             }
             Inner::Cff(c) => match c.cff.metadata() {
@@ -425,7 +505,9 @@ impl<'a> Program<'a> {
                     subfamily: get(StringId::TYPOGRAPHIC_SUBFAMILY_NAME)
                         .or_else(|| get(StringId::SUBFAMILY_NAME)),
                     full: get(StringId::FULL_NAME),
-                    postscript: get(StringId::POSTSCRIPT_NAME),
+                    postscript: s
+                        .instance_postscript_name()
+                        .or_else(|| get(StringId::POSTSCRIPT_NAME)),
                 }
             }
             Inner::Cff(c) => match c.cff.metadata() {
@@ -439,6 +521,72 @@ impl<'a> Program<'a> {
             },
             Inner::Type1(t) => t.names(),
         }
+    }
+}
+
+impl Sfnt<'_> {
+    /// The PostScript name of the instance chosen, by Adobe TN 5902; `None`
+    /// at the default instance (the font's own name, `name` ID 6, is that
+    /// instance's) and for a font with no family name to build one from.
+    ///
+    /// A named instance (an `fvar` instance whose coordinates are the ones
+    /// chosen) keeps the PostScript name the font gives it, else the prefix
+    /// and the instance's subfamily name; any other instance is the prefix
+    /// and, for each axis off its default, its value and tag. The prefix is
+    /// `name` ID 25, else the US English typographic family name (ID 16, as
+    /// ID 1 stands in for it).
+    fn instance_postscript_name(&self) -> Option<String> {
+        let fixed = |v: f32| (f64::from(v) * FIXED_ONE).round() as i64;
+        let axes = self.font.axes();
+        let chosen: Vec<_> = axes
+            .iter()
+            .map(|a| {
+                let tag = a.tag().to_be_bytes();
+                let default = a.default_value();
+                (tag, self.variations.get(tag).unwrap_or(default), default)
+            })
+            .collect();
+        if chosen.iter().all(|&(_, v, d)| fixed(v) == fixed(d)) {
+            return None;
+        }
+        let string = |id: StringId| {
+            self.font
+                .localized_strings(id)
+                .english_or_first()
+                .map(|n| n.chars().collect::<String>())
+                .filter(|n| !n.is_empty())
+        };
+        let prefix = string(StringId::VARIATIONS_POSTSCRIPT_NAME_PREFIX)
+            .or_else(|| string(StringId::TYPOGRAPHIC_FAMILY_NAME))
+            .or_else(|| string(StringId::FAMILY_NAME))
+            .map(|n| ascii_alphanumeric(&n))
+            .filter(|n| !n.is_empty())?;
+        let instances = self.font.named_instances();
+        for i in 0..instances.len() {
+            let Some(instance) = instances.get(i) else {
+                continue;
+            };
+            let same = instance.user_coords().count() == chosen.len()
+                && instance
+                    .user_coords()
+                    .zip(&chosen)
+                    .all(|(c, &(_, v, _))| fixed(c) == fixed(v));
+            if !same {
+                continue;
+            }
+            if let Some(name) = instance.postscript_name_id().and_then(string) {
+                return Some(name);
+            }
+            if let Some(subfamily) = string(instance.subfamily_name_id()) {
+                return Some(named_instance_name(&prefix, &subfamily));
+            }
+        }
+        let off_default: Vec<_> = chosen
+            .iter()
+            .filter(|&&(_, v, d)| fixed(v) != fixed(d))
+            .map(|&(tag, v, _)| (tag, v))
+            .collect();
+        Some(arbitrary_instance_name(&prefix, &off_default))
     }
 }
 

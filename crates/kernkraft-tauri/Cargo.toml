@@ -14,6 +14,8 @@ links = "kernkraft-tauri"
 
 [dependencies]
 kernkraft-fs.workspace = true
+kernkraft-pdf.workspace = true
+kernkraft-pdf-engine.workspace = true
 kernkraft-text.workspace = true
 kernkraft-xdg-apps.workspace = true
 kernkraft-thumb.workspace = true
@@ -22,6 +24,7 @@ kernkraft-theme.workspace = true
 kernkraft-volumes.workspace = true
 tauri.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 base64.workspace = true
 thiserror.workspace = true
 inotify.workspace = true
@@ -32,7 +35,6 @@ tauri-plugin.workspace = true
 
 [dev-dependencies]
 tauri = { workspace = true, features = ["test"] }
-serde_json.workspace = true
 toml = "1"
 tempfile.workspace = true
 

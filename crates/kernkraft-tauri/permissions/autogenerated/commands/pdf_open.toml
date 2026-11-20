@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-pdf-open"
+description = "Enables the pdf_open command without any pre-configured scope."
+commands.allow = ["pdf_open"]
+
+[[permission]]
+identifier = "deny-pdf-open"
+description = "Denies the pdf_open command without any pre-configured scope."
+commands.deny = ["pdf_open"]

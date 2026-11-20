@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-pdf-apply"
+description = "Enables the pdf_apply command without any pre-configured scope."
+commands.allow = ["pdf_apply"]
+
+[[permission]]
+identifier = "deny-pdf-apply"
+description = "Denies the pdf_apply command without any pre-configured scope."
+commands.deny = ["pdf_apply"]

@@ -18,6 +18,8 @@
 //! and an unknown command. Kern Desktop's `invoke` wrapper turns those
 //! strings into `{ kind: "Ipc", message }`.
 
+use kernkraft_pdf_engine::edit::Op;
+use kernkraft_pdf_engine::Fields;
 use kernkraft_theme::{Follow, UserChoice};
 use kernkraft_volumes::{Device, DiskId};
 use tauri::{AppHandle, Runtime, Window};
@@ -26,6 +28,7 @@ use crate::apps_cmds::{WireAppDefault, WireAppList, WireMime, WireOpened};
 use crate::error::WireError;
 use crate::fs_cmds::{WireEntry, WireSame, WireUndoOutcome, WireUndoState, WireUserDirs};
 use crate::ops::{OpId, WireReport};
+use crate::pdf_cmds::WirePdfSource;
 use crate::state::{blocking, Kernkraft, KernkraftExt};
 use crate::text_cmds::{WireExpect, WireStamp, WireText};
 use crate::theme_cmds::WireTheme;
@@ -430,4 +433,205 @@ pub(crate) async fn documents<R: Runtime>(
     let origin = origin(&window);
     // An absent `hidden` is false: no dotfiles.
     blocking(move || kk.documents(key, roots, hidden.unwrap_or(false), origin)).await
+}
+
+/// Opens a PDF into a session that belongs to the calling window; see
+/// [`Kernkraft::pdf_open`].
+#[tauri::command]
+pub(crate) async fn pdf_open<R: Runtime>(
+    app: AppHandle<R>,
+    window: Window<R>,
+    path: WirePath,
+    password: Option<String>,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    let origin = origin(&window);
+    blocking(move || kk.pdf_open(WirePdfSource { path, password }, origin)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_close<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_close(handle)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_page_info<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+    page: u32,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_page_info(handle, page)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_text<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+    page: u32,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_text(handle, page)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_search<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+    page: u32,
+    query: String,
+    case_sensitive: Option<bool>,
+    whole_word: Option<bool>,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || {
+        kk.pdf_search(
+            handle,
+            page,
+            query,
+            case_sensitive.unwrap_or(false),
+            whole_word.unwrap_or(false),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_links<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+    page: u32,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_links(handle, page)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_annotations<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+    page: u32,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_annotations(handle, page)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_apply<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+    op: Op,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_apply(handle, op)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_undo<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_undo(handle)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_redo<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_redo(handle)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_save<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+    path: WirePath,
+    expect: WireExpect,
+    modified: String,
+) -> Result<WireStamp, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_save(handle, path, expect, modified)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_compact<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+    out: WirePath,
+) -> Result<WirePath, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_compact(handle, out)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_set_system_fonts<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_set_system_fonts()).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_render_size<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+    page: u32,
+    region: Option<[f64; 4]>,
+    width_px: u32,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_render_size(handle, page, region, width_px)).await
+}
+
+/// The picture as raw bytes, not JSON: see [`Kernkraft::pdf_render`].
+#[tauri::command]
+pub(crate) async fn pdf_render<R: Runtime>(
+    app: AppHandle<R>,
+    handle: i64,
+    page: u32,
+    region: Option<[f64; 4]>,
+    width_px: u32,
+) -> Result<tauri::ipc::Response, WireError> {
+    let kk = app.kernkraft();
+    let picture = blocking(move || kk.pdf_render(handle, page, region, width_px)).await?;
+    Ok(tauri::ipc::Response::new(picture))
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_merge<R: Runtime>(
+    app: AppHandle<R>,
+    sources: Vec<WirePdfSource>,
+    out: WirePath,
+) -> Result<WirePath, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_merge(sources, out)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_extract<R: Runtime>(
+    app: AppHandle<R>,
+    source: WirePdfSource,
+    pages: Vec<u32>,
+    out: WirePath,
+) -> Result<WirePath, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_extract(source, pages, out)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_split<R: Runtime>(
+    app: AppHandle<R>,
+    source: WirePdfSource,
+    ranges: String,
+    out_dir: WirePath,
+) -> Result<Vec<WirePath>, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_split(source, ranges, out_dir)).await
 }

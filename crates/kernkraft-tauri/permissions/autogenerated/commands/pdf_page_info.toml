@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-pdf-page-info"
+description = "Enables the pdf_page_info command without any pre-configured scope."
+commands.allow = ["pdf_page_info"]
+
+[[permission]]
+identifier = "deny-pdf-page-info"
+description = "Denies the pdf_page_info command without any pre-configured scope."
+commands.deny = ["pdf_page_info"]

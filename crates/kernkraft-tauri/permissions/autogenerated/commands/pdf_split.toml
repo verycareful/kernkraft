@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-pdf-split"
+description = "Enables the pdf_split command without any pre-configured scope."
+commands.allow = ["pdf_split"]
+
+[[permission]]
+identifier = "deny-pdf-split"
+description = "Denies the pdf_split command without any pre-configured scope."
+commands.deny = ["pdf_split"]

@@ -36,4 +36,4 @@ pub mod wire;
 
 pub use engine::{Changed, Engine, HandleRequest, PageRequest, Session};
 pub use error::WireError;
-pub use fields::{field, Fields};
+pub use fields::{field, path_field, paths_field, Fields};

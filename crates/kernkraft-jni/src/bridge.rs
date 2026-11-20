@@ -13,7 +13,7 @@ use kernkraft_pdf_engine::open::Source;
 use kernkraft_pdf_engine::read::SearchRequest;
 use kernkraft_pdf_engine::render::RenderRequest;
 use kernkraft_pdf_engine::save::{AppendRequest, CompactRequest, ConfirmRequest};
-use kernkraft_pdf_engine::{Engine, HandleRequest, PageRequest};
+use kernkraft_pdf_engine::{path_field, Engine, HandleRequest, PageRequest};
 
 use crate::guard::run;
 use crate::open::OPEN_OPTIONS;
@@ -97,7 +97,7 @@ impl Bridge {
 
     pub fn compact(&self, request: &str) -> String {
         run(request, |request: CompactRequest| {
-            self.engine.compact(request)
+            path_field("path", &self.engine.compact(request)?)
         })
     }
 

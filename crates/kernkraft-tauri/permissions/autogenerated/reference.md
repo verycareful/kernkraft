@@ -26,6 +26,24 @@ Allows every kernkraft command
 - `allow-text-open`
 - `allow-text-save`
 - `allow-text-check`
+- `allow-pdf-open`
+- `allow-pdf-close`
+- `allow-pdf-page-info`
+- `allow-pdf-text`
+- `allow-pdf-search`
+- `allow-pdf-links`
+- `allow-pdf-annotations`
+- `allow-pdf-apply`
+- `allow-pdf-undo`
+- `allow-pdf-redo`
+- `allow-pdf-save`
+- `allow-pdf-compact`
+- `allow-pdf-set-system-fonts`
+- `allow-pdf-render-size`
+- `allow-pdf-render`
+- `allow-pdf-merge`
+- `allow-pdf-extract`
+- `allow-pdf-split`
 - `allow-thumb-request`
 - `allow-thumb-cancel`
 - `allow-theme-get`
@@ -442,6 +460,474 @@ Enables the open_url command without any pre-configured scope.
 <td>
 
 Denies the open_url command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-annotations`
+
+</td>
+<td>
+
+Enables the pdf_annotations command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-annotations`
+
+</td>
+<td>
+
+Denies the pdf_annotations command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-apply`
+
+</td>
+<td>
+
+Enables the pdf_apply command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-apply`
+
+</td>
+<td>
+
+Denies the pdf_apply command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-close`
+
+</td>
+<td>
+
+Enables the pdf_close command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-close`
+
+</td>
+<td>
+
+Denies the pdf_close command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-compact`
+
+</td>
+<td>
+
+Enables the pdf_compact command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-compact`
+
+</td>
+<td>
+
+Denies the pdf_compact command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-extract`
+
+</td>
+<td>
+
+Enables the pdf_extract command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-extract`
+
+</td>
+<td>
+
+Denies the pdf_extract command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-links`
+
+</td>
+<td>
+
+Enables the pdf_links command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-links`
+
+</td>
+<td>
+
+Denies the pdf_links command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-merge`
+
+</td>
+<td>
+
+Enables the pdf_merge command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-merge`
+
+</td>
+<td>
+
+Denies the pdf_merge command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-open`
+
+</td>
+<td>
+
+Enables the pdf_open command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-open`
+
+</td>
+<td>
+
+Denies the pdf_open command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-page-info`
+
+</td>
+<td>
+
+Enables the pdf_page_info command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-page-info`
+
+</td>
+<td>
+
+Denies the pdf_page_info command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-redo`
+
+</td>
+<td>
+
+Enables the pdf_redo command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-redo`
+
+</td>
+<td>
+
+Denies the pdf_redo command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-render`
+
+</td>
+<td>
+
+Enables the pdf_render command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-render`
+
+</td>
+<td>
+
+Denies the pdf_render command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-render-size`
+
+</td>
+<td>
+
+Enables the pdf_render_size command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-render-size`
+
+</td>
+<td>
+
+Denies the pdf_render_size command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-save`
+
+</td>
+<td>
+
+Enables the pdf_save command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-save`
+
+</td>
+<td>
+
+Denies the pdf_save command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-search`
+
+</td>
+<td>
+
+Enables the pdf_search command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-search`
+
+</td>
+<td>
+
+Denies the pdf_search command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-set-system-fonts`
+
+</td>
+<td>
+
+Enables the pdf_set_system_fonts command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-set-system-fonts`
+
+</td>
+<td>
+
+Denies the pdf_set_system_fonts command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-split`
+
+</td>
+<td>
+
+Enables the pdf_split command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-split`
+
+</td>
+<td>
+
+Denies the pdf_split command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-text`
+
+</td>
+<td>
+
+Enables the pdf_text command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-text`
+
+</td>
+<td>
+
+Denies the pdf_text command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-undo`
+
+</td>
+<td>
+
+Enables the pdf_undo command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-undo`
+
+</td>
+<td>
+
+Denies the pdf_undo command without any pre-configured scope.
 
 </td>
 </tr>

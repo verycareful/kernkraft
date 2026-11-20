@@ -19,7 +19,7 @@ use crate::fields::{field, Fields};
 pub struct FontsRequest {
     /// The font files of the system, as the application lists them. Their
     /// family, style and weight are read from the files.
-    pub paths: Vec<String>,
+    pub paths: Vec<PathBuf>,
 }
 
 impl Engine {
@@ -27,8 +27,8 @@ impl Engine {
     /// render after it. A file that is not a font is skipped and counted,
     /// not an error.
     pub fn set_system_fonts(&self, request: FontsRequest) -> Result<Fields, WireError> {
-        let paths: Vec<PathBuf> = request.paths.iter().map(PathBuf::from).collect();
-        let list = FontList::index(&paths, &NoProgress).map_err(|error| WireError::from(&error))?;
+        let list = FontList::index(&request.paths, &NoProgress)
+            .map_err(|error| WireError::from(&error))?;
         let mut fields = field("faces", list.faces().len());
         fields.insert("skipped".to_owned(), json!(list.skipped().len()));
         self.set_fonts(list);

@@ -16,6 +16,8 @@
 //! `kernkraft://thumb`, theme changes `kernkraft://theme-changed`, and
 //! volume changes (a mount, an unmount, a device appearing or going away)
 //! `kernkraft://volumes-changed`.
+//! PDF documents are opened into sessions the plugin holds (the `pdf_*`
+//! commands; see `pdf_cmds`), which go with the window that opened them.
 //! The same operations are methods of [`Kernkraft`], reached from Rust with
 //! [`KernkraftExt::kernkraft`].
 //!
@@ -27,6 +29,7 @@ mod commands;
 mod error;
 mod fs_cmds;
 mod ops;
+mod pdf_cmds;
 mod search_cmds;
 mod state;
 mod text_cmds;
@@ -46,6 +49,7 @@ pub use ops::{
     OpConflictEvent, OpDoneEvent, OpId, OpProgressEvent, WireDone, WireProperties, WireReport,
     EVENT_OP_CONFLICT, EVENT_OP_DONE, EVENT_OP_PROGRESS, PROGRESS_INTERVAL_MS,
 };
+pub use pdf_cmds::WirePdfSource;
 pub use search_cmds::{SearchHitEvent, WireScanDone, EVENT_SEARCH_HIT, SEARCH_BATCH, SEARCH_FLUSH};
 pub use state::{Config, Kernkraft, KernkraftExt};
 pub use text_cmds::{WireExpect, WireReadOnly, WireStamp, WireText};
@@ -95,6 +99,24 @@ pub fn init_with<R: Runtime>(config: Config) -> TauriPlugin<R> {
             commands::text_open,
             commands::text_save,
             commands::text_check,
+            commands::pdf_open,
+            commands::pdf_close,
+            commands::pdf_page_info,
+            commands::pdf_text,
+            commands::pdf_search,
+            commands::pdf_links,
+            commands::pdf_annotations,
+            commands::pdf_apply,
+            commands::pdf_undo,
+            commands::pdf_redo,
+            commands::pdf_save,
+            commands::pdf_compact,
+            commands::pdf_set_system_fonts,
+            commands::pdf_render_size,
+            commands::pdf_render,
+            commands::pdf_merge,
+            commands::pdf_extract,
+            commands::pdf_split,
             commands::thumb_request,
             commands::thumb_cancel,
             commands::theme_get,

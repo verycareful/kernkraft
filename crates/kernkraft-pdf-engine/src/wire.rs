@@ -7,8 +7,8 @@
 //! `y` growing downwards, `(0, 0)` the top left corner. A colour is
 //! `[red, green, blue]`, each 0 to 1. An object is `{"object":n,
 //! "generation":g}`. A date is the PDF text string of 7.9.4,
-//! `D:YYYYMMDDHHmmSSOHH'mm'`, which Kotlin writes from its own clock: the
-//! library reads none.
+//! `D:YYYYMMDDHHmmSSOHH'mm'`, which the application writes from its own
+//! clock: the library reads none.
 
 use kernkraft_pdf::colour::Rgb;
 use kernkraft_pdf::doc::Date;

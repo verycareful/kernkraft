@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+[package]
+name = "kernkraft-pdf-engine"
+description = "The PDF operations both adapters expose: open documents, edit, save, render, with typed requests and JSON answers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+getrandom.workspace = true
+kernkraft-font.workspace = true
+kernkraft-fs.workspace = true
+kernkraft-pdf.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

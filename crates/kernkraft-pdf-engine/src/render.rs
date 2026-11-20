@@ -6,7 +6,7 @@
 //! The picture is straight RGBA8, row by row from the top, every alpha 255,
 //! which an Android `Bitmap` of `ARGB_8888` takes as it is. Its width is
 //! `width_px`; its height follows from the region's shape, and
-//! `renderSize` says what it is before the buffer is allocated.
+//! `render_size` says what it is before the buffer is allocated.
 
 use kernkraft_font::FontList;
 use kernkraft_fs::NoProgress;
@@ -18,7 +18,7 @@ use serde_json::json;
 
 use crate::engine::Engine;
 use crate::error::WireError;
-use crate::guard::{respond, run, Fields};
+use crate::fields::Fields;
 use crate::wire;
 
 /// Bytes to a pixel.
@@ -28,17 +28,18 @@ const BYTES_PER_PIXEL: u64 = 4;
 /// well clear of the rounding of the product.
 const HALF_PIXEL: f64 = 0.5;
 
+/// A page, or part of it, drawn to a given width.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RenderRequest {
-    handle: i64,
-    page: u32,
+pub struct RenderRequest {
+    pub handle: i64,
+    pub page: u32,
     /// The part of the displayed page to draw, as fractions of it:
     /// `[left, top, right, bottom]`. The whole page when left out.
     #[serde(default)]
-    region: Option<[f64; 4]>,
+    pub region: Option<[f64; 4]>,
     /// The picture's width in pixels.
-    width_px: u32,
+    pub width_px: u32,
 }
 
 /// What a request asks of the page, checked against the document.
@@ -65,38 +66,32 @@ impl Target {
 impl Engine {
     /// The size of the picture `render` makes: `width`, `height` and
     /// `bytes`.
-    pub fn render_size(&self, request: &str) -> String {
-        run(request, |request: RenderRequest| {
-            let target = self.target(&request)?;
-            Ok(size_fields(target.width, target.height, target.bytes))
-        })
+    pub fn render_size(&self, request: RenderRequest) -> Result<Fields, WireError> {
+        let target = self.target(&request)?;
+        Ok(size_fields(target.width, target.height, target.bytes))
     }
 
     /// Draws the page into `buffer`, which must hold the whole picture.
-    pub fn render(&self, request: &str, buffer: &mut [u8]) -> String {
-        respond(|| {
-            let request: RenderRequest = serde_json::from_str(request)
-                .map_err(|error| WireError::bad_request(format!("the request: {error}")))?;
-            let target = self.target(&request)?;
-            let given = u64::try_from(buffer.len()).unwrap_or(u64::MAX);
-            if target.bytes > given {
-                return Err(WireError::buffer_too_small(target.bytes, given));
-            }
-            let fonts = self.fonts();
-            let options = target.options(&fonts);
-            let raster = render_page(&target.document, request.page, &options, &NoProgress)?;
-            if (raster.width, raster.height) != (target.width, target.height) {
-                return Err(PdfError::Invalid(format!(
-                    "the picture is {} by {} pixels, not the {} by {} that was asked",
-                    raster.width, raster.height, target.width, target.height
-                ))
-                .into());
-            }
-            let length = usize::try_from(target.bytes)
-                .map_err(|_| WireError::buffer_too_small(target.bytes, given))?;
-            buffer[..length].copy_from_slice(&raster.rgba);
-            Ok(size_fields(target.width, target.height, target.bytes))
-        })
+    pub fn render(&self, request: RenderRequest, buffer: &mut [u8]) -> Result<Fields, WireError> {
+        let target = self.target(&request)?;
+        let given = u64::try_from(buffer.len()).unwrap_or(u64::MAX);
+        if target.bytes > given {
+            return Err(WireError::buffer_too_small(target.bytes, given));
+        }
+        let fonts = self.fonts();
+        let options = target.options(&fonts);
+        let raster = render_page(&target.document, request.page, &options, &NoProgress)?;
+        if (raster.width, raster.height) != (target.width, target.height) {
+            return Err(PdfError::Invalid(format!(
+                "the picture is {} by {} pixels, not the {} by {} that was asked",
+                raster.width, raster.height, target.width, target.height
+            ))
+            .into());
+        }
+        let length = usize::try_from(target.bytes)
+            .map_err(|_| WireError::buffer_too_small(target.bytes, given))?;
+        buffer[..length].copy_from_slice(&raster.rgba);
+        Ok(size_fields(target.width, target.height, target.bytes))
     }
 
     fn target(&self, request: &RenderRequest) -> Result<Target, WireError> {

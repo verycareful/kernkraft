@@ -14,16 +14,16 @@ use std::path::Path;
 
 use common::{failure_kind, ok};
 use fixture::{open, pages_of, sample, sample_length, DATE};
-use kernkraft_jni::engine::Engine;
+use kernkraft_jni::bridge::Bridge;
 use serde_json::{json, Value};
 
-fn rotate_first_page(engine: &Engine, handle: i64) {
+fn rotate_first_page(engine: &Bridge, handle: i64) {
     let request = json!({ "handle": handle,
                           "op": { "op": "rotate", "pages": [1], "degrees": 90 } });
     ok(&engine.apply(&request.to_string()));
 }
 
-fn append(engine: &Engine, handle: i64, base_length: u64, out: &Path) -> String {
+fn append(engine: &Bridge, handle: i64, base_length: u64, out: &Path) -> String {
     let request = json!({ "handle": handle, "base_length": base_length,
                           "out": out, "modified": DATE });
     engine.append_since(&request.to_string())
@@ -37,7 +37,7 @@ fn rotation_in(bytes: Vec<u8>) -> u16 {
 
 #[test]
 fn the_appended_bytes_after_the_original_are_the_edited_file() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     rotate_first_page(&engine, handle);
     let dir = tempfile::tempdir().unwrap();
@@ -55,7 +55,7 @@ fn the_appended_bytes_after_the_original_are_the_edited_file() {
 
 #[test]
 fn the_document_counts_as_saved_only_once_the_append_is_confirmed() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     rotate_first_page(&engine, handle);
     let dir = tempfile::tempdir().unwrap();
@@ -83,7 +83,7 @@ fn the_document_counts_as_saved_only_once_the_append_is_confirmed() {
 
 #[test]
 fn a_second_append_holds_only_what_came_after_the_first() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     rotate_first_page(&engine, handle);
     let dir = tempfile::tempdir().unwrap();
@@ -116,7 +116,7 @@ fn a_second_append_holds_only_what_came_after_the_first() {
 
 #[test]
 fn an_append_from_a_length_the_file_never_had_is_refused() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     rotate_first_page(&engine, handle);
     let dir = tempfile::tempdir().unwrap();
@@ -129,7 +129,7 @@ fn an_append_from_a_length_the_file_never_had_is_refused() {
 
 #[test]
 fn with_nothing_changed_nothing_is_appended_and_no_file_is_made() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("u.bin");
@@ -143,7 +143,7 @@ fn with_nothing_changed_nothing_is_appended_and_no_file_is_made() {
 
 #[test]
 fn an_append_never_replaces_a_file_that_is_there() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     rotate_first_page(&engine, handle);
     let dir = tempfile::tempdir().unwrap();
@@ -158,7 +158,7 @@ fn an_append_never_replaces_a_file_that_is_there() {
 
 #[test]
 fn a_compacted_copy_holds_the_edits_and_leaves_the_original_alone() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     rotate_first_page(&engine, handle);
     ok(&engine
@@ -177,7 +177,7 @@ fn a_compacted_copy_holds_the_edits_and_leaves_the_original_alone() {
 
 #[test]
 fn a_compacted_copy_never_replaces_a_file_that_is_there() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("copy.pdf");

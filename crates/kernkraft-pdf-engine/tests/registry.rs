@@ -7,8 +7,8 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use kernkraft_jni::error::WireError;
-use kernkraft_jni::registry::Registry;
+use kernkraft_pdf_engine::registry::Registry;
+use kernkraft_pdf_engine::WireError;
 
 #[test]
 fn handles_are_distinct_and_never_zero() {

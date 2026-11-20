@@ -3,7 +3,7 @@
 
 [package]
 name = "kernkraft-jni"
-description = "JNI adapter exposing kernkraft-pdf to Kern Android: JSON over a handle registry, pixels into a direct buffer"
+description = "JNI adapter exposing kernkraft-pdf-engine to Kern Android: JSON request strings, pixels into a direct buffer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -17,15 +17,14 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-getrandom.workspace = true
 jni.workspace = true
-kernkraft-font.workspace = true
-kernkraft-fs.workspace = true
 kernkraft-pdf.workspace = true
+kernkraft-pdf-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+kernkraft-font.workspace = true
 tempfile.workspace = true
 
 [lints]

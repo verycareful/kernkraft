@@ -28,7 +28,7 @@ pub fn pages_of(path: &Path) -> u32 {
 pub const DATE: &str = "D:20261121103000Z";
 
 /// Opens the sample in `engine` and gives its handle.
-pub fn open(engine: &kernkraft_jni::engine::Engine) -> i64 {
+pub fn open(engine: &kernkraft_jni::bridge::Bridge) -> i64 {
     let request = serde_json::json!({ "path": sample() });
     let answer: serde_json::Value =
         serde_json::from_str(&engine.open(&request.to_string())).unwrap();

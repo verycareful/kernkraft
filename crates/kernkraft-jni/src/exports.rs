@@ -10,8 +10,9 @@ use jni::objects::{JByteBuffer, JClass, JString};
 use jni::sys::jstring;
 use jni::JNIEnv;
 
-use crate::engine::engine;
-use crate::error::WireError;
+use kernkraft_pdf_engine::WireError;
+
+use crate::bridge::bridge;
 use crate::guard::respond;
 use crate::stateless;
 
@@ -70,54 +71,54 @@ export!(
     Java_dev_kern_pdfbridge_KernkraftPdf_nativeExtract,
     stateless::extract_pages
 );
-export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeOpen, |r| engine(
+export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeOpen, |r| bridge(
 )
 .open(r));
 export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeClose, |r| {
-    engine().close(r)
+    bridge().close(r)
 });
 export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativePageInfo, |r| {
-    engine().page_info(r)
+    bridge().page_info(r)
 });
-export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeText, |r| engine(
+export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeText, |r| bridge(
 )
 .text(r));
 export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeSearch, |r| {
-    engine().search(r)
+    bridge().search(r)
 });
 export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeLinks, |r| {
-    engine().links(r)
+    bridge().links(r)
 });
 export!(
     Java_dev_kern_pdfbridge_KernkraftPdf_nativeAnnotations,
-    |r| engine().annotations(r)
+    |r| bridge().annotations(r)
 );
 export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeApply, |r| {
-    engine().apply(r)
+    bridge().apply(r)
 });
-export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeUndo, |r| engine(
+export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeUndo, |r| bridge(
 )
 .undo(r));
-export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeRedo, |r| engine(
+export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeRedo, |r| bridge(
 )
 .redo(r));
 export!(
     Java_dev_kern_pdfbridge_KernkraftPdf_nativeAppendSince,
-    |r| engine().append_since(r)
+    |r| bridge().append_since(r)
 );
 export!(
     Java_dev_kern_pdfbridge_KernkraftPdf_nativeConfirmAppended,
-    |r| engine().confirm_appended(r)
+    |r| bridge().confirm_appended(r)
 );
 export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeCompact, |r| {
-    engine().compact(r)
+    bridge().compact(r)
 });
 export!(
     Java_dev_kern_pdfbridge_KernkraftPdf_nativeSetSystemFonts,
-    |r| engine().set_system_fonts(r)
+    |r| bridge().set_system_fonts(r)
 );
 export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeRenderSize, |r| {
-    engine().render_size(r)
+    bridge().render_size(r)
 });
 
 /// Draws a page into a direct `ByteBuffer`. The application allocates it
@@ -142,7 +143,7 @@ pub extern "system" fn Java_dev_kern_pdfbridge_KernkraftPdf_nativeRender<'local>
                 // touch the buffer during the call (documented on this
                 // export), so nothing else reads or writes these bytes.
                 let pixels = unsafe { std::slice::from_raw_parts_mut(address, capacity) };
-                engine().render(&text, pixels)
+                bridge().render(&text, pixels)
             }
         },
     };

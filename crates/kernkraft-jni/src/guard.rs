@@ -5,13 +5,9 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use kernkraft_pdf_engine::{Fields, WireError};
 use serde::de::DeserializeOwned;
-use serde_json::{json, Map, Value};
-
-use crate::error::WireError;
-
-/// What an operation returns on success: the fields of the answer object.
-pub type Fields = Map<String, Value>;
+use serde_json::{json, Value};
 
 /// Runs `body` and turns its result into the answer string: its fields with
 /// `"ok":true`, or `{"ok":false,"kind":...,"message":...}`. A panic in
@@ -48,13 +44,6 @@ pub fn run<R: DeserializeOwned>(
             .map_err(|error| WireError::bad_request(format!("the request: {error}")))?;
         body(parsed)
     })
-}
-
-/// A one-field answer.
-pub fn field(name: &str, value: impl Into<Value>) -> Fields {
-    let mut fields = Fields::new();
-    fields.insert(name.to_owned(), value.into());
-    fields
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {

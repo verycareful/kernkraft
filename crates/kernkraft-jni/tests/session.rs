@@ -13,20 +13,20 @@ mod fixture;
 
 use common::{failure_kind, ok};
 use fixture::{open, sample};
-use kernkraft_jni::engine::Engine;
+use kernkraft_jni::bridge::Bridge;
 use serde_json::{json, Value};
 
 const WIDTH_PT: f64 = 595.28;
 const HEIGHT_PT: f64 = 841.89;
 const TOLERANCE: f64 = 0.001;
 
-fn call(engine: &Engine, operation: fn(&Engine, &str) -> String, request: Value) -> String {
+fn call(engine: &Bridge, operation: fn(&Bridge, &str) -> String, request: Value) -> String {
     operation(engine, &request.to_string())
 }
 
 #[test]
 fn open_gives_a_handle_and_the_page_count() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let answer = ok(&engine.open(&json!({ "path": sample() }).to_string()));
 
     assert_eq!(answer["pages"], 2);
@@ -36,43 +36,43 @@ fn open_gives_a_handle_and_the_page_count() {
 
 #[test]
 fn two_opens_are_two_sessions() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
 
     assert_ne!(open(&engine), open(&engine));
 }
 
 #[test]
 fn a_closed_handle_is_unknown_to_every_operation() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
-    ok(&call(&engine, Engine::close, json!({ "handle": handle })));
+    ok(&call(&engine, Bridge::close, json!({ "handle": handle })));
 
     let request = json!({ "handle": handle, "page": 1 });
     assert_eq!(
-        failure_kind(&call(&engine, Engine::close, json!({ "handle": handle }))),
+        failure_kind(&call(&engine, Bridge::close, json!({ "handle": handle }))),
         "UnknownHandle"
     );
     assert_eq!(
-        failure_kind(&call(&engine, Engine::page_info, request.clone())),
+        failure_kind(&call(&engine, Bridge::page_info, request.clone())),
         "UnknownHandle"
     );
     assert_eq!(
-        failure_kind(&call(&engine, Engine::text, request.clone())),
+        failure_kind(&call(&engine, Bridge::text, request.clone())),
         "UnknownHandle"
     );
     assert_eq!(
-        failure_kind(&call(&engine, Engine::links, request.clone())),
+        failure_kind(&call(&engine, Bridge::links, request.clone())),
         "UnknownHandle"
     );
     assert_eq!(
-        failure_kind(&call(&engine, Engine::annotations, request)),
+        failure_kind(&call(&engine, Bridge::annotations, request)),
         "UnknownHandle"
     );
 }
 
 #[test]
 fn a_file_that_is_not_there_does_not_open() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let request = json!({ "path": "/no/such/file.pdf" });
 
     assert_eq!(failure_kind(&engine.open(&request.to_string())), "NotFound");
@@ -80,12 +80,12 @@ fn a_file_that_is_not_there_does_not_open() {
 
 #[test]
 fn page_info_is_the_displayed_page() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let info = ok(&call(
         &engine,
-        Engine::page_info,
+        Bridge::page_info,
         json!({ "handle": handle, "page": 1 }),
     ));
 
@@ -97,28 +97,28 @@ fn page_info_is_the_displayed_page() {
 
 #[test]
 fn a_page_past_the_end_is_out_of_range() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let request = json!({ "handle": handle, "page": 3 });
 
     assert_eq!(
-        failure_kind(&call(&engine, Engine::page_info, request.clone())),
+        failure_kind(&call(&engine, Bridge::page_info, request.clone())),
         "PageOutOfRange"
     );
     assert_eq!(
-        failure_kind(&call(&engine, Engine::text, request)),
+        failure_kind(&call(&engine, Bridge::text, request)),
         "PageOutOfRange"
     );
 }
 
 #[test]
 fn text_has_the_heading_with_a_box_for_every_glyph() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let text = ok(&call(
         &engine,
-        Engine::text,
+        Bridge::text,
         json!({ "handle": handle, "page": 1 }),
     ));
 
@@ -136,12 +136,12 @@ fn text_has_the_heading_with_a_box_for_every_glyph() {
 
 #[test]
 fn every_line_belongs_to_a_block_that_says_whether_it_is_editable() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let text = ok(&call(
         &engine,
-        Engine::text,
+        Bridge::text,
         json!({ "handle": handle, "page": 1 }),
     ));
 
@@ -159,12 +159,12 @@ fn every_line_belongs_to_a_block_that_says_whether_it_is_editable() {
 
 #[test]
 fn search_finds_a_word_with_the_box_it_covers() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let request = |query: &str, case_sensitive: bool, whole_word: bool| {
         call(
             &engine,
-            Engine::search,
+            Bridge::search,
             json!({ "handle": handle, "page": 1, "query": query,
                     "case_sensitive": case_sensitive, "whole_word": whole_word }),
         )
@@ -197,16 +197,16 @@ fn search_finds_a_word_with_the_box_it_covers() {
 
 #[test]
 fn a_page_with_no_links_or_annotations_lists_none() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let request = json!({ "handle": handle, "page": 1 });
 
-    assert!(ok(&call(&engine, Engine::links, request.clone()))["links"]
+    assert!(ok(&call(&engine, Bridge::links, request.clone()))["links"]
         .as_array()
         .unwrap()
         .is_empty());
     assert!(
-        ok(&call(&engine, Engine::annotations, request))["annotations"]
+        ok(&call(&engine, Bridge::annotations, request))["annotations"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -215,12 +215,12 @@ fn a_page_with_no_links_or_annotations_lists_none() {
 
 #[test]
 fn a_request_with_a_field_the_operation_does_not_know_is_bad() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let request = json!({ "handle": handle, "page": 1, "pgae": 2 });
 
     assert_eq!(
-        failure_kind(&call(&engine, Engine::page_info, request)),
+        failure_kind(&call(&engine, Bridge::page_info, request)),
         "BadRequest"
     );
 }

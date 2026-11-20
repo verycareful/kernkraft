@@ -8,8 +8,8 @@
 mod common;
 
 use common::parse;
-use kernkraft_jni::error::WireError;
-use kernkraft_jni::guard::{field, respond};
+use kernkraft_jni::guard::respond;
+use kernkraft_pdf_engine::{field, WireError};
 use serde_json::{json, Value};
 
 #[test]

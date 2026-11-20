@@ -11,13 +11,13 @@ mod fixture;
 
 use common::{failure_kind, ok};
 use fixture::{open, sample};
-use kernkraft_jni::engine::Engine;
+use kernkraft_jni::bridge::Bridge;
 use serde_json::{json, Value};
 
 const BYTES_PER_PIXEL: u64 = 4;
 const PAPER: [u8; 4] = [255, 255, 255, 255];
 
-fn size(engine: &Engine, handle: i64, extra: Value) -> Value {
+fn size(engine: &Bridge, handle: i64, extra: Value) -> Value {
     let mut request = json!({ "handle": handle, "page": 1, "width_px": 100 });
     request
         .as_object_mut()
@@ -32,7 +32,7 @@ fn pixels(answer: &Value) -> usize {
 
 #[test]
 fn the_picture_is_as_wide_as_asked_and_as_tall_as_the_page_is() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let answer = size(&engine, handle, json!({}));
@@ -47,7 +47,7 @@ fn the_picture_is_as_wide_as_asked_and_as_tall_as_the_page_is() {
 
 #[test]
 fn a_region_is_as_wide_as_asked() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let answer = size(
@@ -61,7 +61,7 @@ fn a_region_is_as_wide_as_asked() {
 
 #[test]
 fn a_turned_page_is_wider_than_it_is_tall() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     ok(&engine.apply(
         &json!({ "handle": handle, "op": { "op": "rotate", "pages": [1], "degrees": 90 } })
@@ -78,7 +78,7 @@ fn a_turned_page_is_wider_than_it_is_tall() {
 
 #[test]
 fn render_fills_the_buffer_with_the_page() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let asked = size(&engine, handle, json!({}));
     let mut buffer = vec![0_u8; asked["bytes"].as_u64().unwrap() as usize];
@@ -108,7 +108,7 @@ fn asked_with_ok(size: &Value) -> Value {
 
 #[test]
 fn a_buffer_that_is_too_small_is_refused_and_left_as_it_was() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let asked = size(&engine, handle, json!({}));
     let mut buffer = vec![7_u8; asked["bytes"].as_u64().unwrap() as usize - 1];
@@ -122,7 +122,7 @@ fn a_buffer_that_is_too_small_is_refused_and_left_as_it_was() {
 
 #[test]
 fn a_buffer_that_is_larger_is_filled_from_the_start() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let asked = size(&engine, handle, json!({}));
     let bytes = asked["bytes"].as_u64().unwrap() as usize;
@@ -137,7 +137,7 @@ fn a_buffer_that_is_larger_is_filled_from_the_start() {
 
 #[test]
 fn a_picture_with_no_width_is_bad() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let request = json!({ "handle": handle, "page": 1, "width_px": 0 });
 
@@ -149,7 +149,7 @@ fn a_picture_with_no_width_is_bad() {
 
 #[test]
 fn a_picture_past_the_pixel_limit_is_refused() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let request = json!({ "handle": handle, "page": 1, "width_px": 40_000 });
 
@@ -161,7 +161,7 @@ fn a_picture_past_the_pixel_limit_is_refused() {
 
 #[test]
 fn files_that_are_not_fonts_are_skipped_and_counted() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
 
     let answer = ok(&engine.set_system_fonts(&json!({ "paths": [sample()] }).to_string()));
 

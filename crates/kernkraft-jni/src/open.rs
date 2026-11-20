@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
-//! What this adapter chooses for opening and saving a document: the limits
-//! `kernkraft-pdf` leaves to the application, and the seed a save takes.
+//! What this adapter chooses for opening a document: the limits
+//! `kernkraft-pdf` leaves to the application.
 
-use std::path::Path;
-
-use kernkraft_pdf::doc::{Document, OpenOptions};
+use kernkraft_pdf::doc::OpenOptions;
 use kernkraft_pdf::file::ReadLimits;
-use kernkraft_pdf::write::WriteOptions;
-use serde::Deserialize;
-
-use crate::error::WireError;
 
 /// Array items and dictionary entries in one object. A phone holds an
 /// object of this size beside the page it draws; a file past it is refused
@@ -38,32 +32,3 @@ pub const OPEN_OPTIONS: OpenOptions = OpenOptions {
     cached_object_streams: CACHED_OBJECT_STREAMS,
     max_diagnostics: MAX_DIAGNOSTICS,
 };
-
-/// A PDF file on the device's own storage and the password that opens it,
-/// when it has one.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Source {
-    pub path: String,
-    #[serde(default)]
-    pub password: String,
-}
-
-impl Source {
-    pub fn open(&self) -> Result<Document, WireError> {
-        Ok(Document::open(
-            Path::new(&self.path),
-            &OPEN_OPTIONS,
-            &self.password,
-        )?)
-    }
-}
-
-/// The options of one save: a seed fresh from the operating system, so that
-/// no two saves share a file identifier.
-pub fn write_options() -> Result<WriteOptions, WireError> {
-    let mut seed = [0_u8; 32];
-    getrandom::fill(&mut seed)
-        .map_err(|error| WireError::new("RandomUnavailable", error.to_string()))?;
-    Ok(WriteOptions { seed })
-}

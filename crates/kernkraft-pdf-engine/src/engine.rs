@@ -9,15 +9,16 @@
 //! between them: after an edit, an undo or a redo Kotlin is told which pages
 //! to draw again.
 
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 
 use kernkraft_font::FontList;
-use kernkraft_pdf::doc::Document;
+use kernkraft_pdf::doc::{Document, OpenOptions};
 use kernkraft_pdf::{EditSession, PdfError};
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::error::WireError;
-use crate::guard::Fields;
+use crate::fields::Fields;
 use crate::registry::Registry;
 
 /// The pages a step changed, in the document the step leaves.
@@ -123,27 +124,47 @@ impl Session {
     }
 }
 
-/// Every open document and the application's fonts.
+/// A request that names a session.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandleRequest {
+    pub handle: i64,
+}
+
+/// A request that names a session and one of its pages, counted from 1.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PageRequest {
+    pub handle: i64,
+    pub page: u32,
+}
+
+/// Every open document, the application's fonts and the limits a file is
+/// opened under.
 pub struct Engine {
     pub(crate) sessions: Registry<Session>,
+    pub(crate) options: OpenOptions,
     fonts: RwLock<Arc<FontList>>,
 }
 
-impl Default for Engine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Engine {
-    pub fn new() -> Self {
+    /// An engine with no documents open and no fonts. Every file it opens is
+    /// opened under `options`: what a document may cost depends on the
+    /// device, so the adapter sets it.
+    pub fn new(options: OpenOptions) -> Self {
         Self {
             sessions: Registry::new(),
+            options,
             fonts: RwLock::new(Arc::new(FontList::default())),
         }
     }
 
-    /// The fonts set by `setSystemFonts`; none until then.
+    /// The limits files are opened under.
+    pub fn options(&self) -> &OpenOptions {
+        &self.options
+    }
+
+    /// The fonts set by `set_system_fonts`; none until then.
     pub fn fonts(&self) -> Arc<FontList> {
         self.fonts
             .read()
@@ -165,10 +186,4 @@ impl Engine {
             Ok((session.document().clone(), session.revision))
         })
     }
-}
-
-/// The engine the JNI exports use.
-pub fn engine() -> &'static Engine {
-    static ENGINE: OnceLock<Engine> = OnceLock::new();
-    ENGINE.get_or_init(Engine::new)
 }

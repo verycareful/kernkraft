@@ -10,30 +10,30 @@ mod fixture;
 
 use common::{failure_kind, ok};
 use fixture::{open, DATE};
-use kernkraft_jni::engine::Engine;
+use kernkraft_jni::bridge::Bridge;
 use serde_json::{json, Value};
 
-fn apply(engine: &Engine, handle: i64, op: Value) -> String {
+fn apply(engine: &Bridge, handle: i64, op: Value) -> String {
     engine.apply(&json!({ "handle": handle, "op": op }).to_string())
 }
 
-fn step(engine: &Engine, operation: fn(&Engine, &str) -> String, handle: i64) -> Value {
+fn step(engine: &Bridge, operation: fn(&Bridge, &str) -> String, handle: i64) -> Value {
     ok(&operation(engine, &json!({ "handle": handle }).to_string()))
 }
 
-fn rotation_of(engine: &Engine, handle: i64, page: u32) -> u64 {
+fn rotation_of(engine: &Bridge, handle: i64, page: u32) -> u64 {
     let info = ok(&engine.page_info(&json!({ "handle": handle, "page": page }).to_string()));
     info["rotate"].as_u64().unwrap()
 }
 
-fn annotations(engine: &Engine, handle: i64) -> Vec<Value> {
+fn annotations(engine: &Bridge, handle: i64) -> Vec<Value> {
     let answer = ok(&engine.annotations(&json!({ "handle": handle, "page": 1 }).to_string()));
     answer["annotations"].as_array().unwrap().clone()
 }
 
 #[test]
 fn a_rotation_reports_the_page_and_undo_and_redo_move_between_the_states() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let done = ok(&apply(
@@ -50,14 +50,14 @@ fn a_rotation_reports_the_page_and_undo_and_redo_move_between_the_states() {
     assert_eq!(rotation_of(&engine, handle, 1), 90);
     assert_eq!(rotation_of(&engine, handle, 2), 0);
 
-    let undone = step(&engine, Engine::undo, handle);
+    let undone = step(&engine, Bridge::undo, handle);
     assert_eq!(undone["revision"], 2);
     assert_eq!(undone["changed_pages"], json!([1]));
     assert_eq!(undone["modified"], false);
     assert_eq!(undone["can_redo"], true);
     assert_eq!(rotation_of(&engine, handle, 1), 0);
 
-    let redone = step(&engine, Engine::redo, handle);
+    let redone = step(&engine, Bridge::redo, handle);
     assert_eq!(redone["revision"], 3);
     assert_eq!(redone["changed_pages"], json!([1]));
     assert_eq!(rotation_of(&engine, handle, 1), 90);
@@ -65,23 +65,23 @@ fn a_rotation_reports_the_page_and_undo_and_redo_move_between_the_states() {
 
 #[test]
 fn undo_with_nothing_to_undo_changes_nothing() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
-    let undone = step(&engine, Engine::undo, handle);
+    let undone = step(&engine, Bridge::undo, handle);
 
     assert_eq!(undone["revision"], 0);
     assert_eq!(undone["changed_pages"], json!([]));
     assert_eq!(undone["can_undo"], false);
     assert_eq!(
-        step(&engine, Engine::redo, handle)["changed_pages"],
+        step(&engine, Bridge::redo, handle)["changed_pages"],
         json!([])
     );
 }
 
 #[test]
 fn rotating_no_pages_rotates_them_all() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let done = ok(&apply(
@@ -96,7 +96,7 @@ fn rotating_no_pages_rotates_them_all() {
 
 #[test]
 fn a_rotation_that_is_not_a_quarter_turn_is_bad() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let answer = apply(
@@ -110,7 +110,7 @@ fn a_rotation_that_is_not_a_quarter_turn_is_bad() {
 
 #[test]
 fn removing_a_page_changes_the_page_tree_and_undo_brings_it_back() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let removed = ok(&apply(
@@ -121,27 +121,27 @@ fn removing_a_page_changes_the_page_tree_and_undo_brings_it_back() {
     assert_eq!(removed["pages"], 1);
     assert_eq!(removed["changed_pages"], json!([1]));
 
-    let undone = step(&engine, Engine::undo, handle);
+    let undone = step(&engine, Bridge::undo, handle);
     assert_eq!(undone["pages"], 2);
     assert_eq!(undone["changed_pages"], json!([1, 2]));
 }
 
 #[test]
 fn removing_every_page_is_refused_and_leaves_the_document() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let answer = apply(&engine, handle, json!({ "op": "remove", "pages": [1, 2] }));
 
     assert_eq!(failure_kind(&answer), "Invalid");
-    let after = step(&engine, Engine::undo, handle);
+    let after = step(&engine, Bridge::undo, handle);
     assert_eq!(after["pages"], 2);
     assert_eq!(after["revision"], 0);
 }
 
 #[test]
 fn reordering_reports_every_page() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let done = ok(&apply(
@@ -156,14 +156,14 @@ fn reordering_reports_every_page() {
 
 #[test]
 fn a_new_change_after_an_undo_drops_what_could_be_redone() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     ok(&apply(
         &engine,
         handle,
         json!({ "op": "rotate", "pages": [1], "degrees": 90 }),
     ));
-    step(&engine, Engine::undo, handle);
+    step(&engine, Bridge::undo, handle);
 
     let done = ok(&apply(
         &engine,
@@ -179,7 +179,7 @@ fn a_new_change_after_an_undo_drops_what_could_be_redone() {
 
 #[test]
 fn an_op_the_engine_does_not_know_is_bad() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     assert_eq!(
@@ -198,7 +198,7 @@ fn an_op_the_engine_does_not_know_is_bad() {
 
 #[test]
 fn a_highlight_is_listed_with_its_id_and_can_be_recoloured_and_deleted() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let added = ok(&apply(
@@ -235,13 +235,13 @@ fn a_highlight_is_listed_with_its_id_and_can_be_recoloured_and_deleted() {
     ));
     assert!(annotations(&engine, handle).is_empty());
 
-    step(&engine, Engine::undo, handle);
+    step(&engine, Bridge::undo, handle);
     assert_eq!(annotations(&engine, handle).len(), 1);
 }
 
 #[test]
 fn ink_and_a_note_are_listed_by_kind() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     ok(&apply(
         &engine,
@@ -266,7 +266,7 @@ fn ink_and_a_note_are_listed_by_kind() {
 
 #[test]
 fn an_annotation_dated_wrongly_is_bad_and_adds_nothing() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let answer = apply(
@@ -282,7 +282,7 @@ fn an_annotation_dated_wrongly_is_bad_and_adds_nothing() {
 
 #[test]
 fn deleting_an_annotation_that_is_not_there_is_refused() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let answer = apply(
@@ -294,7 +294,7 @@ fn deleting_an_annotation_that_is_not_there_is_refused() {
     assert_eq!(failure_kind(&answer), "AnnotationNotOnPage");
 }
 
-fn text_of(engine: &Engine, handle: i64) -> (u64, String) {
+fn text_of(engine: &Bridge, handle: i64) -> (u64, String) {
     let text = ok(&engine.text(&json!({ "handle": handle, "page": 1 }).to_string()));
     let all: Vec<&str> = text["lines"]
         .as_array()
@@ -305,7 +305,7 @@ fn text_of(engine: &Engine, handle: i64) -> (u64, String) {
     (text["revision"].as_u64().unwrap(), all.join("\n"))
 }
 
-fn heading_block(engine: &Engine, handle: i64) -> u64 {
+fn heading_block(engine: &Bridge, handle: i64) -> u64 {
     let text = ok(&engine.text(&json!({ "handle": handle, "page": 1 }).to_string()));
     let line = text["lines"]
         .as_array()
@@ -318,7 +318,7 @@ fn heading_block(engine: &Engine, handle: i64) -> u64 {
 
 #[test]
 fn editing_a_block_replaces_its_text() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let block = heading_block(&engine, handle);
     let (revision, _) = text_of(&engine, handle);
@@ -339,7 +339,7 @@ fn editing_a_block_replaces_its_text() {
 
 #[test]
 fn a_block_read_before_a_change_is_stale() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let block = heading_block(&engine, handle);
     let (revision, _) = text_of(&engine, handle);
@@ -361,7 +361,7 @@ fn a_block_read_before_a_change_is_stale() {
 
 #[test]
 fn a_block_past_the_last_is_bad() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
 
     let answer = apply(
@@ -375,7 +375,7 @@ fn a_block_past_the_last_is_bad() {
 
 #[test]
 fn an_empty_text_removes_the_blocks_text() {
-    let engine = Engine::new();
+    let engine = Bridge::new();
     let handle = open(&engine);
     let block = heading_block(&engine, handle);
 

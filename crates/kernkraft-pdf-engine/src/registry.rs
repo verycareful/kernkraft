@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
-//! Open sessions, by the `i64` handle Kotlin holds.
+//! Open sessions, by the `i64` handle the application holds.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::WireError;
 
-/// The handle of the first session. 0 is never a handle, so a Kotlin field
-/// left at its default does not name a session.
+/// The handle of the first session. 0 is never a handle, so a field left
+/// at its default does not name a session.
 const FIRST_HANDLE: i64 = 1;
 
 /// Sessions of type `T`, each behind its own lock: a long operation on one

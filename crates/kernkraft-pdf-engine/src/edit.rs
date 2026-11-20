@@ -17,31 +17,26 @@ use kernkraft_pdf::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::engine::{Changed, Engine, Session};
+use crate::engine::{Changed, Engine, HandleRequest, Session};
 use crate::error::WireError;
-use crate::guard::{run, Fields};
+use crate::fields::Fields;
 use crate::wire::{self, WireId};
 
 /// The opacity of a new annotation that names none: a highlight multiplies
 /// with the page, the others are opaque.
 const DEFAULT_OPACITY: f64 = 1.0;
 
+/// One change to a document.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ApplyRequest {
-    handle: i64,
-    op: Op,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HandleRequest {
-    handle: i64,
+pub struct ApplyRequest {
+    pub handle: i64,
+    pub op: Op,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
-enum MarkupKind {
+pub enum MarkupKind {
     Highlight,
     Underline,
     StrikeOut,
@@ -51,7 +46,7 @@ enum MarkupKind {
 /// date is a PDF date string.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase", deny_unknown_fields)]
-enum Op {
+pub enum Op {
     /// Turns pages clockwise by 90, 180 or 270 degrees; no pages is all.
     Rotate {
         pages: Vec<u32>,
@@ -139,40 +134,34 @@ impl Made {
 }
 
 impl Engine {
-    pub fn apply(&self, request: &str) -> String {
-        run(request, |request: ApplyRequest| {
-            let fonts = self.fonts();
-            self.sessions.with(request.handle, |session| {
-                let made = make(session, request.op, &fonts)?;
-                let pushed = session.edit.push(made.document)?;
-                let changed = if pushed {
-                    session.did(made.changed);
-                    session.last_changed()
-                } else {
-                    Changed::Pages(Vec::new())
-                };
-                let mut fields = session.answer(&changed)?;
-                fields.extend(made.extra);
-                Ok(fields)
-            })
+    pub fn apply(&self, request: ApplyRequest) -> Result<Fields, WireError> {
+        let fonts = self.fonts();
+        self.sessions.with(request.handle, |session| {
+            let made = make(session, request.op, &fonts)?;
+            let pushed = session.edit.push(made.document)?;
+            let changed = if pushed {
+                session.did(made.changed);
+                session.last_changed()
+            } else {
+                Changed::Pages(Vec::new())
+            };
+            let mut fields = session.answer(&changed)?;
+            fields.extend(made.extra);
+            Ok(fields)
         })
     }
 
-    pub fn undo(&self, request: &str) -> String {
-        run(request, |request: HandleRequest| {
-            self.sessions.with(request.handle, |session| {
-                let changed = session.undid().unwrap_or(Changed::Pages(Vec::new()));
-                Ok(session.answer(&changed)?)
-            })
+    pub fn undo(&self, request: HandleRequest) -> Result<Fields, WireError> {
+        self.sessions.with(request.handle, |session| {
+            let changed = session.undid().unwrap_or(Changed::Pages(Vec::new()));
+            Ok(session.answer(&changed)?)
         })
     }
 
-    pub fn redo(&self, request: &str) -> String {
-        run(request, |request: HandleRequest| {
-            self.sessions.with(request.handle, |session| {
-                let changed = session.redid().unwrap_or(Changed::Pages(Vec::new()));
-                Ok(session.answer(&changed)?)
-            })
+    pub fn redo(&self, request: HandleRequest) -> Result<Fields, WireError> {
+        self.sessions.with(request.handle, |session| {
+            let changed = session.redid().unwrap_or(Changed::Pages(Vec::new()));
+            Ok(session.answer(&changed)?)
         })
     }
 }

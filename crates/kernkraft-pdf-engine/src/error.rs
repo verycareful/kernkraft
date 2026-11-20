@@ -1,24 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
-//! Failures as Kotlin receives them.
+//! Failures as an adapter's caller receives them.
 //!
-//! Every export answers with one JSON object. A failure is
-//! `{"ok":false,"kind":...,"message":...}`: `kind` is the name of the error
+//! A failure is a `kind` and a `message`: `kind` is the name of the error
 //! variant (`PageOutOfRange`, `WrongPassword`, `TextNotEditable`, ...), so the
 //! application branches on it without parsing `message`. An error that only
 //! forwards another crate's (`PdfError::Fs`, `PdfError::Font`) reports the
-//! inner error's variant name with the outer error's message, the way
-//! `kernkraft-tauri`'s `WireError` does. The adapter's own failures are
-//! `BadRequest`, `UnknownHandle`, `SessionPoisoned`, `StaleBlock`,
-//! `BufferTooSmall`, `RandomUnavailable` and `Panic`.
+//! inner error's variant name with the outer error's message. The engine's
+//! own failures are `BadRequest`, `UnknownHandle`, `SessionPoisoned`,
+//! `StaleBlock`, `BufferTooSmall` and `RandomUnavailable`; an adapter adds
+//! its own (`Panic` in `kernkraft-jni`).
 
 use std::fmt::Debug;
 
 use kernkraft_pdf::PdfError;
 use serde::Serialize;
 
-/// A failure on the wire.
+/// A failure as the application receives it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WireError {
     pub kind: String,
@@ -33,8 +32,8 @@ impl WireError {
         }
     }
 
-    /// A request that is not the JSON the operation takes, or names
-    /// something that cannot exist.
+    /// A request that is not what the operation takes, or names something
+    /// that cannot exist.
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::new("BadRequest", message)
     }

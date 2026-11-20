@@ -112,11 +112,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      OUT: ${{ runner.temp }}/oracles
       FONT: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 5
+
+      # The `runner` context is not available in a job's `env`, so the output
+      # folder is set from the runner's environment.
+      - name: Output folder
+        timeout-minutes: 1
+        run: echo "OUT=$RUNNER_TEMP/oracles" >> "$GITHUB_ENV"
 
       - name: Other readers
         timeout-minutes: 10

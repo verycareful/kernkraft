@@ -7,8 +7,9 @@
     compare_bbox.py OURS THEIRS
 
 OURS is the output of examples/text_words.rs: `page N WIDTH HEIGHT ROTATE`
-lines, each followed by `LEFT TOP RIGHT BOTTOM WORD` lines whose numbers are
-fractions of the displayed page. THEIRS is the output of
+lines, each followed by `LEFT TOP RIGHT BOTTOM OFF WORD` lines whose first
+four numbers are fractions of the displayed page and whose OFF is how many
+degrees the word's text lies off the nearest axis of the page. THEIRS is the output of
 `pdftotext -bbox -cropbox`, in points on the displayed page (the box this
 library displays). The fractions are multiplied by the page size OURS gives,
 so both sides are compared in points; the size poppler prints in its page
@@ -26,16 +27,35 @@ are within CENTRE_TOLERANCE of the thicker of the two boxes (the height of a
 horizontal word, the width of a vertical one); otherwise it is displaced.
 Text turned inside an unturned page is outside this comparison and is
 reported as displaced.
-A word with no partner of its text is reported as only ours or only theirs,
-because the two tools break text into words by rules of their own (a gap
-that is a space for one is a kern for the other).
+A word with no partner of its text goes through three more steps before it
+is reported as only ours or only theirs, because the two tools break text
+into words by rules of their own (a gap that is a space for one is a kern
+for the other, a change of size or baseline inside a run splits a word for
+one and not for the other):
+  - split: a word of one tool and the words of the other that, read in order
+    along the text, spell exactly the same text and together make a box in
+    place (by the rule above) are one pair, counted once;
+  - unmapped: a word of ours that holds U+FFFD, the character this library
+    reads for a glyph that has no Unicode text, is paired by position alone
+    with a word of theirs that is in place, so that a font the other tool
+    reads by a rule of its own (a glyph name that no list gives text, read as
+    its character code) does not fail the page. These pairs are counted on
+    their own line of the report, never as words whose text agrees;
+  - oblique: a word of ours more than OBLIQUE_DEGREES off the page's axes is
+    outside this comparison (a box that is axis-aligned says too little of
+    it), as are the words of theirs whose centre lies in its box. They are
+    counted on the page's line, never dropped without trace.
+A word that is still unpaired is reported as only ours or only theirs.
 
 A page passes when no pair is displaced and at least MATCH_LIMIT of its
-words, counted on the side that has more, are in place. Prints one line for
+words, counted on the side that has more, are in place. A split pair counts
+as one word on each side, and an unmapped pair, an oblique word and the
+words of theirs set aside with it are not counted. Prints one line for
 each page and, for a page that fails, the first words at fault. Exits with 0
 when every page passes, and 1 otherwise.
 """
 
+import re
 import sys
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -62,6 +82,20 @@ MATCH_LIMIT = 0.9
 # Characters that print nothing and that one tool may keep and the other drop.
 INVISIBLE = {"­", "​", "‌", "‍", "⁠", "﻿"}
 
+# Characters XML 1.0 does not allow (Extensible Markup Language 1.0, 2.2,
+# production Char). A PDF may hold one (a control character in a word), and
+# poppler writes it as it is, so its output is not well formed until they are
+# taken out; they are taken out of both sides' words alike.
+INVALID_XML = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+
+# The character kernkraft-pdf reads for a glyph that has no Unicode text.
+UNMAPPED = "\ufffd"
+
+# How far off the page's axes a word's text may lie and still be compared
+# as a straight word: 2 degrees, the angle kernkraft-pdf's layout allows
+# between the glyphs of one line.
+OBLIQUE_DEGREES = 2.0
+
 # The sizes of two pages are the same when they differ by less than this, in
 # points: the digits poppler prints.
 SIZE_TOLERANCE_PT = 0.01
@@ -70,13 +104,14 @@ SHOWN = 5
 
 
 def normalise(text):
-    folded = unicodedata.normalize("NFKC", text)
+    folded = unicodedata.normalize("NFKC", INVALID_XML.sub("", text))
     return "".join(c for c in folded if c not in INVISIBLE)
 
 
 class Word:
-    def __init__(self, text, left, top, right, bottom):
+    def __init__(self, text, left, top, right, bottom, off=0.0):
         self.text = normalise(text)
+        self.off = off
         self.left = left
         self.right = right
         self.top = top
@@ -103,7 +138,8 @@ class Word:
 
 def read_ours(path):
     """The pages of OURS: each a (width, height, rotate, words), a word being
-    (text, left, top, right, bottom) in fractions of the page."""
+    (text, left, top, right, bottom, off) in fractions of the page, and off
+    in degrees."""
     pages = []
     with open(path, encoding="utf-8") as f:
         for number, line in enumerate(f, 1):
@@ -119,14 +155,14 @@ def read_ours(path):
                 continue
             if not pages:
                 raise SystemExit(f"{path}:{number}: a word before the first page")
-            fields = line.split(" ", 4)
-            if len(fields) != 5:
+            fields = line.split(" ", 5)
+            if len(fields) != 6:
                 raise SystemExit(f"{path}:{number}: not a word line: {line!r}")
             try:
-                left, top, right, bottom = (float(x) for x in fields[:4])
+                left, top, right, bottom, off = (float(x) for x in fields[:5])
             except ValueError:
                 raise SystemExit(f"{path}:{number}: not a word line: {line!r}")
-            pages[-1][3].append((fields[4], left, top, right, bottom))
+            pages[-1][3].append((fields[5], left, top, right, bottom, off))
     return pages
 
 
@@ -139,8 +175,10 @@ def elements(parent, name):
 def read_theirs(path):
     """The pages of THEIRS: each a (width, height, words) in points."""
     pages = []
-    tree = ET.parse(path)
-    for page in elements(tree.getroot(), "page"):
+    with open(path, "rb") as f:
+        text = f.read().decode("utf-8")
+    root = ET.fromstring(INVALID_XML.sub("", text).encode("utf-8"))
+    for page in elements(root, "page"):
         width = float(page.get("width"))
         height = float(page.get("height"))
         words = [
@@ -190,14 +228,18 @@ def distance(ours, theirs, vertical):
     return abs(o_start - t_start) + abs(o_end - t_end) + abs(o_across - t_across)
 
 
-def pair(ours, theirs, vertical):
-    """Pairs the words of one page: (pairs, only_ours, only_theirs)."""
+def pair(ours, theirs, vertical, only_in_place):
+    """Pairs the words of one page by text: (pairs, only_ours, only_theirs).
+    With `only_in_place`, a pair is made only of words in place with each
+    other, so that a word is not taken by one of the same text elsewhere."""
     by_text = {}
     for index, word in enumerate(theirs):
         by_text.setdefault(word.text, []).append(index)
     candidates = []
     for i, word in enumerate(ours):
         for j in by_text.get(word.text, ()):
+            if only_in_place and not in_place(word, theirs[j], vertical):
+                continue
             candidates.append((distance(word, theirs[j], vertical), i, j))
     candidates.sort()
     used_ours, used_theirs, pairs = set(), set(), []
@@ -212,31 +254,168 @@ def pair(ours, theirs, vertical):
     return pairs, only_ours, only_theirs
 
 
+def union(words, text):
+    """The word `text` whose box is the smallest one holding `words`."""
+    return Word(
+        text,
+        min(w.left for w in words),
+        min(w.top for w in words),
+        max(w.right for w in words),
+        max(w.bottom for w in words),
+    )
+
+
+def across_extent(word, vertical):
+    """(least, greatest) of a word's box across its text."""
+    if vertical:
+        return word.left, word.right
+    return word.top, word.bottom
+
+
+def run_spelling(word, near, parts):
+    """The first run of consecutive words of `parts`, taken from the indices
+    `near` in order, that spells the text of `word` in two words or more, or
+    None."""
+    for first in range(len(near)):
+        spelt = ""
+        for last in range(first, len(near)):
+            spelt += parts[near[last]].text
+            if not word.text.startswith(spelt):
+                break
+            if spelt == word.text:
+                if last > first:
+                    return near[first : last + 1]
+                break
+    return None
+
+
+def split_pairs(whole, parts, vertical):
+    """Pairs each word of `whole` with a run of words of `parts` that, in
+    order along the text, spell its text and make a box in place with it.
+    Returns (pairs of (whole word, [part words]), the indices of `whole` and
+    of `parts` used). The candidates for a word are the parts whose centre
+    lies along its box and whose centre across the text lies in its box: a
+    subscript or a raised mark is one of them."""
+    pairs, used_whole, used_parts = [], set(), set()
+    for i, word in enumerate(whole):
+        start, end, _ = along_across(word, vertical)
+        low, high = across_extent(word, vertical)
+        near = []
+        for j, part in enumerate(parts):
+            if j in used_parts:
+                continue
+            p_start, p_end, p_across = along_across(part, vertical)
+            if (
+                start - EDGE_TOLERANCE_PT <= (p_start + p_end) / 2 <= end + EDGE_TOLERANCE_PT
+                and low <= p_across <= high
+            ):
+                near.append(j)
+        near.sort(key=lambda j: along_across(parts[j], vertical)[0])
+        for order in ([near, near[::-1]] if vertical else [near]):
+            run = run_spelling(word, order, parts)
+            if run is None:
+                continue
+            spelt = "".join(parts[j].text for j in run)
+            if in_place(union([parts[j] for j in run], spelt), word, vertical):
+                pairs.append((word, [parts[j] for j in run]))
+                used_whole.add(i)
+                used_parts.update(run)
+                break
+    return pairs, used_whole, used_parts
+
+
+def unmapped_pairs(ours, theirs, vertical):
+    """Pairs the words of `ours` that hold U+FFFD with the words of `theirs`
+    in place with them, the nearest first: (pairs, used ours, used theirs)."""
+    candidates = []
+    for i, word in enumerate(ours):
+        if UNMAPPED not in word.text:
+            continue
+        for j, other in enumerate(theirs):
+            if in_place(word, other, vertical):
+                candidates.append((distance(word, other, vertical), i, j))
+    candidates.sort()
+    pairs, used_ours, used_theirs = [], set(), set()
+    for _, i, j in candidates:
+        if i in used_ours or j in used_theirs:
+            continue
+        used_ours.add(i)
+        used_theirs.add(j)
+        pairs.append((ours[i], theirs[j]))
+    return pairs, used_ours, used_theirs
+
+
+def holds(box, word):
+    """Whether the centre of `word` lies in the box of `box`."""
+    x = (word.left + word.right) / 2
+    y = (word.top + word.bottom) / 2
+    return box.left <= x <= box.right and box.top <= y <= box.bottom
+
+
 def compare_page(number, ours_page, their_page):
     """The report lines for one page, and whether it passes."""
     width, height, rotate, ours = ours_page
     their_width, their_height, theirs = their_page
     vertical = vertical_text(rotate)
     words = [
-        Word(text, left * width, top * height, right * width, bottom * height)
-        for text, left, top, right, bottom in ours
+        Word(text, left * width, top * height, right * width, bottom * height, off)
+        for text, left, top, right, bottom, off in ours
     ]
-    pairs, only_ours, only_theirs = pair(words, theirs, vertical)
-    placed = [p for p in pairs if in_place(*p, vertical)]
-    displaced = [p for p in pairs if not in_place(*p, vertical)]
-    most = max(len(words), len(theirs))
+    oblique = [w for w in words if w.off > OBLIQUE_DEGREES]
+    straight = [w for w in words if w.off <= OBLIQUE_DEGREES]
+    kept = [t for t in theirs if not any(holds(o, t) for o in oblique)]
+    set_aside = len(theirs) - len(kept)
+
+    placed, only_ours, only_theirs = pair(straight, kept, vertical, True)
+
+    # Words that one tool breaks and the other does not.
+    our_whole, used_w, used_p = split_pairs(only_ours, only_theirs, vertical)
+    only_ours_left = [w for i, w in enumerate(only_ours) if i not in used_w]
+    only_theirs_left = [w for j, w in enumerate(only_theirs) if j not in used_p]
+    their_whole, used_w, used_p = split_pairs(
+        only_theirs_left, only_ours_left, vertical
+    )
+    only_theirs_left = [w for i, w in enumerate(only_theirs_left) if i not in used_w]
+    only_ours_left = [w for j, w in enumerate(only_ours_left) if j not in used_p]
+    splits = len(our_whole) + len(their_whole)
+    extra_ours = sum(len(p) - 1 for _, p in their_whole)
+    extra_theirs = sum(len(p) - 1 for _, p in our_whole)
+
+    mapped, used_o, used_t = unmapped_pairs(only_ours_left, only_theirs_left, vertical)
+    only_ours_left = [w for i, w in enumerate(only_ours_left) if i not in used_o]
+    only_theirs_left = [w for j, w in enumerate(only_theirs_left) if j not in used_t]
+
+    # What is left and has the text of a word on the other side is that word
+    # drawn elsewhere.
+    displaced, only_ours_left, only_theirs_left = pair(
+        only_ours_left, only_theirs_left, vertical, False
+    )
+
+    units_ours = len(straight) - extra_ours - len(mapped)
+    units_theirs = len(kept) - extra_theirs - len(mapped)
+    most = max(units_ours, units_theirs)
+    in_place_count = len(placed) + splits
     sizes = sorted((width, height)) + sorted((their_width, their_height))
     size_differs = any(
         abs(a - b) > SIZE_TOLERANCE_PT for a, b in zip(sizes[:2], sizes[2:])
     )
     passed = (
-        not size_differs and not displaced and len(placed) >= MATCH_LIMIT * most
+        not size_differs
+        and not displaced
+        and in_place_count >= MATCH_LIMIT * most
     )
-    lines = [
+    line = (
         f"page {number}: ours {len(words)} theirs {len(theirs)} "
         f"in place {len(placed)} displaced {len(displaced)} "
-        f"only ours {len(only_ours)} only theirs {len(only_theirs)}"
-    ]
+        f"only ours {len(only_ours_left)} only theirs {len(only_theirs_left)}"
+    )
+    if splits:
+        line += f" split {splits}"
+    if mapped:
+        line += f" unmapped {len(mapped)}"
+    if oblique:
+        line += f" oblique ours {len(oblique)} theirs {set_aside}"
+    lines = [line]
     if size_differs:
         lines.append(
             f"  size: ours {width} x {height} (turn {rotate}), "
@@ -245,9 +424,9 @@ def compare_page(number, ours_page, their_page):
     if not passed:
         for o, t in displaced[:SHOWN]:
             lines.append(f"  displaced: ours {o}; theirs {t}")
-        for w in only_ours[:SHOWN]:
+        for w in only_ours_left[:SHOWN]:
             lines.append(f"  only ours: {w}")
-        for w in only_theirs[:SHOWN]:
+        for w in only_theirs_left[:SHOWN]:
             lines.append(f"  only theirs: {w}")
     return lines, passed
 

@@ -30,12 +30,13 @@ XHTML = (
 
 
 def ours_file(pages):
-    """pages: (width, height, rotate, [(text, left, top, right, bottom)])."""
+    """pages: (width, height, rotate, [(text, left, top, right, bottom)]); a
+    word may add a sixth item, its degrees off the page's axes (default 0)."""
     lines = []
     for number, (width, height, rotate, words) in enumerate(pages, 1):
         lines.append(f"page {number} {width} {height} {rotate}")
-        for text, left, top, right, bottom in words:
-            lines.append(f"{left} {top} {right} {bottom} {text}")
+        for text, left, top, right, bottom, *off in words:
+            lines.append(f"{left} {top} {right} {bottom} {off[0] if off else 0} {text}")
     return "\n".join(lines) + "\n"
 
 
@@ -218,6 +219,207 @@ class CompareBbox(unittest.TestCase):
             f.write("0.1 0.1 0.2 0.2 Hello\n")
         with self.assertRaises(SystemExit):
             compare_bbox.read_ours(path)
+
+    # A character XML 1.0 does not allow is taken out of both sides.
+
+    def test_a_control_character_in_theirs_is_taken_out(self):
+        ours = ours_file([(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file([(200, 100, [("He\x1cllo", 20, 30, 60, 40)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("in place 1 displaced 0 only ours 0 only theirs 0", report[0])
+
+    def test_a_control_character_in_ours_is_taken_out(self):
+        ours = ours_file([(200, 100, 0, [("He\x1cllo", 0.1, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file([(200, 100, [("Hello", 20, 30, 60, 40)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+
+    # A word one tool breaks and the other does not: the pieces, in order
+    # along the text, must spell it exactly and make a box in place with it.
+    # "Hello" spans 20..60.
+
+    def test_a_word_theirs_breaks_is_one_split_pair(self):
+        ours = ours_file([(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file(
+            [(200, 100, [("He", 20, 30, 32, 40), ("llo", 32.4, 30, 60, 40)])]
+        )
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("in place 0 displaced 0 only ours 0 only theirs 0 split 1", report[0])
+
+    def test_a_word_ours_breaks_is_one_split_pair(self):
+        ours = ours_file(
+            [(200, 100, 0, [("He", 0.1, 0.3, 0.16, 0.4), ("llo", 0.162, 0.3, 0.3, 0.4)])]
+        )
+        theirs = theirs_file([(200, 100, [("Hello", 20, 30, 60, 40)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("only ours 0 only theirs 0 split 1", report[0])
+
+    def test_pieces_that_spell_another_text_are_not_a_split_pair(self):
+        ours = ours_file([(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file(
+            [(200, 100, [("He", 20, 30, 32, 40), ("lo", 32.4, 30, 60, 40)])]
+        )
+        report, ok = self.run_compare(ours, theirs)
+        self.assertFalse(ok, report)
+        self.assertIn("only ours 1 only theirs 2", report[0])
+
+    def test_pieces_whose_box_is_not_in_place_are_not_a_split_pair(self):
+        # The pieces' union ends at 70, ten points past the word's 60.
+        ours = ours_file([(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file(
+            [(200, 100, [("He", 20, 30, 32, 40), ("llo", 40, 30, 70, 40)])]
+        )
+        report, ok = self.run_compare(ours, theirs)
+        self.assertFalse(ok, report)
+        self.assertNotIn("split", report[0])
+
+    def test_a_stray_word_after_the_pieces_does_not_stop_the_pair(self):
+        # "zz" lies within a point of the word's end but is not part of the
+        # spelling: the run He + llo is found and "zz" is left over.
+        ours = ours_file([(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file(
+            [
+                (
+                    200,
+                    100,
+                    [
+                        ("He", 20, 30, 32, 40),
+                        ("llo", 32.4, 30, 60, 40),
+                        ("zz", 59, 30, 60.4, 40),
+                    ],
+                )
+            ]
+        )
+        report, ok = self.run_compare(ours, theirs)
+        self.assertFalse(ok, report)
+        self.assertIn("only ours 0 only theirs 1 split 1", report[0])
+
+    def test_a_lowered_piece_inside_the_word_box_is_a_part(self):
+        # "x" and a smaller, lowered "1" make "x1": the "1" has its centre,
+        # 36.5, inside the word's 30..40 across the text.
+        ours = ours_file([(200, 100, 0, [("x1", 0.1, 0.3, 0.2, 0.4)])])
+        theirs = theirs_file(
+            [(200, 100, [("x", 20, 30, 30, 40), ("1", 30, 33, 40, 40)])]
+        )
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("split 1", report[0])
+
+    def test_pieces_down_a_turned_page_may_read_against_the_axis(self):
+        # Text climbs a page turned 270: the first letters are lowest, so
+        # the pieces spell the word from the greater end downwards.
+        ours = ours_file([(100, 200, 270, [("Hello", 0.2, 0.2, 0.3, 0.5)])])
+        theirs = theirs_file(
+            [(100, 200, [("He", 20, 70, 30, 100), ("llo", 20, 40, 30, 69.6)])]
+        )
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("split 1", report[0])
+
+    # A word of ours that holds U+FFFD has no text to compare: it is paired
+    # with a word of theirs by position alone and counted on its own.
+
+    def test_an_unmapped_word_is_paired_by_position_and_counted(self):
+        ours = ours_file([(200, 100, 0, [("\ufffd\ufffd", 0.1, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file([(200, 100, [("JJ", 20, 30, 60, 40)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("only ours 0 only theirs 0 unmapped 1", report[0])
+
+    def test_an_unmapped_word_out_of_place_is_not_paired(self):
+        ours = ours_file([(200, 100, 0, [("\ufffd\ufffd", 0.1, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file([(200, 100, [("JJ", 120, 30, 160, 40)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertFalse(ok, report)
+        self.assertIn("only ours 1 only theirs 1", report[0])
+        self.assertNotIn("unmapped", report[0])
+
+    def test_unmapped_words_do_not_hide_a_displaced_word(self):
+        ours = ours_file(
+            [(200, 100, 0, [("\ufffd", 0.1, 0.3, 0.2, 0.4), ("Hello", 0.1, 0.6, 0.3, 0.7)])]
+        )
+        theirs = theirs_file(
+            [(200, 100, [("J", 20, 30, 40, 40), ("Hello", 20, 85, 60, 95)])]
+        )
+        report, ok = self.run_compare(ours, theirs)
+        self.assertFalse(ok, report)
+        self.assertIn("displaced 1", report[0])
+        self.assertIn("unmapped 1", report[0])
+
+    # A word of ours more than 2 degrees off the page's axes, and the words
+    # of theirs whose centre lies in its box, are set aside and counted.
+
+    def test_an_oblique_word_and_the_pieces_in_its_box_are_set_aside(self):
+        ours = ours_file(
+            [
+                (
+                    200,
+                    100,
+                    0,
+                    [
+                        ("height", 0.1, 0.3, 0.2, 0.6, 30.0),
+                        ("Hello", 0.5, 0.3, 0.7, 0.4),
+                    ],
+                )
+            ]
+        )
+        theirs = theirs_file(
+            [
+                (
+                    200,
+                    100,
+                    [
+                        ("hei", 22, 30, 38, 42),
+                        ("gh", 24, 42, 38, 52),
+                        ("t", 28, 52, 38, 58),
+                        ("Hello", 100, 30, 140, 40),
+                    ],
+                )
+            ]
+        )
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("in place 1 displaced 0 only ours 0 only theirs 0", report[0])
+        self.assertIn("oblique ours 1 theirs 3", report[0])
+
+    def test_a_word_of_theirs_outside_an_oblique_box_is_not_set_aside(self):
+        ours = ours_file(
+            [
+                (
+                    200,
+                    100,
+                    0,
+                    [
+                        ("height", 0.1, 0.3, 0.2, 0.6, 30.0),
+                        ("Hello", 0.5, 0.3, 0.7, 0.4),
+                    ],
+                )
+            ]
+        )
+        theirs = theirs_file(
+            [(200, 100, [("hei", 22, 30, 38, 42), ("Hello", 100, 30, 140, 40), ("stray", 160, 70, 190, 80)])]
+        )
+        report, ok = self.run_compare(ours, theirs)
+        self.assertFalse(ok, report)
+        self.assertIn("only theirs 1", report[0])
+        self.assertIn("oblique ours 1 theirs 1", report[0])
+
+    def test_a_word_within_two_degrees_is_compared_as_straight(self):
+        ours = ours_file([(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4, 2.0)])])
+        theirs = theirs_file([(200, 100, [("Hello", 20, 30, 60, 40)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertNotIn("oblique", report[0])
+
+    def test_a_word_past_two_degrees_is_oblique(self):
+        ours = ours_file([(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4, 2.1)])])
+        theirs = theirs_file([(200, 100, [])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("oblique ours 1 theirs 0", report[0])
 
 
 if __name__ == "__main__":

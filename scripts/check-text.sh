@@ -12,6 +12,10 @@
 # page: the left and right edges and the vertical centre of each word, within
 # the limits stated there. A file poppler cannot read is skipped. A run that
 # compared no file fails, so that a missing input cannot pass as a clean one.
+# The last line counts, over the files compared, the words of each of the
+# three kinds scripts/compare_bbox.py judges apart from words whose text
+# agrees: split (broken differently), unmapped (no Unicode text for a glyph,
+# paired by position) and oblique (off the page's axes, not judged).
 # Exits with 1 when any file fails.
 
 set -uo pipefail
@@ -33,6 +37,14 @@ passed=0
 failed=0
 skipped=0
 index=0
+splits=0
+unmapped=0
+oblique=0
+
+# The sum, over a report's page lines, of the number that follows `$1`.
+sum_of() {
+    sed -n "s/.* $1 \([0-9][0-9]*\).*/\1/p" "$2" | awk '{ n += $1 } END { print n + 0 }'
+}
 
 for pdf in "$@"; do
     index=$((index + 1))
@@ -49,14 +61,19 @@ for pdf in "$@"; do
         failed=$((failed + 1))
         continue
     fi
-    if python3 -I scripts/compare_bbox.py "$ours" "$theirs" >"$out_dir/$name.report.txt"; then
+    report="$out_dir/$name.report.txt"
+    if python3 -I scripts/compare_bbox.py "$ours" "$theirs" >"$report"; then
         passed=$((passed + 1))
     else
         echo "FAIL  $pdf:"
-        sed 's/^/    /' "$out_dir/$name.report.txt"
+        sed 's/^/    /' "$report"
         failed=$((failed + 1))
     fi
+    splits=$((splits + $(sum_of split "$report")))
+    unmapped=$((unmapped + $(sum_of unmapped "$report")))
+    oblique=$((oblique + $(sum_of 'oblique ours' "$report")))
 done
 
 echo "== text positions: $passed passed, $failed failed, $skipped skipped (not read by poppler)"
+echo "== judged apart: $splits split, $unmapped unmapped, $oblique oblique"
 [ "$((passed + failed))" -gt 0 ] && [ "$failed" -eq 0 ]

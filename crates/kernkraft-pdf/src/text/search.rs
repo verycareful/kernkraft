@@ -168,6 +168,7 @@ mod tests {
                         text: (*text).to_owned(),
                         rect: Rect::default(),
                         synthetic: false,
+                        source: None,
                     })
                     .collect(),
             })

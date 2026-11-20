@@ -31,6 +31,7 @@ mod state;
 mod text;
 mod xobject;
 
+pub(crate) use device::glyph_of;
 pub use device::{
     Context, Device, ExtGStateInfo, FillRule, FormInfo, ImageSource, MarkedContent, OperatorSpan,
     Path, PathPaint, PathSegment, PlacedGlyph, StreamId, TextRun,

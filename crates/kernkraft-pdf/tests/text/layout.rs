@@ -411,3 +411,37 @@ fn a_vertical_font_flows_down_the_page() {
     assert_rect(chars[0].rect, 90.0, 100.8, 100.0, 110.8, "first glyph");
     assert_rect(chars[1].rect, 90.0, 110.8, 100.0, 120.8, "second glyph");
 }
+
+#[test]
+fn a_character_knows_the_string_and_the_bytes_that_showed_it() {
+    // The operation starts after "BT /F1 10 Tf 100 700 Td " (24 bytes), is
+    // the fourth of the stream (index 3) and is 19 bytes long. The array's
+    // operands are numbered from 0: the string (He) is operand 0, the
+    // number -20 operand 1 and the string (llo) operand 2.
+    let page = page("BT /F1 10 Tf 100 700 Td [(He) -20 (llo)] TJ ET");
+    let chars = &page.blocks[0].lines[0].chars;
+    let expected = [(0, 0), (0, 1), (2, 0), (2, 1), (2, 2)];
+    assert_eq!(chars.len(), expected.len());
+    for (ch, (operand, offset)) in chars.iter().zip(expected) {
+        let source = ch.source.expect("a glyph has its source");
+        assert_eq!(source.operand, operand);
+        assert_eq!(source.offset, offset);
+        assert_eq!(source.len, 1);
+        assert_eq!(source.invocation, 0);
+        assert_eq!((source.span.range.start, source.span.range.end), (24, 43));
+        assert_eq!(source.span.index, 3);
+    }
+}
+
+#[test]
+fn a_synthetic_space_has_no_source() {
+    // The second word starts 4 points after the first ends, as in the
+    // test above, so the layout reads a space there.
+    let page = page("BT /F1 10 Tf 100 700 Td (Hello) Tj 34 0 Td (World) Tj ET");
+    let space = page.blocks[0].lines[0]
+        .chars
+        .iter()
+        .find(|ch| ch.synthetic)
+        .expect("a space between the words");
+    assert!(space.source.is_none());
+}

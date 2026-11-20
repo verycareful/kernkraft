@@ -154,6 +154,18 @@ impl FontEmbedder {
         Ok(codes)
     }
 
+    /// The distance between two lines of text set in the font, in
+    /// thousandths of an em: the ascent less the descent (Table 122) of
+    /// the font's own metrics.
+    pub fn line_height(&self) -> Result<f64, PdfError> {
+        let program = self.parsed()?;
+        let metrics = program.metrics();
+        let scale = glyph_scale(&program);
+        let ascent = f64::from(metrics.ascent.unwrap_or(0.0));
+        let descent = f64::from(metrics.descent.unwrap_or(0.0));
+        Ok((ascent - descent) * scale)
+    }
+
     /// The width of `text` in thousandths of a text space unit (the unit of
     /// the `W` array): the sum of the advances of its characters' glyphs.
     /// Nothing is added to the subset.

@@ -95,7 +95,7 @@ struct Entry {
 }
 
 /// The glyph outlines of a page's fonts, read as they are first shown.
-pub(super) struct Glyphs<'d> {
+pub(crate) struct Glyphs<'d> {
     doc: &'d Document,
     list: Option<&'d FontList>,
     entries: HashMap<*const Font, Entry>,
@@ -150,6 +150,25 @@ impl<'d> Glyphs<'d> {
         };
         entry.glyphs.insert(glyph.code, outline.clone());
         outline
+    }
+
+    /// Whether the font has marks for `glyph`, a blank one or none at all.
+    pub fn presence(
+        &mut self,
+        run: &TextRun,
+        glyph: &PlacedGlyph,
+        diagnostics: &mut Diagnostics,
+    ) -> Presence {
+        let key = Arc::as_ptr(&run.font);
+        if !self.entries.contains_key(&key) {
+            let entry = self.open(&run.font, &run.font_name, diagnostics);
+            self.entries.insert(key, entry);
+        }
+        match self.entries.get(&key).map(|entry| draw(entry, glyph)) {
+            Some(Drawn::Path(_)) => Presence::Marks,
+            Some(Drawn::Blank) => Presence::Blank,
+            Some(Drawn::Missing) | None => Presence::Missing,
+        }
     }
 
     fn open(&self, font: &Arc<Font>, name: &Name, diagnostics: &mut Diagnostics) -> Entry {
@@ -215,7 +234,14 @@ impl<'d> Glyphs<'d> {
     }
 }
 
-/// What a font gave for a glyph.
+/// What a font has for a character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Presence {
+    Marks,
+    Blank,
+    Missing,
+}
+
 enum Drawn {
     Path(Path),
     /// A glyph with no marks.
@@ -354,15 +380,15 @@ fn by_unicode(program: &Program<'_>, glyph: &PlacedGlyph) -> Option<GlyphId> {
 }
 
 /// What a descriptor and a name ask of a substitute.
-struct Wanted {
-    families: &'static [&'static str],
-    bold: bool,
-    italic: bool,
+pub(crate) struct Wanted {
+    pub families: &'static [&'static str],
+    pub bold: bool,
+    pub italic: bool,
 }
 
 /// The family list and style for a font with no program of its own: the
 /// standard 14 names, then the descriptor's flags (Table 123).
-fn wanted_style(font: &Font) -> Wanted {
+pub(crate) fn wanted_style(font: &Font) -> Wanted {
     let full = font.base_font().unwrap_or_default();
     let base = match full.split_once('+') {
         Some((prefix, rest))

@@ -257,6 +257,13 @@ pub enum PdfError {
     /// to a form field.
     #[error("a {subtype} annotation cannot be changed this way")]
     AnnotationNotEditable { subtype: String },
+    /// New text needs a font that is not on the page, and no font list was
+    /// given to take one from.
+    #[error("the text needs a font from a font list, and none was given")]
+    FontListRequired,
+    /// An edit of a block of text that the page does not allow.
+    #[error("the text cannot be edited: {reason:?}")]
+    TextNotEditable { reason: crate::EditBlocker },
     /// A stream whose data was asked for as an object, or the other way
     /// round.
     #[error("object {} {} is not of the kind expected", .object.number, .object.generation)]

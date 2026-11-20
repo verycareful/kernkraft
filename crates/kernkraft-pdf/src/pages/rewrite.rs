@@ -144,6 +144,12 @@ impl<'d> Rewriter<'d> {
             .set_stream(id, dictionary, data, StreamEncoding::AsGiven)
     }
 
+    /// The builder the edits are made through, for a stream that is
+    /// stored encoded by the builder.
+    pub(crate) fn builder(&mut self) -> &mut ObjectBuilder {
+        &mut self.builder
+    }
+
     /// The edits.
     pub(crate) fn finish(mut self) -> Changes {
         for (id, object) in self.staged {

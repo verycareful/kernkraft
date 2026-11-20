@@ -536,12 +536,14 @@ fn build_line(glyphs: &[RawGlyph], line: &Line, view: &PageView) -> TextLine {
                 text: " ".to_owned(),
                 rect: gap.unwrap_or_default(),
                 synthetic: true,
+                source: None,
             });
         }
         chars.push(TextChar {
             text: glyph.text.clone(),
             rect: view.rect_of(glyph.corners).unwrap_or_default(),
             synthetic: false,
+            source: Some(glyph.source),
         });
         previous = Some(glyph);
     }

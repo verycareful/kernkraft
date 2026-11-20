@@ -21,14 +21,14 @@
 //! A [`TextPage`] is searched with [`TextPage::search`], and a document
 //! with [`Document::search`].
 
-mod collect;
+pub(crate) mod collect;
 mod layout;
 mod search;
 mod structure;
 
 use kernkraft_fs::Progress;
 
-use crate::content::{InterpretOptions, Interpreter, Matrix};
+use crate::content::{InterpretOptions, Interpreter, Matrix, OperatorSpan};
 use crate::diagnostic::{DiagnosticKind, Diagnostics};
 use crate::display::{PageView, Rect};
 use crate::doc::Document;
@@ -44,6 +44,30 @@ pub use search::{Match, SearchOptions};
 /// about 200 bytes.
 pub const DEFAULT_MAX_GLYPHS: usize = 1 << 21;
 
+/// Where in a content stream a glyph was shown, so that an editor can find
+/// the bytes that painted it (9.4.3: the operand of `Tj`, `'` and `\"`, or
+/// one string of the array of `TJ`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphSource {
+    /// The showing operation.
+    pub span: OperatorSpan,
+    /// Which string of the operation: 0 for `Tj`, `'` and `\"`, the index
+    /// in the array operand for `TJ` (the numbering of
+    /// [`PlacedGlyph::operand`](crate::content::PlacedGlyph::operand)).
+    pub operand: u32,
+    /// Where the glyph's code starts in that string, in bytes of the
+    /// decoded string (escapes and hexadecimal digits of the source
+    /// resolved).
+    pub offset: u32,
+    /// How many bytes the code takes.
+    pub len: u32,
+    /// Which run of the operation this is: 0 for page content, and for
+    /// text in a form XObject the number of the form's invocation, counted
+    /// from 1 in the order the page's content invokes forms. A form
+    /// invoked twice has two numbers for the one operation.
+    pub invocation: u32,
+}
+
 /// One character of the text of a page.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextChar {
@@ -55,6 +79,8 @@ pub struct TextChar {
     /// Whether the character is a space the layout read between two
     /// glyphs that no space glyph separates, so that it covers no glyph.
     pub synthetic: bool,
+    /// The glyph the character stands for; `None` for a synthetic space.
+    pub source: Option<GlyphSource>,
 }
 
 /// A line of text: characters that share a baseline.

@@ -11,11 +11,12 @@
 //! the glyphs into lines and blocks.
 
 use crate::content::{
-    Context, Device, MarkedContent, OperatorSpan, PlacedGlyph, StreamId, TextRun,
+    Context, Device, FormInfo, MarkedContent, OperatorSpan, PlacedGlyph, StreamId, TextRun,
 };
 use crate::display::PageView;
 use crate::font::Font;
 use crate::text::structure::{Slot, StructureIndex};
+use crate::text::GlyphSource;
 
 /// Glyph space units in one em (9.2.4: 1000 for a font whose
 /// `FontMatrix` is the default, which a descriptor's `Ascent` and
@@ -27,8 +28,8 @@ const UNITS_PER_EM: f64 = 1000.0;
 /// ascenders and descenders of the Core 14 fonts (the AFM files give
 /// Helvetica 718 and -207, Times-Roman 683 and -217, Courier 629 and
 /// -157) so that a box drawn from them holds the glyphs it stands for.
-const FALLBACK_ASCENT: f64 = 800.0;
-const FALLBACK_DESCENT: f64 = -200.0;
+pub(crate) const FALLBACK_ASCENT: f64 = 800.0;
+pub(crate) const FALLBACK_DESCENT: f64 = -200.0;
 
 /// The width of the box of a glyph of a vertical font, in ems: the em
 /// square of a full-width character (9.7.4.3 centres the glyph on the
@@ -53,6 +54,7 @@ pub(super) struct RawGlyph {
     /// in points.
     pub corners: [(f64, f64); 4],
     pub slot: Option<Slot>,
+    pub source: GlyphSource,
 }
 
 /// What the page's glyphs came to.
@@ -73,6 +75,10 @@ pub(super) struct Collector<'a> {
     /// interpreter without an event, so only the entries below the depth
     /// the context reports are current.
     streams: Vec<StreamId>,
+    /// How many forms the page has invoked so far, and the invocations
+    /// that are open, innermost last.
+    invoked: u32,
+    invocations: Vec<u32>,
     out: Collected,
 }
 
@@ -87,6 +93,8 @@ impl<'a> Collector<'a> {
             structure,
             max_glyphs,
             streams: Vec::new(),
+            invoked: 0,
+            invocations: Vec::new(),
             out: Collected {
                 glyphs: Vec::new(),
                 unmapped: None,
@@ -122,6 +130,7 @@ impl<'a> Collector<'a> {
         glyph: &PlacedGlyph,
         text: String,
         slot: Option<Slot>,
+        source: GlyphSource,
     ) -> Option<RawGlyph> {
         let matrix = glyph.matrix.then(self.view.matrix);
         let (ex, ey) = ((matrix.a, matrix.b), (matrix.c, matrix.d));
@@ -173,6 +182,7 @@ impl<'a> Collector<'a> {
             extent,
             corners,
             slot,
+            source,
         })
     }
 
@@ -211,6 +221,15 @@ fn vertical_extent(font: &Font) -> (f64, f64) {
 }
 
 impl Device for Collector<'_> {
+    fn begin_form(&mut self, _ctx: &Context<'_>, _form: &FormInfo) {
+        self.invoked += 1;
+        self.invocations.push(self.invoked);
+    }
+
+    fn end_form(&mut self, _ctx: &Context<'_>, _form: &FormInfo) {
+        self.invocations.pop();
+    }
+
     fn begin_marked(&mut self, ctx: &Context<'_>) {
         self.streams.truncate(ctx.marked.len().saturating_sub(1));
         self.streams.push(ctx.span.stream);
@@ -224,7 +243,20 @@ impl Device for Collector<'_> {
             return;
         }
         let slot = self.slot(ctx);
+        // The bytes of the current string the glyphs so far took.
+        let mut string = (0u32, 0u32);
         for glyph in &run.glyphs {
+            if glyph.operand != string.0 {
+                string = (glyph.operand, 0);
+            }
+            let source = GlyphSource {
+                span: ctx.span,
+                operand: glyph.operand,
+                offset: string.1,
+                len: glyph.len as u32,
+                invocation: self.invocations.last().copied().unwrap_or(0),
+            };
+            string.1 += source.len;
             let text = match glyph.unicode.as_deref() {
                 // A character the font maps to no text at all.
                 Some("") => continue,
@@ -234,7 +266,7 @@ impl Device for Collector<'_> {
                     char::REPLACEMENT_CHARACTER.to_string()
                 }
             };
-            if let Some(raw) = self.glyph(run, glyph, text, slot) {
+            if let Some(raw) = self.glyph(run, glyph, text, slot, source) {
                 if self.out.glyphs.len() >= self.max_glyphs {
                     self.out.overflow = Some(ctx.span);
                     return;

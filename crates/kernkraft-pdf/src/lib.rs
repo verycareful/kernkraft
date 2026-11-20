@@ -67,6 +67,7 @@ mod destination;
 mod diagnostic;
 mod display;
 pub mod doc;
+mod edit_text;
 mod error;
 pub mod file;
 mod filespec;
@@ -100,6 +101,9 @@ pub use diagnostic::{
     Diagnostic, DiagnosticKind, Diagnostics, ImageFault, PaintFault, PortableLimit,
 };
 pub use display::Rect;
+pub use edit_text::{
+    delete_text_block, edit_text, EditBlocker, Editability, Edited, TextEdit, TextStyle,
+};
 pub use error::{Limit, PdfError};
 pub use filespec::FileSpec;
 pub use kernkraft_fs::FileStamp;

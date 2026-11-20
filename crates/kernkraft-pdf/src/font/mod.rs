@@ -199,6 +199,16 @@ impl Font {
         }
     }
 
+    /// Whether a simple font states the width of `code` (its `Widths`, or
+    /// the metrics of the standard font it is), rather than leaving it to
+    /// `MissingWidth`. False for a composite font.
+    pub fn has_width(&self, code: u8) -> bool {
+        match &self.body {
+            Body::Simple(simple) => simple.has_width(code),
+            Body::Composite(_) => false,
+        }
+    }
+
     /// True for a simple TrueType font whose codes select glyphs through
     /// the program's `cmap` and not through glyph names (9.6.6.4: a
     /// symbolic font with no named Mac or Windows encoding).

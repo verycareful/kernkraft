@@ -40,7 +40,7 @@ mod blend;
 mod canvas;
 mod colour;
 mod device;
-mod glyphs;
+pub(crate) mod glyphs;
 mod shading;
 mod shape;
 

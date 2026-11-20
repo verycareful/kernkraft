@@ -129,7 +129,7 @@ impl Document {
 
     /// The streams of page `page`'s `Contents`, in order: none when the
     /// page has no contents.
-    fn page_content_streams(&self, page: ObjectId) -> Result<Vec<ObjectId>, PdfError> {
+    pub(crate) fn page_content_streams(&self, page: ObjectId) -> Result<Vec<ObjectId>, PdfError> {
         let loaded = self.required(page)?;
         let Some(dictionary) = loaded.dictionary() else {
             return Err(PdfError::PageTree { object: page });

@@ -56,6 +56,21 @@ impl Simple {
         self.missing_width * self.scale
     }
 
+    /// Whether the font states the width of `code`: in its `Widths`, or in
+    /// the metrics of the standard font it is when it has no `Widths`.
+    /// Any other code takes `MissingWidth` (Table 111).
+    pub(crate) fn has_width(&self, code: u8) -> bool {
+        if self.widths.get(code).is_some() {
+            return true;
+        }
+        !self.widths.present
+            && self
+                .standard
+                .zip(self.encoding.name(code))
+                .and_then(|(font, name)| font.width(name))
+                .is_some()
+    }
+
     /// The text the glyph name of `code` stands for.
     pub(crate) fn text(&self, code: u32) -> Option<&str> {
         self.texts.get(usize::try_from(code).ok()?)?.as_deref()

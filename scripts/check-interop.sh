@@ -13,7 +13,8 @@
 # source. Each tool is held to what it makes of the source: a source it
 # finds damaged or cannot read is reported and not compared by that tool,
 # and a source that is refused here and by qpdf alike is reported as
-# refused. Exits with 1 when any check fails.
+# refused. Exits with 1 when any check fails, and when no file was checked, so
+# that a missing input cannot pass as a clean run.
 
 set -euo pipefail
 
@@ -122,4 +123,4 @@ for pdf in "$@"; do
 done
 
 echo "== interop: $passed passed, $failed failed, $refused refused as qpdf refuses them, $not_compared not compared by a tool"
-[ "$failed" -eq 0 ]
+[ "$((passed + failed))" -gt 0 ] && [ "$failed" -eq 0 ]

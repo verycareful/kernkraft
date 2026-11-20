@@ -14,7 +14,8 @@
 # the source when poppler draws it (the annotations are drawn). The results
 # are then compared with poppler's pictures of them by scripts/check-render.sh,
 # so that the appearances this library writes are drawn by the two renderers
-# alike. Exits with 1 when any check fails.
+# alike. Exits with 1 when any check fails, and when no file was checked, so
+# that a missing input cannot pass as a clean run.
 
 set -euo pipefail
 
@@ -100,4 +101,4 @@ if [ "${#results[@]}" -gt 0 ]; then
 fi
 
 echo "annotated $checked, skipped $skipped, failed $failed"
-[ "$failed" -eq 0 ]
+[ "$checked" -gt 0 ] && [ "$failed" -eq 0 ]

@@ -13,7 +13,8 @@
 # append. The picture is compared with pdftoppm's (scripts/compare_ppm.py,
 # the limits of check-render.sh); the update appended to the original must
 # pass `qpdf --check`, keep the original's bytes as its start, and show the
-# page turned. Exits with 1 when any check fails.
+# page turned. Exits with 1 when any check fails, and when no file was checked,
+# so that a missing input cannot pass as a clean run.
 
 set -euo pipefail
 
@@ -108,4 +109,4 @@ for pdf in "$@"; do
 done
 
 echo "passed $passed, failed $failed, skipped $skipped"
-[ "$failed" -eq 0 ]
+[ "$((passed + failed))" -gt 0 ] && [ "$failed" -eq 0 ]

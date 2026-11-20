@@ -15,7 +15,8 @@
 # reported; a page that uses content the renderer does not draw yet is
 # counted as deferred, not failed, and still compared and printed; a file
 # pdftoppm cannot read is skipped. The pictures are kept in
-# OUT_DIR. Exits with 1 when any page fails.
+# OUT_DIR. Exits with 1 when any page fails, and when no page passed, so that a
+# missing input cannot pass as a clean run.
 
 set -uo pipefail
 
@@ -84,4 +85,4 @@ for pdf in "$@"; do
 done
 
 echo "passed $passed, failed $failed, deferred $deferred, skipped $skipped"
-[ "$failed" -eq 0 ]
+[ "$passed" -gt 0 ] && [ "$failed" -eq 0 ]

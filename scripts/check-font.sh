@@ -17,7 +17,8 @@
 # subsets are drawn by the two renderers alike. A font that lacks a character
 # of the line is skipped, and a font that cannot be reduced to a subset (a
 # font of bitmaps) is reported as unsupported; neither fails the
-# run. Exits with 1 when any check fails.
+# run. Exits with 1 when any check fails, and when no font was embedded, so
+# that a missing input cannot pass as a clean run.
 
 set -euo pipefail
 
@@ -135,4 +136,4 @@ if [ "${#results[@]}" -gt 0 ]; then
 fi
 
 echo "embedded $checked, skipped $skipped, unsupported $unsupported, failed $failed"
-[ "$failed" -eq 0 ]
+[ "$checked" -gt 0 ] && [ "$failed" -eq 0 ]

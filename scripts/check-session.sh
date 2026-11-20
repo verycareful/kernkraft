@@ -13,7 +13,8 @@
 # result must begin with the bytes of the source, pass `qpdf --check` and
 # `mutool info`, give the text of every sampled page that the source gave
 # (shifted by one for the removal), and show the edit: the title (pdfinfo),
-# the rotation, the page count. Exits with 1 when any check fails.
+# the rotation, the page count. Exits with 1 when any check fails, and when no
+# file was checked, so that a missing input cannot pass as a clean run.
 
 set -euo pipefail
 
@@ -151,4 +152,4 @@ for pdf in "$@"; do
 done
 
 echo "== incremental update: $passed passed, $failed failed, $skipped skipped (not opened by qpdf or poppler, or rebuilt)"
-[ "$failed" -eq 0 ]
+[ "$((passed + failed))" -gt 0 ] && [ "$failed" -eq 0 ]

@@ -13,7 +13,8 @@
 # `mutool info`; the text of each page (pdftotext) must be the text of the
 # page it came from; the rotation (pdfinfo) must be the source's plus 90.
 # A merge of a file with itself must have twice the pages, in order.
-# Exits with 1 when any check fails.
+# Exits with 1 when any check fails, and when no file was checked, so that a
+# missing input cannot pass as a clean run.
 
 set -euo pipefail
 
@@ -141,4 +142,4 @@ for pdf in "$@"; do
 done
 
 echo "== page operations: $passed passed, $failed failed, $skipped skipped (under two pages, or not opened by qpdf or poppler)"
-[ "$failed" -eq 0 ]
+[ "$((passed + failed))" -gt 0 ] && [ "$failed" -eq 0 ]

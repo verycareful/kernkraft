@@ -1971,7 +1971,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-bus"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "thiserror 2.0.21",
  "zbus",
@@ -1979,7 +1979,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-font"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "kernkraft-fs",
  "read-fonts 0.41.0",
@@ -1991,7 +1991,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-fs"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "jiff",
  "percent-encoding",
@@ -2002,7 +2002,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-jni"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "jni",
  "kernkraft-font",
@@ -2015,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-pdf"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "aes",
  "cbc",
@@ -2040,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-pdf-engine"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "getrandom 0.3.4",
  "kernkraft-font",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-tauri"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "base64 0.22.1",
  "inotify",
@@ -2078,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-text"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "kernkraft-fs",
  "rustix",
@@ -2088,7 +2088,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-theme"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "inotify",
  "kernkraft-bus",
@@ -2103,7 +2103,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-thumb"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "flate2",
  "image",
@@ -2119,7 +2119,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-volumes"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "kernkraft-bus",
  "rustix",
@@ -2131,7 +2131,7 @@ dependencies = [
 
 [[package]]
 name = "kernkraft-xdg-apps"
-version = "0.1.3+1.26"
+version = "0.1.3+1.27"
 dependencies = [
  "kernkraft-fs",
  "percent-encoding",

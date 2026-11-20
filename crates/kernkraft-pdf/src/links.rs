@@ -243,7 +243,10 @@ impl Document {
 
     /// The width of a link's border (Table 166): `BS`'s `W`, else the
     /// third number of `Border`, else 1.
-    fn border_width(&self, dictionary: &crate::syntax::Dictionary) -> Result<f64, PdfError> {
+    pub(crate) fn border_width(
+        &self,
+        dictionary: &crate::syntax::Dictionary,
+    ) -> Result<f64, PdfError> {
         let style = self.get(dictionary, BORDER_STYLE_KEY)?;
         if let Some(style) = style.dictionary() {
             if let Some(width) = number(self.get(style, WIDTH_KEY)?.value()) {

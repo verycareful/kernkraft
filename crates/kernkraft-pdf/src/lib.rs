@@ -47,9 +47,14 @@
 //! clipping, text in embedded and substituted fonts, images, shadings,
 //! patterns, transparency (blend modes, groups, soft masks) and the
 //! appearances of annotations, as RGBA pixels.
+//! [`Document::annotations`](doc::Document::annotations) lists a page's annotations, and
+//! [`add_annotation`], [`edit_annotation`] and [`delete_annotation`] write
+//! highlights, underlines, strikeouts, ink strokes and notes with their
+//! appearance streams, each as a new snapshot for [`EditSession::push`].
 
 mod action;
 mod active;
+mod annot;
 mod attachments;
 pub mod build;
 pub mod colour;
@@ -82,6 +87,10 @@ pub mod write;
 
 pub use action::{Action, ActionKind};
 pub use active::{ActiveAction, ActiveContent};
+pub use annot::{
+    add_annotation, delete_annotation, edit_annotation, Added, Annotation, AnnotationEdit,
+    AnnotationKind, NewAnnotation, NewShape,
+};
 pub use attachments::{Attachment, AttachmentPlace, Check, Extracted};
 pub use destination::{Destination, DestinationPage, NamedDestination, View};
 pub use diagnostic::{

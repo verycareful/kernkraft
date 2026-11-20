@@ -23,11 +23,11 @@ mod forms;
 mod labels;
 mod merge;
 mod outline;
-mod references;
-mod rewrite;
+pub(crate) mod references;
+pub(crate) mod rewrite;
 mod select;
 mod split;
-mod structure;
+pub(crate) mod structure;
 mod trees;
 
 use std::collections::HashSet;

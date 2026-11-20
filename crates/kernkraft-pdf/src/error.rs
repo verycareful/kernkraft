@@ -248,6 +248,15 @@ pub enum PdfError {
     StructureTree { object: ObjectId },
     #[error("object {} {} is missing", .object.number, .object.generation)]
     MissingObject { object: ObjectId },
+    /// An annotation asked for by a page that does not list it in its
+    /// `Annots` (12.5.2, Table 30).
+    #[error("object {} {} is not an annotation of page {page}", .object.number, .object.generation)]
+    AnnotationNotOnPage { object: ObjectId, page: u32 },
+    /// A change to an annotation whose kind the library does not write
+    /// or take apart: its appearance cannot be made again, or it belongs
+    /// to a form field.
+    #[error("a {subtype} annotation cannot be changed this way")]
+    AnnotationNotEditable { subtype: String },
     /// A stream whose data was asked for as an object, or the other way
     /// round.
     #[error("object {} {} is not of the kind expected", .object.number, .object.generation)]

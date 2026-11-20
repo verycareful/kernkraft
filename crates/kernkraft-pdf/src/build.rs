@@ -92,6 +92,22 @@ impl ContentBuilder {
         self.numbers(&[width], "w")
     }
 
+    /// `J` and `j`: the line cap and the line join style, as the numbers
+    /// of Tables 54 and 55 (8.4.3.3, 8.4.3.4).
+    pub fn line_cap(&mut self, style: i64) -> Result<&mut Self, PdfError> {
+        self.operator(&[Object::new(Value::Integer(style))], "J")
+    }
+
+    pub fn line_join(&mut self, style: i64) -> Result<&mut Self, PdfError> {
+        self.operator(&[Object::new(Value::Integer(style))], "j")
+    }
+
+    /// `gs`: sets the graphics state parameters of `state`, a name in the
+    /// resource dictionary's `ExtGState` (8.4.5).
+    pub fn graphics_state(&mut self, state: &[u8]) -> Result<&mut Self, PdfError> {
+        self.operator(&[name(state)], "gs")
+    }
+
     /// `rg` and `RG`: a DeviceRGB colour for filling and for stroking
     /// (8.6.8).
     pub fn fill_rgb(&mut self, red: f64, green: f64, blue: f64) -> Result<&mut Self, PdfError> {
@@ -133,6 +149,11 @@ impl ContentBuilder {
 
     pub fn stroke(&mut self) -> Result<&mut Self, PdfError> {
         self.operator(&[], "S")
+    }
+
+    /// `B`: fills the path (nonzero winding) and then strokes it (8.5.3.2).
+    pub fn fill_and_stroke(&mut self) -> Result<&mut Self, PdfError> {
+        self.operator(&[], "B")
     }
 
     /// `BT` and `ET`: a text object (9.4).
@@ -201,6 +222,23 @@ mod tests {
             content.finish(),
             b"q\n1 0 0 1 72 36.5 cm\nBT\n/F1 12 Tf\n(\\(a\\)) Tj\nET\nQ\n"
         );
+    }
+
+    #[test]
+    fn writes_line_style_and_graphics_state_operators() {
+        let mut content = ContentBuilder::new();
+        content
+            .graphics_state(b"GS")
+            .unwrap()
+            .line_cap(1)
+            .unwrap()
+            .line_join(2)
+            .unwrap()
+            .rectangle(1.0, 2.0, 3.0, 4.0)
+            .unwrap()
+            .fill_and_stroke()
+            .unwrap();
+        assert_eq!(content.finish(), b"/GS gs\n1 J\n2 j\n1 2 3 4 re\nB\n");
     }
 
     #[test]

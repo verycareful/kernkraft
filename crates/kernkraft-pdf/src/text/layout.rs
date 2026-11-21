@@ -25,7 +25,10 @@ const DIRECTION_TOLERANCE: f64 = 0.035;
 /// How far apart, across the line, two baselines may be and still be one
 /// line, in ems: a superscript or a subscript sits up to about a third of
 /// an em from its line (9.3.7 puts `Trise` there), and the lines of any
-/// text are at least an em apart.
+/// text are at least an em apart. Glyphs of one size are chained by this
+/// many ems of that size; a cluster of smaller glyphs is a script of a
+/// larger one within this many ems of the larger size (see
+/// [`attach_scripts`]).
 const BASELINE_TOLERANCE: f64 = 0.5;
 
 /// The gap along a line, in ems, past which a space is read between two
@@ -189,25 +192,96 @@ fn lines(glyphs: &[RawGlyph]) -> Vec<Line> {
             .then(a.cmp(&b))
     });
 
-    let mut lines = Vec::new();
-    let mut cluster: Vec<usize> = Vec::new();
+    // Glyphs are chained by baseline within the em of the smaller of two,
+    // so that a glyph larger than the text around it, set between two lines,
+    // does not carry the two into one cluster.
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
     for &glyph in &order {
-        let continues = cluster.last().is_some_and(|&last| {
-            group_of[last] == group_of[glyph]
-                && key(last) == key(glyph)
-                && perp[glyph] - perp[last]
-                    <= BASELINE_TOLERANCE * glyphs[last].size.max(glyphs[glyph].size)
-        });
-        if !continues && !cluster.is_empty() {
-            split_cluster(&cluster, glyphs, &group_of, &perp, &start, &mut lines);
-            cluster.clear();
+        let continues = clusters
+            .last()
+            .and_then(|cluster| cluster.last())
+            .is_some_and(|&last| {
+                group_of[last] == group_of[glyph]
+                    && key(last) == key(glyph)
+                    && perp[glyph] - perp[last]
+                        <= BASELINE_TOLERANCE * glyphs[last].size.min(glyphs[glyph].size)
+            });
+        match clusters.last_mut() {
+            Some(cluster) if continues => cluster.push(glyph),
+            _ => clusters.push(vec![glyph]),
         }
-        cluster.push(glyph);
     }
-    if !cluster.is_empty() {
+    let mut lines = Vec::new();
+    for cluster in attach_scripts(clusters, glyphs, &group_of, &perp, &key) {
         split_cluster(&cluster, glyphs, &group_of, &perp, &start, &mut lines);
     }
     lines
+}
+
+/// Merges each cluster that is a script of another into it.
+///
+/// A cluster is a script of the cluster whose size is larger, that has no
+/// fewer glyphs, and whose baseline is within [`BASELINE_TOLERANCE`] of the
+/// larger size from its own (the nearest such, the lowest first on a tie).
+/// A superscript or a subscript is smaller than its base and is a few glyphs
+/// beside many; a line is neither smaller nor shorter than the large glyph
+/// (the delimiter of a displayed formula) set between it and the next line,
+/// so the lines stay apart and the glyph is a line of its own or the script
+/// of neither. A script of a script goes to the cluster at the end of the
+/// chain.
+///
+/// `clusters` are in the order of group, block and baseline, so those of
+/// one group and block are neighbours and their baselines, the middle
+/// glyph's, increase.
+fn attach_scripts(
+    clusters: Vec<Vec<usize>>,
+    glyphs: &[RawGlyph],
+    group_of: &[usize],
+    perp: &[f64],
+    key: &dyn Fn(usize) -> Option<usize>,
+) -> Vec<Vec<usize>> {
+    let middle = |cluster: &[usize]| cluster[cluster.len() / 2];
+    let size = |index: usize| glyphs[middle(&clusters[index])].size;
+    let level = |index: usize| perp[middle(&clusters[index])];
+    let same = |a: usize, b: usize| {
+        let (a, b) = (middle(&clusters[a]), middle(&clusters[b]));
+        group_of[a] == group_of[b] && key(a) == key(b)
+    };
+    let largest = (0..clusters.len()).map(size).fold(0.0, f64::max);
+    let reach = BASELINE_TOLERANCE * largest;
+
+    let mut target: Vec<Option<usize>> = vec![None; clusters.len()];
+    for script in 0..clusters.len() {
+        let mut best: Option<(f64, usize)> = None;
+        let below = (0..script)
+            .rev()
+            .take_while(|&other| same(script, other) && level(script) - level(other) <= reach);
+        let above = (script + 1..clusters.len())
+            .take_while(|&other| same(script, other) && level(other) - level(script) <= reach);
+        for other in below.chain(above) {
+            let apart = (level(other) - level(script)).abs();
+            let holds = size(other) > size(script)
+                && clusters[other].len() >= clusters[script].len()
+                && apart <= BASELINE_TOLERANCE * size(other);
+            if holds && best.is_none_or(|(nearest, _)| apart < nearest) {
+                best = Some((apart, other));
+            }
+        }
+        target[script] = best.map(|(_, other)| other);
+    }
+
+    let root = |mut index: usize| {
+        while let Some(next) = target[index] {
+            index = next;
+        }
+        index
+    };
+    let mut merged: Vec<Vec<usize>> = vec![Vec::new(); clusters.len()];
+    for (index, cluster) in clusters.iter().enumerate() {
+        merged[root(index)].extend_from_slice(cluster);
+    }
+    merged.retain(|cluster| !cluster.is_empty());
+    merged
 }
 
 /// Cuts a cluster of glyphs on one baseline into lines at the gaps that

@@ -547,3 +547,65 @@ fn a_synthetic_space_is_the_gap_between_its_neighbours() {
         "the space",
     );
 }
+
+/// The text of every line of the page, one string each.
+fn line_texts(page: &TextPage) -> Vec<String> {
+    let mut lines: Vec<String> = page
+        .blocks
+        .iter()
+        .flat_map(|block| block.lines.iter().map(|line| line.text()))
+        .collect();
+    lines.sort();
+    lines
+}
+
+#[test]
+fn a_large_glyph_between_two_lines_does_not_join_them() {
+    // Two lines of 10 point text 13.55 points apart, and a glyph of 28.8
+    // points whose baseline is 6 above the lower one and 7.55 below the
+    // upper, set between two words of both lines: the delimiter of a
+    // displayed formula. Each line's baseline is within half the large
+    // glyph's size (14.4) of its baseline, but the lines are 1.355 ems of
+    // their own text apart, so they stay two lines. A script, which is
+    // smaller and shorter than its base, is the other way round (below).
+    let page = page(
+        "BT /F1 10 Tf 100 700 Td (Alpha beta gamma) Tj ET \
+         BT /F1 10 Tf 100 686.45 Td (Delta kappa omega) Tj ET \
+         BT /F1 28.8 Tf 160 694 Td (\\() Tj ET",
+    );
+    assert_eq!(
+        line_texts(&page),
+        ["(", "Alpha beta gamma", "Delta kappa omega"]
+    );
+}
+
+#[test]
+fn a_symbol_a_third_larger_than_the_text_does_not_join_two_lines_either() {
+    // Text of 10.25 points, lines 13.55 apart, and a symbol of 13.94 points
+    // (1.36 times the text) with its baseline 6.9 below the upper line and
+    // 6.65 above the lower. Half the symbol's size is 6.97, so each line is
+    // within reach of it; half the text's size is 5.125, which neither is.
+    let page = page(
+        "BT /F1 10.25 Tf 100 700 Td (Alpha beta gamma) Tj ET \
+         BT /F1 10.25 Tf 100 686.45 Td (Delta kappa omega) Tj ET \
+         BT /F1 13.94 Tf 130 693.1 Td (\\() Tj ET",
+    );
+    assert_eq!(
+        line_texts(&page),
+        ["(", "Alpha beta gamma", "Delta kappa omega"]
+    );
+}
+
+#[test]
+fn a_superscript_and_a_subscript_stay_on_their_line() {
+    // Text rise (9.3.7) of 4.5 points for a 7 point digit after a 10 point
+    // letter, then -3 points: both within half of the 10 point text's size
+    // of its baseline, though the first is not within half of the script's
+    // own size (3.5), and 7 points is the 0.7 of 10 that TeX sets a script
+    // at.
+    let page = page(
+        "BT /F1 10 Tf 100 700 Td (N) Tj /F1 7 Tf 4.5 Ts (2) Tj \
+         /F1 10 Tf 0 Ts (x) Tj /F1 7 Tf -3 Ts (i) Tj ET",
+    );
+    assert_eq!(line_texts(&page), ["N2xi"]);
+}

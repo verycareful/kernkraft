@@ -167,6 +167,7 @@ mod tests {
                     .map(|text| TextChar {
                         text: (*text).to_owned(),
                         rect: Rect::default(),
+                        quad: [(0.0, 0.0); 4],
                         synthetic: false,
                         source: None,
                     })

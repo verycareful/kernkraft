@@ -164,6 +164,21 @@ pub fn assert_rect(rect: Rect, left: f64, top: f64, right: f64, bottom: f64, wha
     );
 }
 
+/// `quad` is the glyph box whose corners are given in points of a displayed
+/// page `width` by `height` points, measured from its top left corner, in
+/// the order of `TextChar::quad`.
+pub fn assert_quad(
+    quad: [(f64, f64); 4],
+    expected: [(f64, f64); 4],
+    (width, height): (f64, f64),
+    what: &str,
+) {
+    for (corner, ((x, y), (want_x, want_y))) in quad.into_iter().zip(expected).enumerate() {
+        assert_close(x, want_x / width, &format!("{what}: corner {corner} x"));
+        assert_close(y, want_y / height, &format!("{what}: corner {corner} y"));
+    }
+}
+
 pub fn open(fixture: &Fixture) -> Document {
     fixture.open()
 }

@@ -31,12 +31,20 @@ XHTML = (
 
 def ours_file(pages):
     """pages: (width, height, rotate, [(text, left, top, right, bottom)]); a
-    word may add a sixth item, its degrees off the page's axes (default 0)."""
+    word may add a sixth item, its degrees off the page's axes (default 0),
+    and a seventh, the x of its glyphs' leaning sides as ((start bottom,
+    start top), (end bottom, end top)) in fractions (default: upright, the
+    box's own edges)."""
     lines = []
     for number, (width, height, rotate, words) in enumerate(pages, 1):
         lines.append(f"page {number} {width} {height} {rotate}")
-        for text, left, top, right, bottom, *off in words:
-            lines.append(f"{left} {top} {right} {bottom} {off[0] if off else 0} {text}")
+        for text, left, top, right, bottom, *more in words:
+            off = more[0] if more else 0
+            (s_bottom, s_top), (e_bottom, e_top) = (
+                more[1] if len(more) > 1 else ((left, left), (right, right))
+            )
+            sides = f"{s_bottom} {bottom} {s_top} {top} {e_bottom} {bottom} {e_top} {top}"
+            lines.append(f"{left} {top} {right} {bottom} {off} {sides} {text}")
     return "\n".join(lines) + "\n"
 
 
@@ -420,6 +428,80 @@ class CompareBbox(unittest.TestCase):
         report, ok = self.run_compare(ours, theirs)
         self.assertTrue(ok, report)
         self.assertIn("oblique ours 1 theirs 0", report[0])
+
+    # A word of ours whose glyphs lean right by 1.3 points over their 10
+    # point height: 0.0065 of the 200 point page. Its start side runs from
+    # x 20 (bottom) to 21.3 (top), its end side from 58.7 to 60, so its box
+    # is 20..60 and its edges may lie anywhere in 20..21.3 and 58.7..60.
+    LEAN = ((0.1, 0.1065), (0.2935, 0.3))
+
+    def leaning(self, start, end):
+        ours = ours_file(
+            [(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4, 0, self.LEAN)])]
+        )
+        theirs = theirs_file([(200, 100, [("Hello", start, 30, end, 40)])])
+        return self.run_compare(ours, theirs)
+
+    def test_a_leaning_word_may_have_its_edges_on_the_lean(self):
+        report, ok = self.leaning(21.3, 58.7)
+        self.assertTrue(ok, report)
+        self.assertIn("in place 1 displaced 0", report[0])
+
+    def test_the_tolerance_applies_beyond_the_lean(self):
+        # 22.2 is 0.9 from the stretch 20..21.3, and 57.8 is 0.9 from
+        # 58.7..60.
+        self.assertTrue(self.leaning(22.2, 57.8)[1])
+        # 22.4 and 57.6 are 1.1 from them.
+        for start, end in ((22.4, 58.7), (21.3, 57.6)):
+            report, ok = self.leaning(start, end)
+            self.assertFalse(ok, (start, end))
+            self.assertIn("displaced 1", report[0])
+
+    def test_the_same_edges_displace_a_word_that_does_not_lean(self):
+        ours = ours_file([(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file([(200, 100, [("Hello", 21.3, 30, 58.7, 40)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertFalse(ok)
+        self.assertIn("displaced 1", report[0])
+
+    def test_text_that_runs_against_the_axis_leans_at_the_edge_it_is_on(self):
+        # Turned a half: the start side is on the right, and its lean is
+        # at the right edge (58.7..60 as above), the end side's on the left.
+        lean = ((0.2935, 0.3), (0.1, 0.1065))
+        ours = ours_file(
+            [(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4, 0, lean)])]
+        )
+        theirs = theirs_file([(200, 100, [("Hello", 21.3, 30, 58.7, 40)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+
+    def test_a_leaning_word_is_compared_along_a_vertical_text(self):
+        # A page turned 90: text runs down. The word's box is 20..60 down
+        # the 100 by 200 page's height (0.1..0.3 of 200) and its start side
+        # leans 1.3 points along y (bottom y 20, top y 21.3), its x the
+        # same for both ends.
+        lines = [
+            "page 1 100 200 90",
+            "0.1 0.1 0.2 0.3 0 0.1 0.1 0.1 0.1065 0.2 0.2935 0.2 0.3 Hello",
+        ]
+        ours = "\n".join(lines) + "\n"
+        theirs = theirs_file([(100, 200, [("Hello", 10, 21.3, 20, 58.7)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+
+    def test_a_split_word_keeps_the_lean_of_its_outermost_part(self):
+        # Theirs is Hello as "Hel" and "lo"; ours is one word that leans
+        # at both edges. The two halves make a box that is in place with it
+        # when its edges lie on the lean.
+        ours = ours_file(
+            [(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4, 0, self.LEAN)])]
+        )
+        theirs = theirs_file(
+            [(200, 100, [("Hel", 21.3, 30, 40, 40), ("lo", 40, 30, 58.7, 40)])]
+        )
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("split 1", report[0])
 
 
 if __name__ == "__main__":

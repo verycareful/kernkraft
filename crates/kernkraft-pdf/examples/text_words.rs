@@ -15,11 +15,17 @@
 //! and under it one line for each word of the page's text layer in reading
 //! order:
 //!
-//!     LEFT TOP RIGHT BOTTOM OFF WORD
+//!     LEFT TOP RIGHT BOTTOM OFF S0X S0Y S3X S3Y E1X E1Y E2X E2Y WORD
 //!
 //! The first four numbers are fractions of the displayed page's width and
 //! height (`TOP` and `BOTTOM` grow downwards), the rectangle of
-//! [`kernkraft_pdf::Rect`]. `OFF` is how far, in degrees from 0 to 45, the
+//! [`kernkraft_pdf::Rect`]. The eight after `OFF` are four `x y` pairs of
+//! the same fractions: the start side of the word's first drawn glyph (its quad's
+//! corner 0, bottom left, and corner 3, top left) and the end side of its
+//! last (corner 1, bottom right, and corner 2, top right), see
+//! [`kernkraft_pdf::text::TextChar::quad`]. Upright glyphs have a side
+//! on one line of the page; a skewed glyph has a side that leans, and the
+//! box of the word reaches to the farther end of it. `OFF` is how far, in degrees from 0 to 45, the
 //! word's text lies off the nearest axis of the page (0 for a horizontal or
 //! vertical word and for a word of one character), measured from the first
 //! character's centre to the last one's, when the word has three characters
@@ -34,7 +40,7 @@ use std::process::ExitCode;
 use kernkraft_fs::NoProgress;
 use kernkraft_pdf::doc::{Document, OpenOptions};
 use kernkraft_pdf::file::ReadLimits;
-use kernkraft_pdf::text::{TextExtractor, TextLine};
+use kernkraft_pdf::text::{TextChar, TextExtractor, TextLine};
 use kernkraft_pdf::{PdfError, Rect};
 
 /// A quarter turn, the angle between two axes of a page.
@@ -103,46 +109,78 @@ fn off_axis_degrees(rects: &[Rect], width: f64, height: f64) -> f64 {
     turn.min(QUARTER_TURN_DEGREES - turn)
 }
 
+/// A word of the text layer.
+struct Word {
+    /// The rectangle that holds its characters.
+    rect: Rect,
+    /// How far its text lies off the page's axes, in degrees.
+    off: f64,
+    /// The corners of the start side of its first drawn glyph (bottom left,
+    /// top left) and of the end side of its last (bottom right, top
+    /// right), as fractions of the page.
+    sides: [(f64, f64); 4],
+    text: String,
+}
+
 /// The words of one line: its characters between those that are white
-/// space, each with the rectangle that holds its characters and how far
-/// its text lies off the page's axes.
-fn words(line: &TextLine, width: f64, height: f64) -> Vec<(Rect, f64, String)> {
+/// space.
+fn words(line: &TextLine, width: f64, height: f64) -> Vec<Word> {
     let mut words = Vec::new();
     let mut text = String::new();
-    let mut rects = Vec::new();
+    let mut chars: Vec<&TextChar> = Vec::new();
     for ch in &line.chars {
         if ch.text.chars().all(char::is_whitespace) {
-            push_word(&mut words, &mut text, &mut rects, width, height);
+            push_word(&mut words, &mut text, &mut chars, width, height);
         } else {
             text.push_str(&ch.text);
-            rects.push(ch.rect);
+            chars.push(ch);
         }
     }
-    push_word(&mut words, &mut text, &mut rects, width, height);
+    push_word(&mut words, &mut text, &mut chars, width, height);
     words
 }
 
 fn push_word(
-    words: &mut Vec<(Rect, f64, String)>,
+    words: &mut Vec<Word>,
     text: &mut String,
-    rects: &mut Vec<Rect>,
+    chars: &mut Vec<&TextChar>,
     width: f64,
     height: f64,
 ) {
     // A character with no width (a zero-width space, a joiner) has no place
-    // along the text, so it does not give the word's direction.
-    let drawn: Vec<Rect> = rects.iter().copied().filter(|r| r.right > r.left).collect();
-    let off = off_axis_degrees(&drawn, width, height);
+    // along the text, so it does not give the word's direction or its
+    // sides.
+    let drawn: Vec<&TextChar> = chars
+        .iter()
+        .copied()
+        .filter(|ch| ch.rect.right > ch.rect.left)
+        .collect();
+    let rects: Vec<Rect> = drawn.iter().map(|ch| ch.rect).collect();
+    let off = off_axis_degrees(&rects, width, height);
     let around = Rect::around(
-        rects
+        chars
             .iter()
-            .flat_map(|r| [(r.left, r.top), (r.right, r.bottom)]),
+            .flat_map(|ch| [(ch.rect.left, ch.rect.top), (ch.rect.right, ch.rect.bottom)]),
     );
     if let Some(rect) = around {
-        words.push((rect, off, std::mem::take(text)));
+        let sides = match (drawn.first(), drawn.last()) {
+            (Some(first), Some(last)) => [first.quad[0], first.quad[3], last.quad[1], last.quad[2]],
+            _ => [
+                (rect.left, rect.bottom),
+                (rect.left, rect.top),
+                (rect.right, rect.bottom),
+                (rect.right, rect.top),
+            ],
+        };
+        words.push(Word {
+            rect,
+            off,
+            sides,
+            text: std::mem::take(text),
+        });
     }
     text.clear();
-    rects.clear();
+    chars.clear();
 }
 
 fn run(path: &str) -> Result<(), PdfError> {
@@ -158,10 +196,22 @@ fn run(path: &str) -> Result<(), PdfError> {
         let page = extractor.page(number, &NoProgress)?;
         for block in &page.blocks {
             for line in &block.lines {
-                for (rect, off, word) in words(line, geometry.width, geometry.height) {
+                for word in words(line, geometry.width, geometry.height) {
+                    let Word {
+                        rect,
+                        off,
+                        sides,
+                        text,
+                    } = word;
+                    let sides: Vec<String> =
+                        sides.iter().map(|(x, y)| format!("{x} {y}")).collect();
                     println!(
-                        "{} {} {} {} {off:.1} {word}",
-                        rect.left, rect.top, rect.right, rect.bottom
+                        "{} {} {} {} {off:.1} {} {text}",
+                        rect.left,
+                        rect.top,
+                        rect.right,
+                        rect.bottom,
+                        sides.join(" ")
                     );
                 }
             }

@@ -526,15 +526,16 @@ fn build_line(glyphs: &[RawGlyph], line: &Line, view: &PageView) -> TextLine {
     for &(glyph, spaced) in &line.glyphs {
         let glyph = &glyphs[glyph];
         if let (true, Some(before)) = (spaced, previous) {
-            let gap = view.rect_of([
+            let gap = [
                 before.corners[1],
-                before.corners[2],
                 glyph.corners[0],
                 glyph.corners[3],
-            ]);
+                before.corners[2],
+            ];
             chars.push(TextChar {
                 text: " ".to_owned(),
-                rect: gap.unwrap_or_default(),
+                rect: view.rect_of(gap).unwrap_or_default(),
+                quad: gap.map(|(x, y)| view.fraction(x, y)),
                 synthetic: true,
                 source: None,
             });
@@ -542,6 +543,7 @@ fn build_line(glyphs: &[RawGlyph], line: &Line, view: &PageView) -> TextLine {
         chars.push(TextChar {
             text: glyph.text.clone(),
             rect: view.rect_of(glyph.corners).unwrap_or_default(),
+            quad: glyph.corners.map(|(x, y)| view.fraction(x, y)),
             synthetic: false,
             source: Some(glyph.source),
         });

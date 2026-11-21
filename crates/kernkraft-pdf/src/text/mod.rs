@@ -74,8 +74,18 @@ pub struct TextChar {
     /// Its Unicode text: one character, or more for a ligature the font
     /// maps to several.
     pub text: String,
-    /// The box the glyph covers.
+    /// The box the glyph covers: the smallest upright rectangle that holds
+    /// [`quad`](Self::quad).
     pub rect: Rect,
+    /// The glyph's own box as it stands on the displayed page, as fractions
+    /// of the page's width and height with `y` growing downwards, like
+    /// [`rect`](Self::rect): bottom left, bottom right, top right and top
+    /// left of the glyph, "bottom" and "left" being the glyph's own. A
+    /// glyph drawn upright has the corners of `rect`; one drawn under a
+    /// text matrix that skews or turns it is a parallelogram that `rect`
+    /// only envelops. For a synthetic space it is the gap between the
+    /// neighbouring glyphs, its corners in the same order.
+    pub quad: [(f64, f64); 4],
     /// Whether the character is a space the layout read between two
     /// glyphs that no space glyph separates, so that it covers no glyph.
     pub synthetic: bool,

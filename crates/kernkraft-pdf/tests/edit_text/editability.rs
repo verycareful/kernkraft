@@ -145,6 +145,7 @@ fn a_block_of_only_synthetic_spaces_has_no_glyphs() {
     let space = TextChar {
         text: " ".to_owned(),
         rect: Rect::default(),
+        quad: [(0.0, 0.0); 4],
         synthetic: true,
         source: None,
     };

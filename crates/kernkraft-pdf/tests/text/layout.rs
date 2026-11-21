@@ -75,6 +75,21 @@ fn a_page_turned_a_quarter_flows_down_the_displayed_page() {
     assert_close(first.rect.bottom, 106.0 / 612.0, "bottom");
     let last = &page.blocks[0].lines[0].chars[4];
     assert_close(last.rect.top, 124.0 / 612.0, "last top");
+    // The glyph's own bottom left is its user space (100, 698), which is
+    // displayed at (698, 100); its bottom right (106, 698) at (698, 106),
+    // its top right (106, 708) at (708, 106) and its top left (100, 708)
+    // at (708, 100).
+    assert_quad(
+        first.quad,
+        [
+            (698.0, 100.0),
+            (698.0, 106.0),
+            (708.0, 106.0),
+            (708.0, 100.0),
+        ],
+        (792.0, 612.0),
+        "glyph on a turned page",
+    );
 }
 
 #[test]
@@ -444,4 +459,91 @@ fn a_synthetic_space_has_no_source() {
         .find(|ch| ch.synthetic)
         .expect("a space between the words");
     assert!(space.source.is_none());
+}
+
+const PAGE: (f64, f64) = (PAGE_WIDTH, PAGE_HEIGHT);
+
+#[test]
+fn an_upright_glyph_is_its_own_quad() {
+    // The first glyph of Hello: x 100 to 106, y 84 to 94 as in HELLO's
+    // comment, its corners bottom left, bottom right, top right, top left.
+    let page = page(HELLO);
+    let first = &page.blocks[0].lines[0].chars[0];
+    assert_quad(
+        first.quad,
+        [(100.0, 94.0), (106.0, 94.0), (106.0, 84.0), (100.0, 84.0)],
+        PAGE,
+        "upright glyph",
+    );
+}
+
+#[test]
+fn a_skewed_glyph_is_a_parallelogram_and_its_rect_the_envelope() {
+    // Tm [1 0 0.5 1 100 700] takes the point (x, y) of text space to
+    // (x + 0.5 y + 100, y + 700). The glyph's box is 0.6 em wide, from 0.2
+    // em below the baseline to 0.8 em above, at 10 points: its corners in
+    // text space are (0, -2), (6, -2), (6, 8) and (0, 8), so in user space
+    // (99, 698), (105, 698), (110, 708) and (104, 708), displayed
+    // with y = 792 - y.
+    let page = page("BT /F1 10 Tf 1 0 0.5 1 100 700 Tm (H) Tj ET");
+    let glyph = &page.blocks[0].lines[0].chars[0];
+    assert_quad(
+        glyph.quad,
+        [(99.0, 94.0), (105.0, 94.0), (110.0, 84.0), (104.0, 84.0)],
+        PAGE,
+        "skewed glyph",
+    );
+    assert_rect(glyph.rect, 99.0, 84.0, 110.0, 94.0, "skewed glyph's rect");
+}
+
+#[test]
+fn a_turned_glyph_is_a_quad_with_its_own_bottom_and_left() {
+    // Tm [0 1 -1 0 100 100] turns the text a quarter counter-clockwise: the
+    // point (x, y) of text space is at (100 - y, x + 100). The corners
+    // (0, -2), (6, -2), (6, 8) and (0, 8) are at (102, 100), (102, 106),
+    // (92, 106) and (92, 100) in user space, displayed with y = 792 - y.
+    let page = page("BT /F1 10 Tf 0 1 -1 0 100 100 Tm (H) Tj ET");
+    let glyph = &page.blocks[0].lines[0].chars[0];
+    assert_quad(
+        glyph.quad,
+        [(102.0, 692.0), (102.0, 686.0), (92.0, 686.0), (92.0, 692.0)],
+        PAGE,
+        "turned glyph",
+    );
+    assert_rect(glyph.rect, 92.0, 686.0, 102.0, 692.0, "turned glyph's rect");
+}
+
+#[test]
+fn the_rect_of_every_character_is_the_envelope_of_its_quad() {
+    let page = page(
+        "BT /F1 10 Tf 1 0 0.5 1 100 700 Tm (Hello) Tj 34 0 Td (World) Tj ET \
+         BT /F1 10 Tf 0.70710678 0.70710678 -0.70710678 0.70710678 300 300 Tm (Turned) Tj ET",
+    );
+    let mut seen = 0;
+    for block in &page.blocks {
+        for line in &block.lines {
+            for ch in &line.chars {
+                let envelope = Rect::around(ch.quad).expect("four corners");
+                assert_eq!(ch.rect, envelope, "{:?}", ch.text);
+                seen += 1;
+            }
+        }
+    }
+    assert!(seen >= 16, "{seen} characters");
+}
+
+#[test]
+fn a_synthetic_space_is_the_gap_between_its_neighbours() {
+    // The gap of the test above: from the end of Hello at x 130 to the
+    // start of World at x 134, bottom left and bottom right first, then
+    // top right and top left.
+    let page = page("BT /F1 10 Tf 100 700 Td (Hello) Tj 34 0 Td (World) Tj ET");
+    let space = &page.blocks[0].lines[0].chars[5];
+    assert!(space.synthetic);
+    assert_quad(
+        space.quad,
+        [(130.0, 94.0), (134.0, 94.0), (134.0, 84.0), (130.0, 84.0)],
+        PAGE,
+        "the space",
+    );
 }

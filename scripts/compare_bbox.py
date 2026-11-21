@@ -7,9 +7,12 @@
     compare_bbox.py OURS THEIRS
 
 OURS is the output of examples/text_words.rs: `page N WIDTH HEIGHT ROTATE`
-lines, each followed by `LEFT TOP RIGHT BOTTOM OFF WORD` lines whose first
-four numbers are fractions of the displayed page and whose OFF is how many
-degrees the word's text lies off the nearest axis of the page. THEIRS is the output of
+lines, each followed by `LEFT TOP RIGHT BOTTOM OFF S0X S0Y S3X S3Y E1X E1Y
+E2X E2Y WORD` lines whose numbers are fractions of the displayed page except
+OFF, which is how many degrees the word's text lies off the nearest axis of
+the page. The eight after OFF are the corners of the word's start side (the
+first glyph's bottom left and top left) and end side (the last glyph's
+bottom right and top right). THEIRS is the output of
 `pdftotext -bbox -cropbox`, in points on the displayed page (the box this
 library displays). The fractions are multiplied by the page size OURS gives,
 so both sides are compared in points; the size poppler prints in its page
@@ -25,6 +28,14 @@ axis on a page turned 90 or 270 degrees. A pair is in place when its edges
 along the text are within EDGE_TOLERANCE_PT and its centres across the text
 are within CENTRE_TOLERANCE of the thicker of the two boxes (the height of a
 horizontal word, the width of a vertical one); otherwise it is displaced.
+The edge of a word of ours that its glyphs lean over (text drawn under a
+skewing text matrix: the two ends of a glyph's side lie at different places
+along the text) is the stretch between the two ends of that side, from the
+edge of its box to the edge less the lean; the edge of a word of theirs is
+one place. Two edges are within the tolerance when the stretch of one is no
+further than that from the other. An upright glyph's side lies at one place
+along the text, so for a word of upright glyphs this is the plain
+comparison of two edges.
 Text turned inside an unturned page is outside this comparison and is
 reported as displaced.
 A word with no partner of its text goes through three more steps before it
@@ -102,6 +113,10 @@ SIZE_TOLERANCE_PT = 0.01
 
 SHOWN = 5
 
+# The fields of a word line of OURS: four edges, OFF, the eight numbers of the
+# start and end sides, and the text.
+WORD_FIELDS = 14
+
 
 def normalise(text):
     folded = unicodedata.normalize("NFKC", INVALID_XML.sub("", text))
@@ -109,13 +124,29 @@ def normalise(text):
 
 
 class Word:
-    def __init__(self, text, left, top, right, bottom, off=0.0):
+    def __init__(self, text, left, top, right, bottom, off=0.0, sides=None, vertical=False):
+        """`sides` are the corners, in points, of the start side and the end
+        side of the word's glyphs (see read_ours); `vertical` says along
+        which axis the text runs. The word's lean at its two edges along the
+        text is how far the ends of the side at each edge lie apart along it."""
         self.text = normalise(text)
         self.off = off
         self.left = left
         self.right = right
         self.top = top
         self.bottom = bottom
+        self.lean_start = 0.0
+        self.lean_end = 0.0
+        if sides is not None:
+            axis = 1 if vertical else 0
+            first = abs(sides[0][axis] - sides[1][axis])
+            last = abs(sides[2][axis] - sides[3][axis])
+            first_at = (sides[0][axis] + sides[1][axis]) / 2
+            last_at = (sides[2][axis] + sides[3][axis]) / 2
+            if first_at <= last_at:
+                self.lean_start, self.lean_end = first, last
+            else:
+                self.lean_start, self.lean_end = last, first
 
     @property
     def centre(self):
@@ -138,8 +169,8 @@ class Word:
 
 def read_ours(path):
     """The pages of OURS: each a (width, height, rotate, words), a word being
-    (text, left, top, right, bottom, off) in fractions of the page, and off
-    in degrees."""
+    (text, left, top, right, bottom, off, sides) in fractions of the page, off
+    in degrees and sides four (x, y) pairs, also in fractions."""
     pages = []
     with open(path, encoding="utf-8") as f:
         for number, line in enumerate(f, 1):
@@ -155,14 +186,18 @@ def read_ours(path):
                 continue
             if not pages:
                 raise SystemExit(f"{path}:{number}: a word before the first page")
-            fields = line.split(" ", 5)
-            if len(fields) != 6:
+            fields = line.split(" ", WORD_FIELDS - 1)
+            if len(fields) != WORD_FIELDS:
                 raise SystemExit(f"{path}:{number}: not a word line: {line!r}")
             try:
                 left, top, right, bottom, off = (float(x) for x in fields[:5])
+                n = [float(x) for x in fields[5 : WORD_FIELDS - 1]]
             except ValueError:
                 raise SystemExit(f"{path}:{number}: not a word line: {line!r}")
-            pages[-1][3].append((fields[5], left, top, right, bottom, off))
+            sides = [(n[0], n[1]), (n[2], n[3]), (n[4], n[5]), (n[6], n[7])]
+            pages[-1][3].append(
+                (fields[WORD_FIELDS - 1], left, top, right, bottom, off, sides)
+            )
     return pages
 
 
@@ -211,13 +246,28 @@ def thickness(word, vertical):
     return word.width if vertical else word.height
 
 
+def edge_spans(word, vertical):
+    """The stretches a word's two edges along the text may lie in, (start,
+    end), each a (least, greatest): the edge of its box, and the edge less
+    (start: plus) its lean. A word whose glyphs do not lean has two places."""
+    start, end, _ = along_across(word, vertical)
+    return (start, start + word.lean_start), (end - word.lean_end, end)
+
+
+def span_gap(a, b):
+    """How far apart the stretches `a` and `b` are; 0 when they meet."""
+    return max(0.0, a[0] - b[1], b[0] - a[1])
+
+
 def in_place(ours, theirs, vertical):
-    o_start, o_end, o_across = along_across(ours, vertical)
-    t_start, t_end, t_across = along_across(theirs, vertical)
+    o_start, o_end = edge_spans(ours, vertical)
+    t_start, t_end = edge_spans(theirs, vertical)
+    _, _, o_across = along_across(ours, vertical)
+    _, _, t_across = along_across(theirs, vertical)
     thick = max(thickness(ours, vertical), thickness(theirs, vertical))
     return (
-        abs(o_start - t_start) <= EDGE_TOLERANCE_PT
-        and abs(o_end - t_end) <= EDGE_TOLERANCE_PT
+        span_gap(o_start, t_start) <= EDGE_TOLERANCE_PT
+        and span_gap(o_end, t_end) <= EDGE_TOLERANCE_PT
         and abs(o_across - t_across) <= CENTRE_TOLERANCE * thick
     )
 
@@ -254,15 +304,21 @@ def pair(ours, theirs, vertical, only_in_place):
     return pairs, only_ours, only_theirs
 
 
-def union(words, text):
-    """The word `text` whose box is the smallest one holding `words`."""
-    return Word(
+def union(words, text, vertical):
+    """The word `text` whose box is the smallest one holding `words`. It
+    leans as the word that reaches furthest does at each edge."""
+    joined = Word(
         text,
         min(w.left for w in words),
         min(w.top for w in words),
         max(w.right for w in words),
         max(w.bottom for w in words),
     )
+    starts = [(along_across(w, vertical)[0], -w.lean_start, w) for w in words]
+    ends = [(-along_across(w, vertical)[1], -w.lean_end, w) for w in words]
+    joined.lean_start = min(starts, key=lambda item: item[:2])[2].lean_start
+    joined.lean_end = min(ends, key=lambda item: item[:2])[2].lean_end
+    return joined
 
 
 def across_extent(word, vertical):
@@ -316,7 +372,7 @@ def split_pairs(whole, parts, vertical):
             if run is None:
                 continue
             spelt = "".join(parts[j].text for j in run)
-            if in_place(union([parts[j] for j in run], spelt), word, vertical):
+            if in_place(union([parts[j] for j in run], spelt, vertical), word, vertical):
                 pairs.append((word, [parts[j] for j in run]))
                 used_whole.add(i)
                 used_parts.update(run)
@@ -358,8 +414,17 @@ def compare_page(number, ours_page, their_page):
     their_width, their_height, theirs = their_page
     vertical = vertical_text(rotate)
     words = [
-        Word(text, left * width, top * height, right * width, bottom * height, off)
-        for text, left, top, right, bottom, off in ours
+        Word(
+            text,
+            left * width,
+            top * height,
+            right * width,
+            bottom * height,
+            off,
+            [(x * width, y * height) for x, y in sides],
+            vertical,
+        )
+        for text, left, top, right, bottom, off, sides in ours
     ]
     oblique = [w for w in words if w.off > OBLIQUE_DEGREES]
     straight = [w for w in words if w.off <= OBLIQUE_DEGREES]

@@ -108,6 +108,13 @@ jobs:
   # only testdata/, which holds the files we may redistribute: the PDFs that
   # poppler and qpdf open without a password are the inputs, and the rest are
   # skipped by the scripts themselves. A script that checks nothing fails.
+  #
+  # On a hosted runner the job takes about two and a half minutes: installing
+  # the readers 40 s, the toolchain 8 s, the first script 75 s (it builds the
+  # examples, which the others reuse), the Android bridge 11 s, and each of
+  # the other scripts 2 s or less. A step's limit of 10 minutes is four times
+  # the whole job, and the job's 60 minutes leaves room for a runner that is
+  # many times slower.
   oracles:
     runs-on: ubuntu-latest
     timeout-minutes: 60

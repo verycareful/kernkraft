@@ -153,6 +153,7 @@ fn an_append_never_replaces_a_file_that_is_there() {
     let answer = append(&engine, handle, sample_length(), &out);
 
     assert_eq!(failure_kind(&answer), "Exists");
+    assert_eq!(common::parse(&answer)["path"], out.to_str().unwrap());
     assert_eq!(fs::read(&out).unwrap(), b"the user's file");
 }
 

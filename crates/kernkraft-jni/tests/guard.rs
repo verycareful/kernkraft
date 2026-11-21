@@ -9,7 +9,9 @@ mod common;
 
 use common::parse;
 use kernkraft_jni::guard::respond;
-use kernkraft_pdf_engine::{field, WireError};
+use std::path::PathBuf;
+
+use kernkraft_pdf_engine::{field, WireDetails, WireError};
 use serde_json::{json, Value};
 
 #[test]
@@ -29,6 +31,36 @@ fn a_failure_carries_kind_and_message() {
         answer,
         json!({ "ok": false, "kind": "PageOutOfRange", "message": "page 9 of 3" })
     );
+}
+
+#[test]
+fn a_failure_with_a_path_and_details_carries_them() {
+    let mut error = WireError::new("XattrsNotKept", "not kept");
+    error.path = Some(PathBuf::from("/data/user/0/doc.pdf"));
+    error.details = Some(WireDetails::XattrsNotKept {
+        names: vec!["user.a".to_owned(), "user.b".to_owned()],
+    });
+
+    let answer = parse(&respond(|| Err(error)));
+
+    assert_eq!(
+        answer,
+        json!({
+            "ok": false,
+            "kind": "XattrsNotKept",
+            "message": "not kept",
+            "path": "/data/user/0/doc.pdf",
+            "details": { "k": "XattrsNotKept", "names": ["user.a", "user.b"] },
+        })
+    );
+}
+
+#[test]
+fn a_failure_without_a_path_has_no_path_key() {
+    let answer = parse(&respond(|| Err(WireError::bad_request("x"))));
+
+    assert!(answer.get("path").is_none());
+    assert!(answer.get("details").is_none());
 }
 
 #[test]

@@ -10,7 +10,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 /// Runs `body` and turns its result into the answer string: its fields with
-/// `"ok":true`, or `{"ok":false,"kind":...,"message":...}`. A panic in
+/// `"ok":true`, or `{"ok":false,"kind":...,"message":...}` with the error's
+/// `path` and `details` when it has them. A panic in
 /// `body` is a `Panic` failure, never an unwind across the JNI boundary
 /// (which would abort the application).
 pub fn respond(body: impl FnOnce() -> Result<Fields, WireError>) -> String {
@@ -23,13 +24,26 @@ pub fn respond(body: impl FnOnce() -> Result<Fields, WireError>) -> String {
             fields.insert("ok".to_owned(), Value::Bool(true));
             Value::Object(fields).to_string()
         }
-        Err(error) => json!({
-            "ok": false,
-            "kind": error.kind,
-            "message": error.message,
-        })
-        .to_string(),
+        Err(error) => failure(&error).to_string(),
     }
+}
+
+/// `{"ok":false,"kind","message"}` and, when the error has them, `"path"`
+/// (a string: the paths of a request are Java strings, so valid UTF-8) and
+/// `"details"` (`{"k":...}`, as the engine's `WireDetails` serialises).
+fn failure(error: &WireError) -> Value {
+    let mut answer = json!({
+        "ok": false,
+        "kind": error.kind,
+        "message": error.message,
+    });
+    if let Some(path) = &error.path {
+        answer["path"] = json!(path.to_string_lossy());
+    }
+    if let Some(details) = &error.details {
+        answer["details"] = json!(details);
+    }
+    answer
 }
 
 /// Parses `request` as the JSON object `R` and runs `body` on it, inside

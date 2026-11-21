@@ -11,9 +11,17 @@
 //! own failures are `BadRequest`, `UnknownHandle`, `SessionPoisoned`,
 //! `StaleBlock`, `BufferTooSmall` and `RandomUnavailable`; an adapter adds
 //! its own (`Panic` in `kernkraft-jni`).
+//!
+//! An error that forwards a filesystem error also keeps what that error
+//! knows beyond its message: the `path` it is about (an
+//! `ExternalModification` names the file that changed under the session)
+//! and, for the one variant a save can raise that carries a list, its
+//! `details`.
 
 use std::fmt::Debug;
+use std::path::PathBuf;
 
+use kernkraft_fs::FsError;
 use kernkraft_pdf::PdfError;
 use serde::Serialize;
 
@@ -22,6 +30,20 @@ use serde::Serialize;
 pub struct WireError {
     pub kind: String,
     pub message: String,
+    /// The path the failure is about, when the variant names one.
+    pub path: Option<PathBuf>,
+    /// The structured parts of the variants that have any.
+    pub details: Option<WireDetails>,
+}
+
+/// What a filesystem error carries beyond its path. JSON:
+/// `{"k":"XattrsNotKept","names":[...]}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "k")]
+pub enum WireDetails {
+    /// [`FsError::XattrsNotKept`]: the attribute names a save could not
+    /// carry over to the new file.
+    XattrsNotKept { names: Vec<String> },
 }
 
 impl WireError {
@@ -29,6 +51,8 @@ impl WireError {
         Self {
             kind: kind.to_owned(),
             message: message.into(),
+            path: None,
+            details: None,
         }
     }
 
@@ -76,19 +100,58 @@ impl WireError {
 
 impl From<&PdfError> for WireError {
     fn from(error: &PdfError) -> Self {
-        Self {
-            kind: kind_of(error),
-            message: error.to_string(),
+        let mut wire = Self::new(&kind_of(error), error.to_string());
+        if let PdfError::Fs(inner) = error {
+            wire.path = fs_path(inner);
+            wire.details = fs_details(inner);
         }
+        wire
     }
 }
 
 impl From<&kernkraft_font::FontError> for WireError {
     fn from(error: &kernkraft_font::FontError) -> Self {
-        Self {
-            kind: variant_name(error),
-            message: error.to_string(),
-        }
+        Self::new(&variant_name(error), error.to_string())
+    }
+}
+
+/// The path `error` is about; none for a variant that is about no single
+/// path (an undo that stopped partway, a name, a cancel). Same as the
+/// application adapters report for the same variants. The match has no
+/// catch-all arm, so a variant added to `FsError` stops this crate compiling
+/// until it is placed.
+fn fs_path(error: &FsError) -> Option<PathBuf> {
+    match error {
+        FsError::Io { path, .. }
+        | FsError::ExternalModification { path }
+        | FsError::Exists { path }
+        | FsError::NotFound { path }
+        | FsError::UnsafeCacheDir { path }
+        | FsError::OwnershipNotKept { path }
+        | FsError::XattrsNotKept { path, .. }
+        | FsError::MountIdUnavailable { path }
+        | FsError::MountPoint { path }
+        | FsError::Changed { path, .. }
+        | FsError::TrashUnavailable { path }
+        | FsError::BadTrashInfo { path } => Some(path.clone()),
+        FsError::IntoItself { src } => Some(src.clone()),
+        FsError::SourceNotRemoved { left, .. } => Some(left.clone()),
+        FsError::InvalidName { .. }
+        | FsError::Cancelled
+        | FsError::Irreversible { .. }
+        | FsError::Partial { .. }
+        | FsError::NothingToUndo
+        | FsError::NothingToRedo => None,
+    }
+}
+
+/// The details `error` carries beyond its path.
+fn fs_details(error: &FsError) -> Option<WireDetails> {
+    match error {
+        FsError::XattrsNotKept { names, .. } => Some(WireDetails::XattrsNotKept {
+            names: names.clone(),
+        }),
+        _ => None,
     }
 }
 

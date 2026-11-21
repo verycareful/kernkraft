@@ -288,10 +288,14 @@ impl From<&FsError> for WireError {
 }
 
 impl From<kernkraft_pdf_engine::WireError> for WireError {
-    /// The engine names the error variant and gives its message; it has no
-    /// path or details to carry.
+    /// The engine names the error variant, gives its message and, for an
+    /// error that forwards a filesystem error, its path and details.
     fn from(e: kernkraft_pdf_engine::WireError) -> WireError {
-        WireError::new(&e.kind, e.message, None)
+        let mut wire = WireError::new(&e.kind, e.message, e.path.as_deref());
+        if let Some(kernkraft_pdf_engine::WireDetails::XattrsNotKept { names }) = e.details {
+            wire = wire.with_details(WireDetails::XattrsNotKept { names });
+        }
+        wire
     }
 }
 

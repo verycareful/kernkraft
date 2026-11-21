@@ -6,7 +6,8 @@
 //!
 //! Every operation takes one JSON request string and answers one JSON
 //! string: the answer's fields with `"ok":true`, or `{"ok":false,"kind":
-//! ...,"message":...}` (see [`guard`]). The pixels of a render are the one
+//! ...,"message":...}`, with `"path"` and `"details"` when the failure has
+//! them (see [`guard`]). The pixels of a render are the one
 //! thing that does not travel as JSON. A panic in any operation is caught
 //! and answered as a `Panic` failure.
 //!

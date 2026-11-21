@@ -128,6 +128,7 @@ fn a_file_changed_since_it_was_opened_is_not_replaced() {
         .unwrap_err();
 
     assert_eq!(refused.kind, "ExternalModification");
+    assert_eq!(refused.path, Some(w(&path)));
     assert_eq!(fs::read(&path).unwrap(), changed);
 }
 

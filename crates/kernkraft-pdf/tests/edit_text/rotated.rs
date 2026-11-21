@@ -74,6 +74,14 @@ const QUARTER_TURN: &str = "BT /F1 10 Tf 0 1 -1 0 100 700 Tm (Hello) Tj ET";
 const SHEARED_X: &str = "BT /F1 10 Tf 1 0 0.5 1 100 700 Tm (Hello) Tj ET";
 const SHEARED_Y: &str = "BT /F1 10 Tf 1 0.5 0 1 100 700 Tm (Hello) Tj ET";
 const TURNED_BY_CM: &str = "q 0 1 -1 0 0 0 cm BT /F1 10 Tf 700 -100 Td (Hello) Tj ET Q";
+/// Mirrored top to bottom: text space (x, y) is at (x + 100, 700 - y).
+const MIRRORED_Y: &str = "BT /F1 10 Tf 1 0 0 -1 100 700 Tm (Hello) Tj ET";
+/// Mirrored left to right: text space (x, y) is at (200 - x, y + 700), so
+/// the baseline runs to the left from x = 200.
+const MIRRORED_X: &str = "BT /F1 10 Tf -1 0 0 1 200 700 Tm (Hello) Tj ET";
+/// Mirrored by `cm` about the line y = 700: user space (x, y) is at
+/// (x, 1400 - y).
+const MIRRORED_BY_CM: &str = "q 1 0 0 -1 0 1400 cm BT /F1 10 Tf 100 700 Td (Hello) Tj ET Q";
 
 #[test]
 fn a_quarter_turn_is_wrapped_by_the_length_along_the_baseline() {
@@ -116,8 +124,47 @@ fn a_turn_by_cm_is_wrapped_by_the_length_along_the_baseline() {
 }
 
 #[test]
+fn a_mirror_top_to_bottom_is_wrapped_by_the_length_along_the_baseline() {
+    // The baseline is unchanged in direction, so Hello is 30 points wide and
+    // "ab cd" fits it. The next line is at text space (0, -10):
+    // (100, 700 + 10).
+    assert_eq!(edited(MIRRORED_Y, "ab cd").1, 1);
+    let (content, lines) = edited(MIRRORED_Y, "ab cde");
+    assert_eq!(lines, 2);
+    assert!(content.ends_with("1 0 0 -1 100 700 Tm (ab) Tj 1 0 0 -1 100 710 Tm (cde) Tj ET Q"));
+}
+
+#[test]
+fn a_mirror_left_to_right_is_wrapped_by_the_length_along_the_baseline() {
+    // The baseline runs to the left; the width is the same 30 points. The
+    // next line is at text space (0, -10): (200 - 0, -10 + 700).
+    assert_eq!(edited(MIRRORED_X, "ab cd").1, 1);
+    let (content, lines) = edited(MIRRORED_X, "ab cde");
+    assert_eq!(lines, 2);
+    assert!(content.ends_with("-1 0 0 1 200 700 Tm (ab) Tj -1 0 0 1 200 690 Tm (cde) Tj ET Q"));
+}
+
+#[test]
+fn a_mirror_by_cm_is_wrapped_by_the_length_along_the_baseline() {
+    // The new text is inside the same q, so its Tm is the block's in the
+    // mirrored space: the next line is 10 below it in that space.
+    assert_eq!(edited(MIRRORED_BY_CM, "ab cd").1, 1);
+    let (content, lines) = edited(MIRRORED_BY_CM, "ab cde");
+    assert_eq!(lines, 2);
+    assert!(content.ends_with("1 0 0 1 100 700 Tm (ab) Tj 1 0 0 1 100 690 Tm (cde) Tj ET Q Q"));
+}
+
+#[test]
 fn replaced_text_is_where_the_block_was() {
-    for page in [QUARTER_TURN, SHEARED_X, SHEARED_Y, TURNED_BY_CM] {
+    for page in [
+        QUARTER_TURN,
+        SHEARED_X,
+        SHEARED_Y,
+        TURNED_BY_CM,
+        MIRRORED_Y,
+        MIRRORED_X,
+        MIRRORED_BY_CM,
+    ] {
         howdy_is_where_hello_was(page);
     }
 }
@@ -126,7 +173,15 @@ fn replaced_text_is_where_the_block_was() {
 fn deleting_does_not_depend_on_the_matrix() {
     // A removed 5-glyph word is made up for by -3000 (30 points), in text
     // space whatever the matrix is.
-    for page in [QUARTER_TURN, SHEARED_X, SHEARED_Y, TURNED_BY_CM] {
+    for page in [
+        QUARTER_TURN,
+        SHEARED_X,
+        SHEARED_Y,
+        TURNED_BY_CM,
+        MIRRORED_Y,
+        MIRRORED_X,
+        MIRRORED_BY_CM,
+    ] {
         let fixture = one_page(page);
         let doc = fixture.open();
         let block = text_of(&fixture).blocks.remove(0);

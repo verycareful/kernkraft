@@ -155,7 +155,7 @@ pub(super) struct Painter<'d, 'p> {
     /// The interpreter that runs Type 3 glyph descriptions, pattern cells,
     /// soft masks and annotation appearances; taken out while it runs, so
     /// a stream that needs one in turn makes its own.
-    interpreter: Option<Interpreter<'d>>,
+    interpreter: Option<Interpreter>,
     nesting: usize,
     /// The shadings read so far, by object.
     shadings: HashMap<ObjectId, Option<Arc<Shading>>>,
@@ -249,7 +249,7 @@ impl<'d, 'p> Painter<'d, 'p> {
     /// that a stream which needs one in turn makes its own.
     fn sub_run<R>(
         &mut self,
-        f: impl FnOnce(&mut Self, &mut Interpreter<'d>) -> Result<R, crate::PdfError>,
+        f: impl FnOnce(&mut Self, &mut Interpreter) -> Result<R, crate::PdfError>,
     ) -> Result<R, crate::PdfError> {
         if self.nesting >= MAX_NESTING {
             return Err(crate::PdfError::LimitExceeded {

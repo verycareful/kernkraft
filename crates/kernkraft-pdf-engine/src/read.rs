@@ -70,8 +70,7 @@ impl Engine {
     /// `blocks` say whether each can be edited and, when not, why. The
     /// `revision` is the one a block index is good at.
     pub fn text(&self, request: PageRequest) -> Result<Fields, WireError> {
-        let (document, revision) = self.snapshot(request.handle)?;
-        let page = document.text_page(request.page, &NoProgress)?;
+        let (document, revision, page) = self.text_page(request.handle, request.page)?;
         let mut lines = Vec::new();
         let mut blocks = Vec::new();
         for (index, block) in page.blocks.iter().enumerate() {
@@ -103,8 +102,7 @@ impl Engine {
     /// The matches of a query on one page. Kotlin loops over the pages, so
     /// it can stop between them.
     pub fn search(&self, request: SearchRequest) -> Result<Fields, WireError> {
-        let (document, _) = self.snapshot(request.handle)?;
-        let page = document.text_page(request.page, &NoProgress)?;
+        let (_, _, page) = self.text_page(request.handle, request.page)?;
         let options = SearchOptions {
             case_sensitive: request.case_sensitive,
             whole_word: request.whole_word,

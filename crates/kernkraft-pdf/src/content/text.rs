@@ -18,7 +18,7 @@ use crate::diagnostic::DiagnosticKind;
 use crate::error::PdfError;
 use crate::syntax::{Name, Value};
 
-impl Interpreter<'_> {
+impl Interpreter {
     pub(super) fn begin_text(
         &mut self,
         operation: &Operation,

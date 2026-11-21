@@ -137,7 +137,7 @@ impl Engine {
     pub fn apply(&self, request: ApplyRequest) -> Result<Fields, WireError> {
         let fonts = self.fonts();
         self.sessions.with(request.handle, |session| {
-            let made = make(session, request.op, &fonts)?;
+            let made = make(session, request.handle, request.op, &fonts)?;
             let pushed = session.edit.push(made.document)?;
             let changed = if pushed {
                 session.did(made.changed);
@@ -166,8 +166,14 @@ impl Engine {
     }
 }
 
-fn make(session: &Session, op: Op, fonts: &kernkraft_font::FontList) -> Result<Made, WireError> {
-    let document = session.document();
+fn make(
+    session: &mut Session,
+    handle: i64,
+    op: Op,
+    fonts: &kernkraft_font::FontList,
+) -> Result<Made, WireError> {
+    let snapshot = session.document().clone();
+    let document = &snapshot;
     Ok(match op {
         Op::Rotate { pages, degrees } => {
             let by = match degrees {
@@ -284,7 +290,11 @@ fn make(session: &Session, op: Op, fonts: &kernkraft_font::FontList) -> Result<M
             if revision != session.revision {
                 return Err(WireError::stale_block(revision, session.revision));
             }
-            let page_text = document.text_page(page, &NoProgress)?;
+            let page_text = session
+                .extractor()?
+                .lock()
+                .map_err(|_| WireError::session_poisoned(handle))?
+                .page(page, &NoProgress)?;
             let block: &TextBlock = page_text.blocks.get(block).ok_or_else(|| {
                 WireError::bad_request(format!(
                     "page {page} has {} text blocks, not {}",

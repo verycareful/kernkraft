@@ -162,9 +162,11 @@ pub struct PatternCell<'a> {
     pub colour: Option<&'a Paint>,
 }
 
-/// Interprets content streams against a [`Document`].
-pub struct Interpreter<'d> {
-    pub(super) doc: &'d Document,
+/// Interprets content streams against a [`Document`]. It holds its own
+/// handle on the document (a clone is the same snapshot), so a caller can
+/// keep one interpreter, and the fonts it has read, across many runs.
+pub struct Interpreter {
+    pub(super) doc: Document,
     pub(super) options: InterpretOptions,
     pub(super) diagnostics: Diagnostics,
     pub(super) optional: OptionalContent,
@@ -198,15 +200,15 @@ pub struct Interpreter<'d> {
     operations: u64,
 }
 
-impl<'d> Interpreter<'d> {
+impl Interpreter {
     /// An interpreter for `doc`. It reads the document's optional-content
     /// configuration once.
-    pub fn new(doc: &'d Document, options: InterpretOptions) -> Result<Self, PdfError> {
+    pub fn new(doc: &Document, options: InterpretOptions) -> Result<Self, PdfError> {
         let mut diagnostics = Diagnostics::new();
         let optional = OptionalContent::read(doc, &mut diagnostics)?;
         let state = GraphicsState::initial(options.base_matrix);
         Ok(Self {
-            doc,
+            doc: doc.clone(),
             options,
             diagnostics,
             optional,
@@ -863,7 +865,7 @@ impl<'d> Interpreter<'d> {
         ) {
             return Ok(());
         }
-        let doc = self.doc;
+        let doc = self.doc.clone();
         let resolved = doc.resolve(value)?;
         let object = resolved.object();
         let number = operand_number(object);

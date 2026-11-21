@@ -19,7 +19,7 @@ use crate::error::{Limit, PdfError};
 use crate::syntax::limits::MAX_FORM_DEPTH;
 use crate::syntax::{Dictionary, Name, Object, ObjectId, Value};
 
-impl Interpreter<'_> {
+impl Interpreter {
     /// `Do`: paints the image, runs the form.
     pub(super) fn do_xobject(
         &mut self,
@@ -91,7 +91,7 @@ impl Interpreter<'_> {
         match dictionary.get(b"OC") {
             Some(oc) => Ok(!self
                 .optional
-                .is_visible(self.doc, oc, &mut self.diagnostics)?),
+                .is_visible(&self.doc, oc, &mut self.diagnostics)?),
             None => Ok(false),
         }
     }
@@ -329,7 +329,7 @@ impl Interpreter<'_> {
                 sequence.hidden =
                     !self
                         .optional
-                        .is_visible(self.doc, object, &mut self.diagnostics)?;
+                        .is_visible(&self.doc, object, &mut self.diagnostics)?;
             }
         }
         if with_properties && operator == b"DP" {

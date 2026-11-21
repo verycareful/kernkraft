@@ -9,10 +9,12 @@
 //! between them: after an edit, an undo or a redo Kotlin is told which pages
 //! to draw again.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use kernkraft_font::FontList;
+use kernkraft_fs::NoProgress;
 use kernkraft_pdf::doc::{Document, OpenOptions};
+use kernkraft_pdf::text::{TextExtractor, TextPage};
 use kernkraft_pdf::{EditSession, PdfError};
 use serde::Deserialize;
 use serde_json::json;
@@ -45,6 +47,18 @@ impl Changed {
     }
 }
 
+/// The reader of a snapshot's text, shared by the requests that read it. It
+/// is behind a lock of its own because a read takes `&mut` (the interpreter
+/// keeps the fonts it has read), and the session's lock is not held while a
+/// page is read.
+pub type SharedExtractor = Arc<Mutex<TextExtractor>>;
+
+/// A [`TextExtractor`] and the revision of the snapshot it reads.
+struct TextCache {
+    revision: u64,
+    extractor: SharedExtractor,
+}
+
 /// One open document.
 pub struct Session {
     pub edit: EditSession,
@@ -56,6 +70,11 @@ pub struct Session {
     steps: Vec<Changed>,
     /// The snapshot the session stands on.
     at: usize,
+    /// The extractor of the snapshot at `revision`. Building one costs the
+    /// walk of the structure tree and of the optional-content
+    /// configuration, which is far more than reading a page, so it is kept
+    /// until the revision moves.
+    text: Option<TextCache>,
 }
 
 impl Session {
@@ -65,6 +84,7 @@ impl Session {
             revision: 0,
             steps: Vec::new(),
             at: 0,
+            text: None,
         }
     }
 
@@ -104,6 +124,24 @@ impl Session {
             .get(self.at - 1)
             .cloned()
             .unwrap_or(Changed::Pages(Vec::new()))
+    }
+
+    /// The extractor of the snapshot the session stands on, built here when
+    /// there is none for this revision. For a step that already holds the
+    /// session, such as a text edit; a read builds it outside the lock
+    /// ([`Engine::text_extractor`]).
+    pub fn extractor(&mut self) -> Result<SharedExtractor, PdfError> {
+        if let Some(cache) = &self.text {
+            if cache.revision == self.revision {
+                return Ok(cache.extractor.clone());
+            }
+        }
+        let extractor: SharedExtractor = Arc::new(Mutex::new(TextExtractor::new(self.document())?));
+        self.text = Some(TextCache {
+            revision: self.revision,
+            extractor: extractor.clone(),
+        });
+        Ok(extractor)
     }
 
     pub fn document(&self) -> &Document {
@@ -185,5 +223,59 @@ impl Engine {
         self.sessions.with(handle, |session| {
             Ok((session.document().clone(), session.revision))
         })
+    }
+
+    /// The document as it stands, its revision, and the extractor of that
+    /// snapshot: the one the last read made if the revision has not moved
+    /// since, else a new one. The new one is built outside the session's
+    /// lock, so a long build does not hold up another request; if the
+    /// revision moved meanwhile it is used for this request and not kept.
+    pub fn text_extractor(
+        &self,
+        handle: i64,
+    ) -> Result<(Document, u64, SharedExtractor), WireError> {
+        let (document, revision, kept) = self.sessions.with(handle, |session| {
+            let kept = session
+                .text
+                .as_ref()
+                .filter(|cache| cache.revision == session.revision)
+                .map(|cache| cache.extractor.clone());
+            Ok((session.document().clone(), session.revision, kept))
+        })?;
+        if let Some(extractor) = kept {
+            return Ok((document, revision, extractor));
+        }
+        let built: SharedExtractor = Arc::new(Mutex::new(TextExtractor::new(&document)?));
+        let extractor = self.sessions.with(handle, |session| {
+            if session.revision != revision {
+                return Ok(built.clone());
+            }
+            Ok(match &session.text {
+                Some(cache) if cache.revision == revision => cache.extractor.clone(),
+                _ => {
+                    session.text = Some(TextCache {
+                        revision,
+                        extractor: built.clone(),
+                    });
+                    built.clone()
+                }
+            })
+        })?;
+        Ok((document, revision, extractor))
+    }
+
+    /// Page `page` of the session's text, read through the kept extractor.
+    /// The document and revision are the ones the text was read at.
+    pub fn text_page(
+        &self,
+        handle: i64,
+        page: u32,
+    ) -> Result<(Document, u64, TextPage), WireError> {
+        let (document, revision, extractor) = self.text_extractor(handle)?;
+        let text = extractor
+            .lock()
+            .map_err(|_| WireError::session_poisoned(handle))?
+            .page(page, &NoProgress)?;
+        Ok((document, revision, text))
     }
 }

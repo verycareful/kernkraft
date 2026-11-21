@@ -286,20 +286,22 @@ impl Default for TextOptions {
 
 /// Reads the text of the pages of one document. It keeps what is the same
 /// for every page (the fonts it has read, the structure tree), so that one
-/// extractor serves a whole document.
-pub struct TextExtractor<'d> {
-    doc: &'d Document,
-    interpreter: Interpreter<'d>,
+/// extractor serves a whole document. It holds its own handle on the
+/// snapshot it was made from, so it may outlive the borrow it was made
+/// with, and a session can keep one for as long as the snapshot stands.
+pub struct TextExtractor {
+    doc: Document,
+    interpreter: Interpreter,
     structure: StructureIndex,
     max_glyphs: usize,
 }
 
-impl<'d> TextExtractor<'d> {
-    pub fn new(doc: &'d Document) -> Result<Self, PdfError> {
+impl TextExtractor {
+    pub fn new(doc: &Document) -> Result<Self, PdfError> {
         Self::with_options(doc, TextOptions::default())
     }
 
-    pub fn with_options(doc: &'d Document, options: TextOptions) -> Result<Self, PdfError> {
+    pub fn with_options(doc: &Document, options: TextOptions) -> Result<Self, PdfError> {
         let mut diagnostics = Diagnostics::new();
         let structure = StructureIndex::read(doc, &mut diagnostics)?;
         doc.record_diagnostics(diagnostics);
@@ -308,7 +310,7 @@ impl<'d> TextExtractor<'d> {
             ..options.interpret
         };
         Ok(Self {
-            doc,
+            doc: doc.clone(),
             interpreter: Interpreter::new(doc, interpret)?,
             structure,
             max_glyphs: options.max_glyphs,

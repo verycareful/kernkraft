@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-pdf-links"
+description = "Enables the pdf_links command without any pre-configured scope."
+commands.allow = ["pdf_links"]
+
+[[permission]]
+identifier = "deny-pdf-links"
+description = "Denies the pdf_links command without any pre-configured scope."
+commands.deny = ["pdf_links"]

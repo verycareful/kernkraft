@@ -287,6 +287,14 @@ impl From<&FsError> for WireError {
     }
 }
 
+impl From<kernkraft_pdf_engine::WireError> for WireError {
+    /// The engine names the error variant and gives its message; it has no
+    /// path or details to carry.
+    fn from(e: kernkraft_pdf_engine::WireError) -> WireError {
+        WireError::new(&e.kind, e.message, None)
+    }
+}
+
 impl From<FsError> for WireError {
     fn from(e: FsError) -> WireError {
         WireError::from(&e)

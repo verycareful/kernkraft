@@ -160,8 +160,8 @@ impl Trash {
         create_private_dir_all(&files)?;
         create_private_dir_all(&info)?;
 
-        let deleted = chrono::Local::now()
-            .format(DELETION_DATE_FORMAT)
+        let deleted = jiff::Zoned::now()
+            .strftime(DELETION_DATE_FORMAT)
             .to_string();
         let contents = format!(
             "{INFO_HEADER}\nPath={}\nDeletionDate={deleted}\n",

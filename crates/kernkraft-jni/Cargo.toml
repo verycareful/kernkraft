@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+[package]
+name = "kernkraft-jni"
+description = "JNI adapter exposing kernkraft-pdf-engine to Kern Android: JSON request strings, pixels into a direct buffer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+# The cdylib is libkernkraft_jni.so, loaded by dev.kern.pdfbridge.KernkraftPdf;
+# the rlib lets the string-in, string-out layer be tested on the host.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni.workspace = true
+kernkraft-pdf.workspace = true
+kernkraft-pdf-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+kernkraft-font.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

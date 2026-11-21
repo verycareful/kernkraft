@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-pdf-undo"
+description = "Enables the pdf_undo command without any pre-configured scope."
+commands.allow = ["pdf_undo"]
+
+[[permission]]
+identifier = "deny-pdf-undo"
+description = "Denies the pdf_undo command without any pre-configured scope."
+commands.deny = ["pdf_undo"]

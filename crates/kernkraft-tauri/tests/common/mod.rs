@@ -20,7 +20,7 @@ use kernkraft_tauri::{
     EVENT_THEME_CHANGED, EVENT_THUMB,
 };
 use serde_json::Value;
-use tauri::ipc::{CallbackFn, InvokeBody};
+use tauri::ipc::{CallbackFn, InvokeBody, InvokeResponseBody};
 use tauri::test::{
     get_ipc_response, mock_builder, mock_context, noop_assets, MockRuntime, INVOKE_KEY,
 };
@@ -260,14 +260,10 @@ impl Env {
     }
 }
 
-/// Invokes `plugin:<PLUGIN_NAME>|<cmd>` with JSON `args` from `webview`, as the
-/// frontend's `invoke` does, and returns the JSON reply or error.
-pub fn invoke(
-    webview: &WebviewWindow<MockRuntime>,
-    cmd: &str,
-    args: Value,
-) -> Result<Value, Value> {
-    let request = InvokeRequest {
+/// The request the frontend's `invoke` makes of `plugin:<PLUGIN_NAME>|<cmd>`
+/// with JSON `args`.
+fn request(cmd: &str, args: Value) -> InvokeRequest {
+    InvokeRequest {
         cmd: format!("plugin:{}|{cmd}", kernkraft_tauri::PLUGIN_NAME),
         callback: CallbackFn(0),
         error: CallbackFn(1),
@@ -275,8 +271,28 @@ pub fn invoke(
         body: InvokeBody::Json(args),
         headers: Default::default(),
         invoke_key: INVOKE_KEY.to_string(),
-    };
-    get_ipc_response(webview, request).map(|body| body.deserialize::<Value>().unwrap())
+    }
+}
+
+/// Invokes `cmd` from `webview` and returns the JSON reply or error.
+pub fn invoke(
+    webview: &WebviewWindow<MockRuntime>,
+    cmd: &str,
+    args: Value,
+) -> Result<Value, Value> {
+    get_ipc_response(webview, request(cmd, args)).map(|body| body.deserialize::<Value>().unwrap())
+}
+
+/// A command that answers with bytes instead of JSON.
+pub fn invoke_raw(
+    webview: &WebviewWindow<MockRuntime>,
+    cmd: &str,
+    args: Value,
+) -> Result<Vec<u8>, Value> {
+    get_ipc_response(webview, request(cmd, args)).map(|body| match body {
+        InvokeResponseBody::Raw(bytes) => bytes,
+        InvokeResponseBody::Json(text) => panic!("expected bytes, got JSON: {text}"),
+    })
 }
 
 pub fn w(p: &Path) -> WirePath {

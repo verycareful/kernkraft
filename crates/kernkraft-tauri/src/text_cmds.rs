@@ -40,7 +40,7 @@ pub struct WireStamp(String);
 const STAMP_TAG: &str = "s1";
 
 impl WireStamp {
-    fn new(s: &FileStamp) -> WireStamp {
+    pub(crate) fn new(s: &FileStamp) -> WireStamp {
         // Nanoseconds from the epoch, negative before it; SystemTime on
         // Linux keeps nanoseconds, so this is lossless.
         let modified: i128 = match s.modified.duration_since(UNIX_EPOCH) {
@@ -104,6 +104,22 @@ pub enum WireExpect {
     Unchanged { stamp: WireStamp },
     Nothing,
     Anything,
+}
+
+impl WireExpect {
+    /// Runs `save` with what this expects as a `kernkraft_fs::Expect`,
+    /// decoding the stamp of `unchanged` first: a stamp that does not decode
+    /// is refused before anything is written.
+    pub(crate) fn with<T>(
+        &self,
+        save: impl FnOnce(Expect<'_>) -> Result<T, WireError>,
+    ) -> Result<T, WireError> {
+        match self {
+            WireExpect::Unchanged { stamp } => save(Expect::Unchanged(&stamp.decode()?)),
+            WireExpect::Nothing => save(Expect::Nothing),
+            WireExpect::Anything => save(Expect::Anything),
+        }
+    }
 }
 
 /// Why a file is shown but must not be saved: `kind` is the name of the
@@ -227,16 +243,8 @@ impl<R: Runtime> Kernkraft<R> {
                 }))
             }
         };
-        let decoded;
-        let expect = match &expect {
-            WireExpect::Unchanged { stamp } => {
-                decoded = stamp.decode()?;
-                Expect::Unchanged(&decoded)
-            }
-            WireExpect::Nothing => Expect::Nothing,
-            WireExpect::Anything => Expect::Anything,
-        };
-        let saved = kernkraft_text::save(&path, &text, ending, bom, expect)?;
+        let saved =
+            expect.with(|expect| Ok(kernkraft_text::save(&path, &text, ending, bom, expect)?))?;
         Ok(WireStamp::new(&saved))
     }
 

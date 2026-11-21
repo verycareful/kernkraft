@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
-use rustix::fs::{fsetxattr, getxattr, listxattr, XattrFlags};
+use rustix::fs::{fsetxattr, getxattr, getxattr_query, listxattr, listxattr_query, XattrFlags};
 use rustix::io::Errno;
 
 /// Every attribute of `from` set on `to`, which is open for writing.
@@ -39,7 +39,8 @@ pub(crate) fn copy_all(from: &Path, to: &File) -> io::Result<Vec<String>> {
 
 /// The attribute names of `path`. A filesystem without attributes has none.
 fn names(path: &Path) -> io::Result<Vec<CString>> {
-    let list = read_sized(|buf| listxattr(path, buf))?.unwrap_or_default();
+    let list =
+        read_sized(|| listxattr_query(path), |buf| listxattr(path, buf))?.unwrap_or_default();
     Ok(list
         .split(|&b| b == 0)
         .filter(|n| !n.is_empty())
@@ -49,17 +50,23 @@ fn names(path: &Path) -> io::Result<Vec<CString>> {
 
 /// The value of attribute `name` of `path`; `None` if it is gone.
 fn value(path: &Path, name: &CStr) -> io::Result<Option<Vec<u8>>> {
-    read_sized(|buf| getxattr(path, name, buf))
+    read_sized(
+        || getxattr_query(path, name),
+        |buf| getxattr(path, name, buf),
+    )
 }
 
-/// Calls `read` with an empty buffer for the size, then with a buffer of
-/// that size, again if the value grew in between. `ENODATA` (gone) and
-/// `EOPNOTSUPP` (no attributes here) are `None`.
+/// Asks `query` for the size, then calls `read` with a buffer of that size,
+/// again if the value grew in between. A size of zero is an empty value and
+/// is not read: the read functions take an empty buffer for an empty result.
+/// `ENODATA` (gone) and `EOPNOTSUPP` (no attributes here) are `None`.
 fn read_sized(
+    query: impl Fn() -> rustix::io::Result<usize>,
     read: impl Fn(&mut [u8]) -> rustix::io::Result<usize>,
 ) -> io::Result<Option<Vec<u8>>> {
     loop {
-        let size = match read(&mut []) {
+        let size = match query() {
+            Ok(0) => return Ok(Some(Vec::new())),
             Ok(n) => n,
             Err(Errno::NODATA | Errno::OPNOTSUPP) => return Ok(None),
             Err(e) => return Err(e.into()),

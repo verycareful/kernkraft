@@ -3,18 +3,18 @@
 
 # kernkraft never touches the network: HTTP clients, async runtimes and raw
 # socket crates are banned outright. tauri is banned except as a dependency of
-# kernkraft-tauri, so no core crate can pull it in; jni is banned outright
-# until kernkraft-jni exists. tokio is banned except as a dependency of tauri,
+# kernkraft-tauri, so no core crate can pull it in; jni is banned except as a
+# dependency of kernkraft-jni. tokio is banned except as a dependency of tauri,
 # which uses it for the app runtime on the Linux targets and opens no socket;
 # its `net` feature is denied outright below, so no dependency can enable it.
 # `wrappers` names the only crates allowed to depend on a banned crate.
 
-# Linux is the only platform kernkraft ships for. tauri pulls reqwest (and
-# through it hyper, socket2 and tokio's `net`) and jni only for its Android and
-# iOS targets, so the graph is checked for the Linux targets.
-# kernkraft-jni (Android) will need an Android target here, and with it a
-# fresh look at what tauri and jni pull in for that target: revisit this list
-# when that crate is added.
+# Linux is the only platform the desktop crates ship for. tauri pulls reqwest
+# (and through it hyper, socket2 and tokio's `net`) and jni only for its Android
+# and iOS targets, so the workspace graph is checked for the Linux targets.
+# kernkraft-jni is the one crate built for Android: tools/gates.sh checks its
+# graph alone (`--manifest-path crates/kernkraft-jni/Cargo.toml`) for the three
+# Android targets, where kernkraft-tauri is not part of it.
 [graph]
 targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 all-features = true
@@ -53,7 +53,7 @@ deny = [
     { name = "async-std" },
     { name = "socket2" },
     { name = "tauri", wrappers = ["kernkraft-tauri"] },
-    { name = "jni" },
+    { name = "jni", wrappers = ["kernkraft-jni"] },
 ]
 
 [[bans.features]]
@@ -83,15 +83,3 @@ allow = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-
-# The mupdf crates declare "AGPL-3.0", a deprecated SPDX identifier that
-# meant the -only form. MuPDF itself is AGPL-3.0 (https://mupdf.com/licensing).
-[[licenses.clarify]]
-crate = "mupdf"
-expression = "AGPL-3.0-only"
-license-files = []
-
-[[licenses.clarify]]
-crate = "mupdf-sys"
-expression = "AGPL-3.0-only"
-license-files = []

@@ -3,7 +3,8 @@
 
 //! The plugin's state: the XDG base directories, the MIME database, the
 //! trash, the undo journal, the running operations, the folder watches, the
-//! thumbnail queue, the theme and the volume watcher, shared by every command.
+//! thumbnail queue, the theme, the volume watcher and the open PDF documents,
+//! shared by every command.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,6 +16,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::error::{PluginError, WireError};
 use crate::ops::Registry;
+use crate::pdf_cmds::PdfState;
 use crate::theme_cmds::ThemeState;
 use crate::thumb_cmds::Thumbs;
 use crate::volumes_cmds::VolumesState;
@@ -69,6 +71,7 @@ pub(crate) struct Inner<R: Runtime> {
     pub thumbs: Thumbs,
     pub theme: Mutex<ThemeState>,
     pub volumes: Mutex<VolumesState>,
+    pub pdf: PdfState,
 }
 
 impl<R: Runtime> Kernkraft<R> {
@@ -99,6 +102,7 @@ impl<R: Runtime> Kernkraft<R> {
             thumbs: Thumbs::default(),
             theme: Mutex::new(ThemeState::default()),
             volumes: Mutex::new(VolumesState::default()),
+            pdf: PdfState::default(),
         }))
     }
 
@@ -118,12 +122,14 @@ impl<R: Runtime> Kernkraft<R> {
     }
 
     /// Cancels the operations, drops the folder watches and the queued
-    /// thumbnails started from window `label`, or all of them for `None`.
+    /// thumbnails and closes the PDF documents started from window `label`,
+    /// or all of them for `None`.
     /// A worker blocked on a conflict prompt is released. For `None` (the
     /// app exiting) the thumbnail workers, the theme watcher and the volume watcher stop too.
     pub(crate) fn shutdown(&self, label: Option<&str>) {
         self.cancel_from(label);
         self.thumbs_shutdown(label);
+        self.pdf_shutdown(label);
         if label.is_none() {
             self.theme_shutdown();
             self.volumes_shutdown();

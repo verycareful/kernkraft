@@ -10,7 +10,7 @@ resolver = "2"
 # commit index on a dev branch) is written as its first three parts with the
 # rest as build metadata: label 0.1.0.0 is 0.1.0+0, label 0.1.0.0.3 is
 # 0.1.0+0.3. The kernkraft-fs version test checks the two agree.
-version = "0.1.3+1"
+version = "0.1.3+1.32"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -21,6 +21,9 @@ publish = false
 [workspace.dependencies]
 kernkraft-fs = { path = "crates/kernkraft-fs" }
 kernkraft-text = { path = "crates/kernkraft-text" }
+kernkraft-font = { path = "crates/kernkraft-font" }
+kernkraft-pdf = { path = "crates/kernkraft-pdf" }
+kernkraft-pdf-engine = { path = "crates/kernkraft-pdf-engine" }
 kernkraft-xdg-apps = { path = "crates/kernkraft-xdg-apps" }
 kernkraft-thumb = { path = "crates/kernkraft-thumb" }
 kernkraft-bus = { path = "crates/kernkraft-bus" }
@@ -30,13 +33,49 @@ kernkraft-volumes = { path = "crates/kernkraft-volumes" }
 # Default features stay off here: the application chooses its windowing backend.
 tauri = { version = "2.12", default-features = false }
 tauri-plugin = { version = "2.5", features = ["build"] }
+# Adapter crate only (kernkraft-jni): the JNI bindings; no core crate may depend on jni
+# (scripts/check-boundary.sh).
+jni = "0.21"
+# The operating system's random bytes, for the seed a save takes from its caller.
+getrandom = "0.3"
 base64 = "0.22"
-lopdf = { version = "0.45", default-features = false }
-mupdf = "0.6"
+# DEFLATE through miniz_oxide only: no C zlib is linked.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+weezl = "0.2"
+aes = "0.9"
+cbc = "0.2"
+rc4 = "0.2"
+sha2 = "0.10"
+unicode-normalization = "0.1"
+# Line break opportunities (UAX #14, Unicode 15.0 tables), Apache-2.0.
+unicode-linebreak = "0.1"
+# ICC profile colour transforms (ICCBased colour spaces); no unsafe in the
+# transform path we call, BSD-3-Clause OR Apache-2.0.
+moxcms = "0.8"
+# The page rasteriser (BSD-3-Clause): paths, strokes, clip masks, compositing.
+# No png-format: pixels leave as raw bytes.
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
+# Font parsing, outlines and metrics (Google fontations; no unsafe, maintained).
+# skrifa reads TrueType and OpenType; read-fonts reads a bare CFF program (the
+# FontFile3 of a PDF) and the name and cmap tables of a font read in part.
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
+read-fonts = { version = "0.41", default-features = false, features = ["std"] }
+# Reduces an sfnt to the glyphs a PDF shows. Its variable-font feature (on by
+# default) pulls skrifa, write-fonts and kurbo: it fixes a variable font at one
+# instance, and it redraws a CFF2 font as glyf outlines, which a PDF can embed.
+subsetter = { version = "0.2" }
+# Image codecs behind the PDF filter interface (kernkraft-pdf filter/): DCT,
+# JPEG 2000, JBIG2 and CCITT fax. No `image` feature on the hayro crates: pixels
+# leave as raw bytes.
+zune-jpeg = { version = "0.5", default-features = false, features = ["std", "x86", "neon"] }
+hayro-jpeg2000 = { version = "0.5", default-features = false, features = ["std"] }
+hayro-jbig2 = { version = "0.4", default-features = false, features = ["std"] }
+hayro-ccitt = "0.5"
 thiserror = "2"
 tempfile = "3"
 rustix = { version = "1", features = ["fs", "process", "event"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Local calendar time for the trash's DeletionDate; reads TZ or /etc/localtime.
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 percent-encoding = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 # No svgz: usvg would gunzip any input starting 1f 8b with no output cap.

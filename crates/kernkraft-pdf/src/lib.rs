@@ -1,35 +1,122 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
-//! PDF reading, atomic saving and page operations over `lopdf`, with page
-//! rendering through MuPDF behind the `render` feature.
+//! PDF reading, atomic saving, page operations and page rendering.
 //!
-//! Page numbers in every API are 1-based. Documents are edited in memory as
-//! [`lopdf::Document`] and written back through `kernkraft-fs`'s atomic
-//! writer. Every operation that changes the page tree first flattens it
-//! (see [`flatten_page_tree`]), so pages keep the attributes they inherited
-//! from intermediate page-tree nodes.
+//! Page numbers in every API are 1-based. A [`Document`](doc::Document)
+//! is a snapshot that never changes; each page operation
+//! ([`rotate`], [`reorder`], [`remove`], [`extract`], the splits and
+//! [`merge`]) gives a new one, and [`write::save_compact`] writes it
+//! through `kernkraft-fs`'s atomic writer. Every operation that changes
+//! the page tree first flattens it, so pages keep the attributes they
+//! inherited from intermediate page-tree nodes.
+//!
+//! [`Source`] gives random access to a file's bytes, held in memory
+//! ([`MemorySource`]) or read from disk by offset ([`FileSource`]).
+//! [`syntax`] reads PDF objects from a source and writes them, reporting
+//! what it accepted against the format as [`Diagnostic`]s. [`filter`]
+//! decodes stream data, image codecs (DCT, JPEG 2000, JBIG2, CCITT fax)
+//! included, never past the size the caller allows. [`file`]
+//! reads a file's header and cross-reference and loads its objects one at
+//! a time, within the limits the caller sets. [`crypt`] reads the
+//! encryption dictionary of an encrypted file, checks a password against
+//! it and decrypts the file's strings and streams. [`doc`] reads a
+//! document's objects as they are used, its pages and its trees, and
+//! gives a new snapshot for each edit; [`build`] makes the objects and
+//! content streams of an edit; [`write`] writes a document as a new file
+//! that keeps every untouched object as its original bytes. An
+//! [`EditSession`] holds the document being edited, undoes and redoes its
+//! edits, and saves them as an incremental update appended to the bytes
+//! of the file as it was opened, or returns that update for an application
+//! that can only append. A [`Document`](doc::Document) also gives its revisions and an earlier
+//! one opened, its signatures and what their byte ranges cover, a report
+//! of what in it could run or reach outside it, its page labels, its
+//! outline and its attachments. [`font`] reads a font dictionary into a
+//! [`Font`](font::Font): its encoding, CMaps, widths and descriptor, and
+//! the characters of a string shown with it, with their Unicode text.
+//! [`content`] runs a page's content stream and tells a device what it
+//! paints. [`text`] reads a page's text as lines and blocks in reading
+//! order, searches it, and [`Document::links`] and [`Document::locate`]
+//! give a page's links and where a destination leads, all with geometry as
+//! fractions of the displayed page ([`Rect`]). [`colour`] reads colour
+//! spaces (device, CIE-based, ICC profiles, Indexed, Separation, DeviceN)
+//! and functions (sampled, exponential, stitching and PostScript
+//! calculator) and converts a colour of any space to sRGB.
+//! [`image`] decodes an image XObject or an inline image, with its masks, to
+//! RGBA pixels. [`render`] draws a page, or a region of it, at a scale: paths,
+//! clipping, text in embedded and substituted fonts, images, shadings,
+//! patterns, transparency (blend modes, groups, soft masks) and the
+//! appearances of annotations, as RGBA pixels.
+//! [`Document::annotations`](doc::Document::annotations) lists a page's annotations, and
+//! [`add_annotation`], [`edit_annotation`] and [`delete_annotation`] write
+//! highlights, underlines, strikeouts, ink strokes and notes with their
+//! appearance streams, each as a new snapshot for [`EditSession::push`].
+//! A [`FontEmbedder`](font::FontEmbedder) reduces a TrueType or OpenType font
+//! to the glyphs shown with it, gives the bytes that show text in it, and
+//! writes it as an embedded Type 0 font through an [`ObjectBuilder`](build::ObjectBuilder).
 
-mod doc;
+mod action;
+mod active;
+mod annot;
+mod attachments;
+pub mod build;
+pub mod colour;
+pub mod content;
+pub mod crypt;
+mod destination;
+mod diagnostic;
+mod display;
+pub mod doc;
+mod edit_text;
 mod error;
-mod fields;
-mod merge;
+pub mod file;
+mod filespec;
+pub mod filter;
+pub mod font;
+pub mod image;
+mod labels;
+mod links;
+mod outline;
 mod pages;
+mod pdf_doc;
 mod ranges;
-#[cfg(feature = "render")]
-mod render;
-mod split;
-mod tree;
+pub mod render;
+mod revisions;
+mod session;
+mod signatures;
+mod source;
+pub mod syntax;
+pub mod text;
+pub mod write;
 
-pub use lopdf;
-
-pub use doc::{load, load_bytes, page_count, save, to_bytes};
-pub use error::PdfError;
+pub use action::{Action, ActionKind};
+pub use active::{ActiveAction, ActiveContent};
+pub use annot::{
+    add_annotation, delete_annotation, edit_annotation, Added, Annotation, AnnotationEdit,
+    AnnotationKind, NewAnnotation, NewShape,
+};
+pub use attachments::{Attachment, AttachmentPlace, Check, Extracted};
+pub use destination::{Destination, DestinationPage, NamedDestination, View};
+pub use diagnostic::{
+    Diagnostic, DiagnosticKind, Diagnostics, ImageFault, PaintFault, PortableLimit,
+};
+pub use display::{PageGeometry, Rect};
+pub use edit_text::{
+    delete_text_block, edit_text, EditBlocker, Editability, Edited, TextEdit, TextStyle,
+};
+pub use error::{Limit, PdfError};
+pub use filespec::FileSpec;
 pub use kernkraft_fs::FileStamp;
-pub use merge::merge;
-pub use pages::{remove, reorder, rotate, Rotation};
+pub use labels::{LabelStyle, PageLabel};
+pub use links::{Link, Located};
+pub use outline::OutlineItem;
+pub use pages::{
+    extract, merge, remove, reorder, rotate, split_by_bookmarks, split_per_page, split_ranges,
+    Rotation, START_PART_TITLE,
+};
 pub use ranges::{parse_ranges, PageRange};
-#[cfg(feature = "render")]
-pub use render::{page_size_pt, render_page, RenderedPage, Renderer, MAX_RENDER_DIMENSION};
-pub use split::{extract, split_by_bookmarks, split_per_page, split_ranges, START_PART_TITLE};
-pub use tree::flatten_page_tree;
+pub use revisions::Revision;
+pub use session::{Appended, EditSession, SaveOptions};
+pub use signatures::{Coverage, Signature, SignatureKind};
+pub use source::{FileSource, MemorySource, Source};
+pub use text::TextOptions;

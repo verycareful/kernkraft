@@ -35,31 +35,31 @@ tauri = { version = "2.12", default-features = false }
 tauri-plugin = { version = "2.5", features = ["build"] }
 # Adapter crate only (kernkraft-jni): the JNI bindings; no core crate may depend on jni
 # (scripts/check-boundary.sh).
-jni = "0.21"
+jni = "0.22"
 # The operating system's random bytes, for the seed a save takes from its caller.
-getrandom = "0.3"
-base64 = "0.22"
+getrandom = "0.4"
+base64 = "0.23"
 # DEFLATE through miniz_oxide only: no C zlib is linked.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 weezl = "0.2"
 aes = "0.9"
 cbc = "0.2"
 rc4 = "0.2"
-sha2 = "0.10"
+sha2 = "0.11"
 unicode-normalization = "0.1"
 # Line break opportunities (UAX #14, Unicode 15.0 tables), Apache-2.0.
 unicode-linebreak = "0.1"
 # ICC profile colour transforms (ICCBased colour spaces); no unsafe in the
 # transform path we call, BSD-3-Clause OR Apache-2.0.
-moxcms = "0.8"
+moxcms = "0.9"
 # The page rasteriser (BSD-3-Clause): paths, strokes, clip masks, compositing.
 # No png-format: pixels leave as raw bytes.
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
 # Font parsing, outlines and metrics (Google fontations; no unsafe, maintained).
 # skrifa reads TrueType and OpenType; read-fonts reads a bare CFF program (the
 # FontFile3 of a PDF) and the name and cmap tables of a font read in part.
-skrifa = { version = "0.44", default-features = false, features = ["std"] }
-read-fonts = { version = "0.41", default-features = false, features = ["std"] }
+skrifa = { version = "0.50", default-features = false, features = ["std"] }
+read-fonts = { version = "0.47", default-features = false, features = ["std"] }
 # Reduces an sfnt to the glyphs a PDF shows. Its variable-font feature (on by
 # default) pulls skrifa, write-fonts and kurbo: it fixes a variable font at one
 # instance, and it redraws a CFF2 font as glyf outlines, which a PDF can embed.
@@ -75,21 +75,21 @@ thiserror = "2"
 tempfile = "3"
 rustix = { version = "1", features = ["fs", "process", "event"] }
 # Local calendar time for the trash's DeletionDate; reads TZ or /etc/localtime.
-jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+jiff = { version = "1.0", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 percent-encoding = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 # No svgz: usvg would gunzip any input starting 1f 8b with no output cap.
 # No memmap-fonts: a mapped font file truncated by another process raises
 # SIGBUS in the thumbnailer; fonts are read into memory instead.
-resvg = { version = "0.48", default-features = false, features = ["text", "system-fonts", "raster-images"] }
+resvg = { version = "0.50", default-features = false, features = ["text", "system-fonts", "raster-images"] }
 png = "0.18"
 simplecss = "0.2"
-md-5 = "0.10"
+md-5 = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # zbus keeps its default async-io backend and is used through the blocking API
 # only; the tokio feature stays off (zero network, and no async runtime).
-zbus = "5"
+zbus = "6"
 inotify = { version = "0.11", default-features = false }
 
 [workspace.lints.clippy]

@@ -16,6 +16,7 @@ mod encrypted;
 mod forms;
 mod free_list;
 mod history;
+mod info;
 mod refusals;
 mod save;
 mod update;

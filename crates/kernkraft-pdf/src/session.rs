@@ -28,6 +28,7 @@ use std::path::Path;
 
 use kernkraft_fs::{write_atomic, Expect, FileStamp, Progress};
 
+use crate::diagnostic::{DiagnosticKind, Diagnostics};
 use crate::doc::{Changes, Date, Document, ObjectBuilder};
 use crate::syntax::{Dictionary, Name, Object, PdfString, Value};
 use crate::write::{incremental, Tail, Update, WriteOptions};
@@ -307,9 +308,21 @@ fn update_from(
 }
 
 /// `document` with `date` as the `ModDate` of its information dictionary
-/// (14.3.3), which is made when the document has none.
+/// (14.3.3), which is made when the document has none. A document whose
+/// `Info` is not a dictionary is returned as it is, with the diagnostic
+/// [`DiagnosticKind::InfoNotDictionary`]: what the file holds there is not
+/// ours to replace, and there is nowhere to put a date.
 fn with_modification_date(document: &Document, date: &Date) -> Result<Document, PdfError> {
-    let mut info = document.info()?.unwrap_or_else(Dictionary::new);
+    let mut info = match document.info() {
+        Ok(info) => info.unwrap_or_else(Dictionary::new),
+        Err(PdfError::InvalidEntry { key: "Info", .. }) => {
+            let mut diagnostics = Diagnostics::new();
+            diagnostics.push(DiagnosticKind::InfoNotDictionary, 0);
+            document.record_diagnostics(diagnostics);
+            return Ok(document.clone());
+        }
+        Err(error) => return Err(error),
+    };
     info.insert(
         Name::new(MOD_DATE_KEY),
         Object::new(Value::String(PdfString::new(date.format().as_bytes()))),

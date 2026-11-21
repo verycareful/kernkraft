@@ -306,6 +306,10 @@ pub enum DiagnosticKind {
     /// that the glyph keeps its place. Raised once for a page, at the
     /// first such glyph's operation.
     TextUnmapped,
+    /// The trailer's `Info` names something that is not a dictionary
+    /// (14.3.3). A save leaves it as it is and sets no `ModDate`, since
+    /// there is no dictionary to hold one. Raised by each save.
+    InfoNotDictionary,
     /// An `ICCBased` colour space whose profile cannot be used: its stream
     /// is unreadable, its data colour space does not have the `N`
     /// components the stream states, or the profile has no usable

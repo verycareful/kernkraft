@@ -155,6 +155,34 @@ fn a_mirror_by_cm_is_wrapped_by_the_length_along_the_baseline() {
 }
 
 #[test]
+fn a_block_mirrored_top_to_bottom_keeps_its_reading_order() {
+    // Under 1 0 0 -1 the line at y = 710 is above the one at y = 700, so the
+    // block reads World, Hello and its first glyph is World's. Text space's
+    // -y is up the page here, so the lines of the new text go the other way:
+    // the second line is 10 points further along +y of text space, that is
+    // (100, 710 - 10), the third (100, 690). The first stays where the
+    // block's first line was.
+    let page = "BT /F1 10 Tf 1 0 0 -1 100 700 Tm (Hello) Tj 1 0 0 -1 100 710 Tm (World) Tj ET";
+    let (content, lines) = edited(page, "ab cde fg");
+    assert_eq!(lines, 3);
+    assert!(content.ends_with(
+        "1 0 0 -1 100 710 Tm (ab) Tj 1 0 0 -1 100 700 Tm (cde) Tj 1 0 0 -1 100 690 Tm (fg) Tj ET Q"
+    ));
+}
+
+#[test]
+fn a_block_set_downward_keeps_its_reading_order() {
+    // The ordinary case, for comparison: the second line is 10 below the
+    // first, in text space and on the page.
+    let page = "BT /F1 10 Tf 1 0 0 1 100 700 Tm (Hello) Tj 1 0 0 1 100 690 Tm (World) Tj ET";
+    let (content, lines) = edited(page, "ab cde fg");
+    assert_eq!(lines, 3);
+    assert!(content.ends_with(
+        "1 0 0 1 100 700 Tm (ab) Tj 1 0 0 1 100 690 Tm (cde) Tj 1 0 0 1 100 680 Tm (fg) Tj ET Q"
+    ));
+}
+
+#[test]
 fn replaced_text_is_where_the_block_was() {
     for page in [
         QUARTER_TURN,

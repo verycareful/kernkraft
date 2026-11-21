@@ -665,8 +665,12 @@ struct Frame {
     first: Matrix,
     /// The width of the widest line, in text space units.
     width: f64,
-    /// The distance between the baselines of the first two lines, in text
-    /// space units, when the block has two.
+    /// The distance from the baseline of the first line to that of the
+    /// second, along text space's `-y`, in text space units, when the block
+    /// has two. It is negative when the second line is further along `+y`,
+    /// as in text mirrored top to bottom, where lines read from the top of
+    /// the page go against text space's `-y`; new lines keep that
+    /// direction.
     pitch: Option<f64>,
     /// The size the glyphs were set at.
     size: f64,
@@ -716,7 +720,7 @@ fn frame_of(inspected: &Inspected, block: &TextBlock) -> Result<Frame, PdfError>
         starts.push(start);
     }
     let pitch = match starts.as_slice() {
-        [a, b, ..] if a.1 - b.1 > 0.0 && (a.1 - b.1).is_finite() => Some(a.1 - b.1),
+        [a, b, ..] if a.1 != b.1 && (a.1 - b.1).is_finite() => Some(a.1 - b.1),
         _ => None,
     };
     Ok(Frame {

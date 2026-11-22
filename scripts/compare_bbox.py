@@ -38,7 +38,7 @@ along the text, so for a word of upright glyphs this is the plain
 comparison of two edges.
 Text turned inside an unturned page is outside this comparison and is
 reported as displaced.
-A word with no partner of its text goes through three more steps before it
+A word with no partner of its text goes through four more steps before it
 is reported as only ours or only theirs, because the two tools break text
 into words by rules of their own (a gap that is a space for one is a kern
 for the other, a change of size or baseline inside a run splits a word for
@@ -52,6 +52,14 @@ one and not for the other):
     reads by a rule of its own (a glyph name that no list gives text, read as
     its character code) does not fail the page. These pairs are counted on
     their own line of the report, never as words whose text agrees;
+  - regrouped: the words of both tools that are left and lie against one
+    another (boxes within EDGE_TOLERANCE_PT) make a group; a group in which
+    the two tools read the same characters (as a multiset, whatever the
+    breaking and the order) and whose boxes, joined on each side, are in
+    place, is one pair, counted once. Math is set in runs of different sizes
+    and baselines that one tool breaks at each change and the other does not,
+    and the words are then not a run of one another, so no spelling of one
+    side's words by the other's can be found;
   - oblique: a word of ours more than OBLIQUE_DEGREES off the page's axes is
     outside this comparison (a box that is axis-aligned says too little of
     it), as are the words of theirs whose centre lies in its box, and those
@@ -62,7 +70,7 @@ A word that is still unpaired is reported as only ours or only theirs.
 
 A page passes when no pair is displaced and at least MATCH_LIMIT of its
 words, counted on the side that has more, are in place. A split pair counts
-as one word on each side, and an unmapped pair, an oblique word and the
+as one word on each side, as does a regrouped pair, and an unmapped pair, an oblique word and the
 words of theirs set aside with it are not counted. Prints one line for
 each page and, for a page that fails, the first words at fault. Exits with 0
 when every page passes, and 1 otherwise.
@@ -72,6 +80,7 @@ import re
 import sys
 import unicodedata
 import xml.etree.ElementTree as ET
+from collections import Counter
 
 # The edges along the text follow from the widths of the glyphs and the
 # spacing operands, which both tools take from the file, so they agree to the
@@ -403,6 +412,58 @@ def unmapped_pairs(ours, theirs, vertical):
     return pairs, used_ours, used_theirs
 
 
+def touches(a, b):
+    """Whether the boxes of `a` and `b` lie against one another, within
+    EDGE_TOLERANCE_PT."""
+    return (
+        a.left - EDGE_TOLERANCE_PT <= b.right
+        and b.left - EDGE_TOLERANCE_PT <= a.right
+        and a.top - EDGE_TOLERANCE_PT <= b.bottom
+        and b.top - EDGE_TOLERANCE_PT <= a.bottom
+    )
+
+
+def characters(words):
+    """The characters of `words`, without white space, as a multiset."""
+    return Counter(c for w in words for c in w.text if not c.isspace())
+
+
+def regrouped_pairs(ours, theirs, vertical):
+    """Groups the words of `ours` and `theirs` that lie against one another
+    and pairs each group in which both tools read the same characters and
+    the two joined boxes are in place. Returns (pairs of (words of ours,
+    words of theirs), the indices of `ours` and of `theirs` used). A group is
+    the words linked, by a word of one tool touching a word of the other, in
+    a chain."""
+    parent = list(range(len(ours) + len(theirs)))
+
+    def find(node):
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for i, mine in enumerate(ours):
+        for j, other in enumerate(theirs):
+            if touches(mine, other):
+                parent[find(i)] = find(len(ours) + j)
+    groups = {}
+    for node in range(len(parent)):
+        groups.setdefault(find(node), []).append(node)
+    pairs, used_ours, used_theirs = [], set(), set()
+    for members in groups.values():
+        mine = [ours[n] for n in members if n < len(ours)]
+        other = [theirs[n - len(ours)] for n in members if n >= len(ours)]
+        if not mine or not other or characters(mine) != characters(other):
+            continue
+        if not in_place(union(mine, "", vertical), union(other, "", vertical), vertical):
+            continue
+        pairs.append((mine, other))
+        used_ours.update(n for n in members if n < len(ours))
+        used_theirs.update(n - len(ours) for n in members if n >= len(ours))
+    return pairs, used_ours, used_theirs
+
+
 def holds(box, word):
     """Whether the centre of `word` lies in the box of `box`."""
     x = (word.left + word.right) / 2
@@ -454,16 +515,26 @@ def compare_page(number, ours_page, their_page):
     only_ours_left = [w for i, w in enumerate(only_ours_left) if i not in used_o]
     only_theirs_left = [w for j, w in enumerate(only_theirs_left) if j not in used_t]
 
+    # Words that no spelling of one side by the other joins but that lie in
+    # one place and hold the same characters.
+    regrouped, used_o, used_t = regrouped_pairs(only_ours_left, only_theirs_left, vertical)
+    only_ours_left = [w for i, w in enumerate(only_ours_left) if i not in used_o]
+    only_theirs_left = [w for j, w in enumerate(only_theirs_left) if j not in used_t]
+
     # What is left and has the text of a word on the other side is that word
     # drawn elsewhere.
     displaced, only_ours_left, only_theirs_left = pair(
         only_ours_left, only_theirs_left, vertical, False
     )
 
-    units_ours = len(straight) - extra_ours - len(mapped)
-    units_theirs = len(kept) - extra_theirs - len(mapped)
+    units_ours = (
+        len(straight) - extra_ours - len(mapped) - sum(len(o) - 1 for o, _ in regrouped)
+    )
+    units_theirs = (
+        len(kept) - extra_theirs - len(mapped) - sum(len(t) - 1 for _, t in regrouped)
+    )
     most = max(units_ours, units_theirs)
-    in_place_count = len(placed) + splits
+    in_place_count = len(placed) + splits + len(regrouped)
     sizes = sorted((width, height)) + sorted((their_width, their_height))
     size_differs = any(
         abs(a - b) > SIZE_TOLERANCE_PT for a, b in zip(sizes[:2], sizes[2:])
@@ -482,6 +553,8 @@ def compare_page(number, ours_page, their_page):
         line += f" split {splits}"
     if mapped:
         line += f" unmapped {len(mapped)}"
+    if regrouped:
+        line += f" regrouped {len(regrouped)}"
     if oblique:
         line += f" oblique ours {len(oblique)} theirs {set_aside}"
     lines = [line]

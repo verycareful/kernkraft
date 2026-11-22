@@ -357,6 +357,42 @@ class CompareBbox(unittest.TestCase):
         self.assertIn("displaced 1", report[0])
         self.assertIn("unmapped 1", report[0])
 
+    # Words that no spelling of one side by the other joins, but that lie in
+    # one place and hold the same characters, are one pair.
+
+    def test_overlapping_breaks_of_the_same_characters_are_regrouped(self):
+        # Ours breaks abcd after the c, theirs after the b: neither reads the
+        # other's words as a run, and the boxes join to the same 20 to 60.
+        ours = ours_file([(200, 100, 0, [("abc", 0.1, 0.3, 0.25, 0.4), ("d", 0.25, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file([(200, 100, [("ab", 20, 30, 40, 40), ("cd", 40, 30, 60, 40)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("regrouped 1", report[0])
+        self.assertIn("only ours 0 only theirs 0", report[0])
+
+    def test_a_regrouped_pair_needs_the_same_characters(self):
+        ours = ours_file([(200, 100, 0, [("abc", 0.1, 0.3, 0.25, 0.4), ("d", 0.25, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file([(200, 100, [("ab", 20, 30, 40, 40), ("ce", 40, 30, 60, 40)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertFalse(ok, report)
+        self.assertNotIn("regrouped", report[0])
+
+    def test_a_regrouped_pair_needs_its_boxes_in_place(self):
+        ours = ours_file([(200, 100, 0, [("abc", 0.1, 0.3, 0.25, 0.4), ("d", 0.25, 0.3, 0.3, 0.4)])])
+        theirs = theirs_file([(200, 100, [("ab", 20, 36, 40, 46), ("cd", 40, 36, 60, 46)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertFalse(ok, report)
+        self.assertNotIn("regrouped", report[0])
+
+    def test_words_far_apart_are_not_regrouped_into_one_pair(self):
+        # The same four characters, but ours has them on two lines 40 points
+        # apart: no chain of touching boxes joins them.
+        ours = ours_file([(200, 100, 0, [("ab", 0.1, 0.1, 0.2, 0.2), ("cd", 0.1, 0.6, 0.2, 0.7)])])
+        theirs = theirs_file([(200, 100, [("ac", 20, 10, 40, 20), ("bd", 20, 60, 40, 70)])])
+        report, ok = self.run_compare(ours, theirs)
+        self.assertFalse(ok, report)
+        self.assertNotIn("regrouped", report[0])
+
     # A word of ours more than 2 degrees off the page's axes, and the words
     # of theirs whose centre lies in its box, are set aside and counted.
 

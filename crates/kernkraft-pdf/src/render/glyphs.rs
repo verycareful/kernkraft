@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use kernkraft_font::{CmapSelector, FaceInfo, FontList, GlyphId, Program, Query};
+use kernkraft_font::{CmapSelector, FaceInfo, FontList, GlyphId, Program, Query, Variations};
 use tiny_skia::{Path, Transform};
 
 use crate::content::{PlacedGlyph, TextRun};
@@ -79,8 +79,13 @@ const DINGBATS: &[&str] = &["ZapfDingbats", "Dingbats", "D050000L"];
 enum Origin {
     /// The font's own embedded program.
     Embedded(Vec<u8>),
-    /// A face of the application's list.
-    Substitute { data: Vec<u8>, index: u32 },
+    /// A face of the application's list: a font of it, opened at the named
+    /// instance of a variable font when the face is one.
+    Substitute {
+        data: Vec<u8>,
+        index: u32,
+        variations: Variations,
+    },
     /// Nothing to draw with.
     Unavailable,
 }
@@ -191,7 +196,7 @@ impl<'d> Glyphs<'d> {
         let origin = match embedded {
             Some(data) => Origin::Embedded(data),
             None => match self.substitute(font) {
-                Some((data, index, family)) => {
+                Some((data, index, variations, family)) => {
                     diagnostics.push(
                         DiagnosticKind::FontSubstituted {
                             name: name.clone(),
@@ -199,7 +204,11 @@ impl<'d> Glyphs<'d> {
                         },
                         0,
                     );
-                    Origin::Substitute { data, index }
+                    Origin::Substitute {
+                        data,
+                        index,
+                        variations,
+                    }
                 }
                 None => {
                     diagnostics.push(DiagnosticKind::FontUnavailable { name: name.clone() }, 0);
@@ -215,9 +224,9 @@ impl<'d> Glyphs<'d> {
         }
     }
 
-    /// The bytes, collection index and first family name of the list's
-    /// face for `font`.
-    fn substitute(&self, font: &Font) -> Option<(Vec<u8>, u32, String)> {
+    /// The bytes, collection index, variations and first family name of the
+    /// list's face for `font`.
+    fn substitute(&self, font: &Font) -> Option<(Vec<u8>, u32, Variations, String)> {
         let list = self.list?;
         let wanted = wanted_style(font);
         let query = Query {
@@ -228,9 +237,17 @@ impl<'d> Glyphs<'d> {
         };
         let face: &FaceInfo = list.best(&query)?;
         let data = std::fs::read(&face.path).ok()?;
-        Program::parse(&data, face.index).ok()?;
+        let variations = face
+            .instance
+            .as_ref()
+            .map(kernkraft_font::Instance::variations)
+            .unwrap_or_default();
+        Program::parse(&data, face.index)
+            .ok()?
+            .with_variations(&variations)
+            .ok()?;
         let family = face.families.first().cloned().unwrap_or_default();
-        Some((data, face.index, family))
+        Some((data, face.index, variations, family))
     }
 }
 
@@ -250,12 +267,19 @@ enum Drawn {
 }
 
 fn draw(entry: &Entry, glyph: &PlacedGlyph) -> Drawn {
-    let (data, index, substituted) = match &entry.origin {
-        Origin::Embedded(data) => (data, 0, false),
-        Origin::Substitute { data, index } => (data, *index, true),
+    let (data, index, substituted, variations) = match &entry.origin {
+        Origin::Embedded(data) => (data, 0, false, None),
+        Origin::Substitute {
+            data,
+            index,
+            variations,
+        } => (data, *index, true, Some(variations)),
         Origin::Unavailable => return Drawn::Blank,
     };
     let Ok(program) = Program::parse(data, index) else {
+        return Drawn::Missing;
+    };
+    let Ok(program) = program.with_variations(variations.unwrap_or(&Variations::new())) else {
         return Drawn::Missing;
     };
     let found = if substituted {

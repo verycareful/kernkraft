@@ -631,3 +631,133 @@ fn a_block_edited_twice_stays_in_the_face_it_was_given() {
         "{base:?}"
     );
 }
+
+/// "Test Sans" as a variable font with a weight axis from 400 to 900 and the
+/// named instance Bold at 700, with glyphs for `A` and `B`.
+fn variable_test_sans() -> Vec<u8> {
+    use fontkit::sfnt::{self, Glyph, Instance, SfntSpec, Variable};
+    const BOLD_NAME: u16 = 256;
+    let square = |size: i16| {
+        vec![vec![
+            (0, 0, true),
+            (size, 0, true),
+            (size, size, true),
+            (0, size, true),
+        ]]
+    };
+    let glyph = |name: &'static str, contours| Glyph {
+        name,
+        advance: 600,
+        contours,
+    };
+    let mut spec = SfntSpec::new(vec![
+        glyph(".notdef", vec![]),
+        glyph("A", square(500)),
+        glyph("B", square(200)),
+    ]);
+    spec.unicode = vec![(0x41, 1), (0x42, 2)];
+    spec.extra_names = vec![(BOLD_NAME, "Bold")];
+    spec.variable = Some(Variable {
+        tag: *b"wght",
+        min: 400,
+        default: 400,
+        max: 900,
+        instances: vec![Instance {
+            name_id: BOLD_NAME,
+            value: 700,
+            postscript_name_id: None,
+        }],
+        moves: vec![None, None, None],
+    });
+    sfnt::build(&spec)
+}
+
+/// The `BaseFont` of the font `name` of the page's resources.
+fn base_font_of(doc: &Document, name: &[u8]) -> String {
+    let page = doc
+        .required(ObjectId {
+            number: PAGE,
+            generation: 0,
+        })
+        .unwrap();
+    let Some(Value::Dictionary(resources)) = page
+        .dictionary()
+        .unwrap()
+        .get(b"Resources")
+        .map(|o| o.value())
+    else {
+        panic!("no resources");
+    };
+    let Some(Value::Dictionary(fonts)) = resources.get(b"Font").map(|o| o.value()) else {
+        panic!("no fonts");
+    };
+    let Some(Value::Reference(font)) = fonts.get(name).map(|o| o.value()) else {
+        panic!("no font {name:?}");
+    };
+    let font = doc.required(*font).unwrap();
+    let Some(Value::Name(base)) = font
+        .dictionary()
+        .unwrap()
+        .get(b"BaseFont")
+        .map(|o| o.value())
+    else {
+        panic!("no BaseFont");
+    };
+    String::from_utf8_lossy(base.as_bytes()).into_owned()
+}
+
+#[test]
+fn a_bold_block_is_set_in_the_bold_instance_of_a_variable_face() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test-sans-variable.ttf");
+    std::fs::write(&path, variable_test_sans()).unwrap();
+    let list = FontList::index(&[path], &NoProgress).unwrap();
+    assert_eq!(list.faces().len(), 2);
+    let bold = b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold \
+                 /Encoding /WinAnsiEncoding >>";
+    let fixture = build(
+        "BT /F2 10 Tf 100 700 Td (Hello) Tj ET",
+        "/F2 61 0 R",
+        "",
+        None,
+        &[(61, bold)],
+    );
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    let edited = edit_text(
+        &doc,
+        1,
+        &block,
+        &TextEdit::new("AB")
+            .with_style(TextStyle::default().with_family("Test Sans"))
+            .with_fonts(&list),
+        &NoProgress,
+    )
+    .unwrap();
+    assert_eq!(page_of(&edited.document).text().trim(), "AB");
+    let base = base_font_of(&edited.document, b"KernFont1");
+    assert!(base.ends_with("+TestSans-Bold"), "{base}");
+}
+
+#[test]
+fn a_regular_block_is_set_in_the_default_face_of_a_variable_font() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test-sans-variable.ttf");
+    std::fs::write(&path, variable_test_sans()).unwrap();
+    let list = FontList::index(&[path], &NoProgress).unwrap();
+    let fixture = one_page("BT /F1 10 Tf 100 700 Td (Hello) Tj ET");
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    let edited = edit_text(
+        &doc,
+        1,
+        &block,
+        &TextEdit::new("AB")
+            .with_style(TextStyle::default().with_family("Test Sans"))
+            .with_fonts(&list),
+        &NoProgress,
+    )
+    .unwrap();
+    let base = base_font_of(&edited.document, b"KernFont1");
+    assert!(base.ends_with("+TestSans-Regular"), "{base}");
+}

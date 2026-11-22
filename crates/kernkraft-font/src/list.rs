@@ -10,7 +10,8 @@
 //!
 //! Formats: OpenType 1.9 (the table directory, `name`, `OS/2` `usWeightClass`,
 //! `usWidthClass` and `fsSelection`, `head` `macStyle`, `post`
-//! `isFixedPitch`, `cmap`) and, for a collection, the TTC header.
+//! `isFixedPitch`, `cmap`, and `fvar` for the named instances of a variable
+//! font) and, for a collection, the TTC header.
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;
@@ -18,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 use kernkraft_fs::Progress;
 use read_fonts::tables::cmap::{Cmap, CmapIterLimits, PlatformId};
+use read_fonts::tables::fvar::Fvar;
 use read_fonts::tables::name::Name;
 use read_fonts::{FontData, FontRead};
 use skrifa::string::{LocalizedString, StringId};
@@ -25,6 +27,7 @@ use skrifa::string::{LocalizedString, StringId};
 use crate::coverage::Coverage;
 use crate::error::FontError;
 use crate::program::Program;
+use crate::variation::{ascii_alphanumeric, named_instance_name, AxisTag, Variations};
 
 /// The weight and width a font states when it states none: 400 is Regular
 /// and 5 is Medium (normal) in the `OS/2` classes.
@@ -34,6 +37,21 @@ const NORMAL_WIDTH: u8 = 5;
 const MAX_WEIGHT: u16 = 1000;
 const MIN_WIDTH: u16 = 1;
 const MAX_WIDTH: u16 = 9;
+
+/// The `wght` axis is the weight on the scale of `usWeightClass`; the `wdth`
+/// axis is a percentage of normal width, which `usWidthClass` sets in classes
+/// (OpenType 1.9, `OS/2`): ultra-condensed 50, extra-condensed 62.5,
+/// condensed 75, semi-condensed 87.5, medium 100, semi-expanded 112.5,
+/// expanded 125, extra-expanded 150 and ultra-expanded 200.
+const AXIS_WIDTH: AxisTag = *b"wdth";
+const AXIS_WEIGHT_TAG: AxisTag = crate::variation::AXIS_WEIGHT;
+const AXIS_ITALIC_TAG: AxisTag = crate::variation::AXIS_ITALIC;
+const AXIS_SLANT_TAG: AxisTag = crate::variation::AXIS_SLANT;
+/// The least weight an instance's `wght` value is taken as.
+const MIN_INSTANCE_WEIGHT: u16 = 1;
+const WIDTH_CLASS_PERCENT: [f64; 9] = [50.0, 62.5, 75.0, 87.5, 100.0, 112.5, 125.0, 150.0, 200.0];
+/// The `fvar` coordinates are 16.16 fixed point.
+const FIXED_ONE: f64 = 65536.0;
 
 /// Offsets inside the tables read (OpenType 1.9).
 const SFNT_HEADER_BYTES: u64 = 12;
@@ -82,6 +100,35 @@ pub struct FaceInfo {
     /// not known from a Unicode `cmap` (a symbol font, a Type 1 program);
     /// such a face never matches by coverage.
     pub coverage: Option<Coverage>,
+    /// The named instance of a variable font this face is; `None` for a
+    /// static font and for the default face of a variable one. The weight,
+    /// width and slant above are those of the instance.
+    pub instance: Option<Instance>,
+}
+
+/// A named instance of a variable font (`fvar`): a face a font lists by
+/// name, with a value for each axis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Instance {
+    /// Its place among the font's named instances, from 0.
+    pub number: u32,
+    /// Its subfamily name (`Bold`, `Semi Bold`).
+    pub subfamily: String,
+    /// The value of each axis, in the order of the `fvar` table, as the
+    /// 16.16 fixed-point number the table holds.
+    pub coordinates: Vec<(AxisTag, i32)>,
+}
+
+impl Instance {
+    /// The instance as the variations to open the font at (see
+    /// [`Program::with_variations`]).
+    pub fn variations(&self) -> Variations {
+        self.coordinates
+            .iter()
+            .fold(Variations::new(), |variations, &(tag, value)| {
+                variations.with(tag, (f64::from(value) / FIXED_ONE) as f32)
+            })
+    }
 }
 
 impl FaceInfo {
@@ -98,8 +145,9 @@ pub struct Skipped {
     pub error: FontError,
 }
 
-/// The indexed fonts. Faces are in the order of path, then index, so the
-/// same files give the same list in any order they are handed in.
+/// The indexed fonts. Faces are in the order of path, then index, then
+/// instance (a variable font's default face before its named instances), so
+/// the same files give the same list in any order they are handed in.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FontList {
     pub(crate) faces: Vec<FaceInfo>,
@@ -127,8 +175,10 @@ impl FontList {
             }
         }
         progress.report(total, total, "indexing fonts");
-        list.faces
-            .sort_by(|a, b| (&a.path, a.index).cmp(&(&b.path, b.index)));
+        list.faces.sort_by(|a, b| {
+            let number = |face: &FaceInfo| face.instance.as_ref().map(|i| i.number);
+            (&a.path, a.index, number(a)).cmp(&(&b.path, b.index, number(b)))
+        });
         list.skipped.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(list)
     }
@@ -177,9 +227,7 @@ fn index_file(path: &Path) -> Result<Vec<FaceInfo>, FontError> {
     let file_len = meta.len();
     let head = read_at(&file, file_len, 0, file_len.min(4))?;
     match head.as_slice() {
-        [0x00, 0x01, 0x00, 0x00] | b"true" | b"OTTO" => {
-            Ok(vec![index_sfnt(&file, file_len, path, 0, 0)?])
-        }
+        [0x00, 0x01, 0x00, 0x00] | b"true" | b"OTTO" => index_sfnt(&file, file_len, path, 0, 0),
         b"ttcf" => {
             let header = read_at(&file, file_len, 0, TTC_HEADER_BYTES)?;
             let count = u64::from(be32(&header, 8));
@@ -189,7 +237,7 @@ fn index_file(path: &Path) -> Result<Vec<FaceInfo>, FontError> {
             let mut faces = Vec::new();
             for i in 0..count as usize {
                 let at = u64::from(be32(&offsets, i * 4));
-                faces.push(index_sfnt(&file, file_len, path, at, i as u32)?);
+                faces.extend(index_sfnt(&file, file_len, path, at, i as u32)?);
             }
             Ok(faces)
         }
@@ -256,7 +304,7 @@ fn index_sfnt(
     path: &Path,
     at: u64,
     index: u32,
-) -> Result<FaceInfo, FontError> {
+) -> Result<Vec<FaceInfo>, FontError> {
     let dir = directory(file, file_len, at)?;
     let name_data = dir
         .read(file, file_len, b"name", u64::MAX)?
@@ -322,7 +370,7 @@ fn index_sfnt(
         None => None,
         Some(data) => unicode_coverage(&data, glyph_count),
     };
-    Ok(FaceInfo {
+    let default = FaceInfo {
         path: path.to_path_buf(),
         index,
         families,
@@ -333,7 +381,105 @@ fn index_sfnt(
         italic,
         monospaced,
         coverage,
-    })
+        instance: None,
+    };
+    let instances = match dir.read(file, file_len, b"fvar", u64::MAX)? {
+        Some(data) => named_instances(&data, &default, &collect),
+        None => Vec::new(),
+    };
+    let mut faces = vec![default];
+    faces.extend(instances);
+    Ok(faces)
+}
+
+/// The faces of the named instances an `fvar` table lists, each the default
+/// face with the instance's name and its weight, width and slant. A table
+/// that is damaged lists none: the font stays its default face.
+fn named_instances(
+    data: &[u8],
+    default: &FaceInfo,
+    strings: &dyn Fn(StringId) -> Vec<String>,
+) -> Vec<FaceInfo> {
+    let Ok(fvar) = Fvar::read(FontData::new(data)) else {
+        return Vec::new();
+    };
+    let Ok(arrays) = fvar.axis_instance_arrays() else {
+        return Vec::new();
+    };
+    let tags: Vec<AxisTag> = arrays
+        .axes()
+        .iter()
+        .map(|axis| axis.axis_tag().to_be_bytes())
+        .collect();
+    let first = |id: StringId| strings(id).into_iter().next();
+    // The prefix of an instance's PostScript name (Adobe TN 5902): `name`
+    // ID 25, else the typographic family.
+    let prefix = first(StringId::VARIATIONS_POSTSCRIPT_NAME_PREFIX)
+        .or_else(|| default.families.first().cloned())
+        .map(|name| ascii_alphanumeric(&name))
+        .filter(|name| !name.is_empty());
+    let mut faces = Vec::new();
+    for (number, record) in arrays.instances().iter().enumerate() {
+        let Ok(record) = record else { continue };
+        let Some(subfamily) = first(record.subfamily_name_id) else {
+            continue;
+        };
+        let coordinates: Vec<(AxisTag, i32)> = tags
+            .iter()
+            .zip(record.coordinates)
+            .map(|(&tag, value)| (tag, value.get().to_bits()))
+            .collect();
+        let value = |tag: AxisTag| {
+            coordinates
+                .iter()
+                .find(|(t, _)| *t == tag)
+                .map(|&(_, v)| f64::from(v) / FIXED_ONE)
+        };
+        let weight = value(AXIS_WEIGHT_TAG)
+            .map(|w| {
+                w.round()
+                    .clamp(f64::from(MIN_INSTANCE_WEIGHT), f64::from(MAX_WEIGHT))
+                    as u16
+            })
+            .unwrap_or(default.weight);
+        let width = value(AXIS_WIDTH).map(width_class).unwrap_or(default.width);
+        let italic = match (value(AXIS_ITALIC_TAG), value(AXIS_SLANT_TAG)) {
+            (Some(ital), _) if ital > 0.0 => true,
+            (_, Some(slnt)) if slnt != 0.0 => true,
+            (Some(_), _) | (_, Some(_)) => false,
+            (None, None) => default.italic,
+        };
+        let family = default.families.first().cloned().unwrap_or_default();
+        let postscript_name = record.post_script_name_id.and_then(first).or_else(|| {
+            prefix
+                .as_deref()
+                .map(|p| named_instance_name(p, &subfamily))
+        });
+        faces.push(FaceInfo {
+            full_name: Some(format!("{family} {subfamily}")),
+            postscript_name,
+            weight,
+            width,
+            italic,
+            instance: Some(Instance {
+                number: number as u32,
+                subfamily,
+                coordinates,
+            }),
+            ..default.clone()
+        });
+    }
+    faces
+}
+
+/// The `usWidthClass` nearest to a `wdth` value in percent.
+fn width_class(percent: f64) -> u8 {
+    let nearest = WIDTH_CLASS_PERCENT
+        .iter()
+        .enumerate()
+        .min_by(|a, b| (a.1 - percent).abs().total_cmp(&(b.1 - percent).abs()))
+        .map_or(NORMAL_WIDTH as usize - 1, |(index, _)| index);
+    nearest as u8 + 1
 }
 
 /// The union of every Unicode subtable of a `cmap`; `None` when it has none.
@@ -395,5 +541,6 @@ fn index_type1(path: &Path, data: &[u8]) -> Result<FaceInfo, FontError> {
         italic: metrics.is_italic.unwrap_or(false),
         monospaced: metrics.is_monospaced.unwrap_or(false),
         coverage: None,
+        instance: None,
     })
 }

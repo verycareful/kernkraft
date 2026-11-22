@@ -460,3 +460,178 @@ fn a_type_1_file_is_listed_by_name_with_no_coverage() {
     assert!(list.best(&query(&["Test"], 400, false)).is_some());
     assert!(list.covering('A', &query(&["Test"], 400, false)).is_none());
 }
+
+// Named instances of a variable font (`fvar`, OpenType 1.9).
+
+use common::sfnt::{Instance, Variable};
+use kernkraft_font::Variations;
+
+const BOLD_NAME: u16 = 256;
+const BLACK_NAME: u16 = 257;
+const BLACK_POSTSCRIPT_NAME: u16 = 258;
+
+/// "Test Sans" with a weight axis from 400 to 900 and the named instances
+/// Bold (700, no PostScript name) and Black (900, PostScript name
+/// `Test-Black-PS`), and a glyph for `A`.
+fn weight_font() -> Vec<u8> {
+    axis_font(
+        *b"wght",
+        (400, 400, 900),
+        &[
+            (BOLD_NAME, 700, None),
+            (BLACK_NAME, 900, Some(BLACK_POSTSCRIPT_NAME)),
+        ],
+    )
+}
+
+fn axis_font(
+    tag: [u8; 4],
+    range: (i32, i32, i32),
+    instances: &[(u16, i32, Option<u16>)],
+) -> Vec<u8> {
+    let mut spec = SfntSpec::new(vec![
+        Glyph {
+            name: ".notdef",
+            advance: 500,
+            contours: vec![],
+        },
+        Glyph {
+            name: "A",
+            advance: 500,
+            contours: sfnt::triangle(),
+        },
+    ]);
+    spec.unicode = vec![('A' as u16, 1)];
+    spec.extra_names = vec![
+        (BOLD_NAME, "Bold"),
+        (BLACK_NAME, "Black"),
+        (BLACK_POSTSCRIPT_NAME, "Test-Black-PS"),
+    ];
+    spec.variable = Some(Variable {
+        tag,
+        min: range.0,
+        default: range.1,
+        max: range.2,
+        moves: vec![],
+        instances: instances
+            .iter()
+            .map(|&(name_id, value, postscript_name_id)| Instance {
+                name_id,
+                value,
+                postscript_name_id,
+            })
+            .collect(),
+    });
+    sfnt::build(&spec)
+}
+
+#[test]
+fn a_variable_font_is_its_default_face_and_one_face_per_named_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "v.ttf", &weight_font());
+    let list = FontList::index(std::slice::from_ref(&path), &NoProgress).unwrap();
+    let faces = list.faces();
+    assert_eq!(faces.len(), 3, "{faces:?}");
+    // The default face is the font as it was always indexed.
+    assert!(faces[0].instance.is_none());
+    assert_eq!(faces[0].weight, 400);
+    assert_eq!(
+        faces[0].postscript_name.as_deref(),
+        Some("TestSans-Regular")
+    );
+    // Then the instances, in the order of the `fvar` table.
+    let bold = faces[1].instance.as_ref().unwrap();
+    assert_eq!((bold.number, bold.subfamily.as_str()), (0, "Bold"));
+    assert_eq!(bold.variations(), Variations::new().with(*b"wght", 700.0));
+    let black = faces[2].instance.as_ref().unwrap();
+    assert_eq!((black.number, black.subfamily.as_str()), (1, "Black"));
+    for face in faces {
+        assert_eq!(face.path, path);
+        assert_eq!(face.index, 0);
+        assert_eq!(face.families, vec!["Test Sans".to_string()]);
+        assert!(face.covers('A'));
+    }
+}
+
+#[test]
+fn an_instance_has_the_weight_of_its_wght_value_and_a_postscript_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "v.ttf", &weight_font());
+    let list = FontList::index(&[path], &NoProgress).unwrap();
+    let faces = list.faces();
+    assert_eq!((faces[1].weight, faces[2].weight), (700, 900));
+    // The prefix and the subfamily name by Adobe TN 5902, or the name the
+    // font gives the instance.
+    assert_eq!(faces[1].postscript_name.as_deref(), Some("TestSans-Bold"));
+    assert_eq!(faces[2].postscript_name.as_deref(), Some("Test-Black-PS"));
+    assert_eq!(faces[1].full_name.as_deref(), Some("Test Sans Bold"));
+}
+
+#[test]
+fn a_wanted_weight_is_matched_on_the_wght_axis_of_a_variable_font() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "v.ttf", &weight_font());
+    let list = FontList::index(&[path], &NoProgress).unwrap();
+    let families = ["Test Sans"];
+    let best = |weight: u16| {
+        let face = list.best(&query(&families, weight, false)).unwrap();
+        (face.weight, face.instance.as_ref().map(|i| i.number))
+    };
+    assert_eq!(best(400), (400, None));
+    assert_eq!(best(700), (700, Some(0)));
+    assert_eq!(best(900), (900, Some(1)));
+    // 800 is between the two: heavier first, as for any list of faces.
+    assert_eq!(best(800), (900, Some(1)));
+    // Every face of the family appears once, the closest first.
+    let order = list.by_family(&query(&families, 700, false));
+    assert_eq!(
+        names(&order).iter().map(|n| n.1).collect::<Vec<_>>(),
+        [700, 900, 400]
+    );
+}
+
+#[test]
+fn a_static_font_has_no_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = write(
+        dir.path(),
+        "s.ttf",
+        &font(&Face {
+            family: "Plain",
+            weight: 400,
+            italic: false,
+            mono: false,
+            chars: &['A'],
+        }),
+    );
+    let list = FontList::index(&[p], &NoProgress).unwrap();
+    assert!(list.faces().iter().all(|f| f.instance.is_none()));
+}
+
+#[test]
+fn an_italic_axis_makes_its_instances_italic_and_a_width_axis_sets_their_width() {
+    let dir = tempfile::tempdir().unwrap();
+    let ital = write(
+        dir.path(),
+        "i.ttf",
+        &axis_font(*b"ital", (0, 0, 1), &[(BOLD_NAME, 1, None)]),
+    );
+    let wdth = write(
+        dir.path(),
+        "w.ttf",
+        &axis_font(
+            *b"wdth",
+            (50, 100, 200),
+            &[(BOLD_NAME, 75, None), (BLACK_NAME, 200, None)],
+        ),
+    );
+    let list = FontList::index(&[ital.clone(), wdth.clone()], &NoProgress).unwrap();
+    let of = |path: &PathBuf| -> Vec<&kernkraft_font::FaceInfo> {
+        list.faces().iter().filter(|f| &f.path == path).collect()
+    };
+    let i = of(&ital);
+    assert!(!i[0].italic && i[1].italic);
+    let w = of(&wdth);
+    // 75 percent is class 3 (condensed in the OS/2 table) and 200 is 9.
+    assert_eq!((w[0].width, w[1].width, w[2].width), (5, 3, 9));
+}

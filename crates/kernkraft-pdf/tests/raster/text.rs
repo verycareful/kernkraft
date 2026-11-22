@@ -432,3 +432,70 @@ fn a_damaged_program_falls_back_to_the_list_and_is_reported() {
         !diagnostics_of(&doc, |k| matches!(k, DiagnosticKind::FontProgramUnreadable)).is_empty()
     );
 }
+
+/// The font of `truetype`, as a variable font with a weight axis from 400 to
+/// 900 and a named instance Bold at 700, at which the rectangle of `A` is 300
+/// units wider: its right edge moves by 0.6 of 500 (700 is 0.6 of the way
+/// from 400 to 900).
+fn variable_helvetica() -> Vec<u8> {
+    const BOLD_NAME: u16 = 256;
+    let mut spec = SfntSpec::new(vec![
+        glyph(".notdef", vec![]),
+        glyph("A", vec![RECTANGLE.to_vec()]),
+    ]);
+    spec.unicode = vec![(0x41, 1)];
+    spec.family = "Helvetica";
+    spec.extra_names = vec![(BOLD_NAME, "Bold")];
+    spec.variable = Some(sfnt::Variable {
+        tag: *b"wght",
+        min: 400,
+        default: 400,
+        max: 900,
+        instances: vec![sfnt::Instance {
+            name_id: BOLD_NAME,
+            value: 700,
+            postscript_name_id: None,
+        }],
+        moves: vec![
+            None,
+            Some(sfnt::Move {
+                dx: vec![0, 500, 500, 0],
+                dy: vec![0; 4],
+                advance: 0,
+            }),
+        ],
+    });
+    sfnt::build(&spec)
+}
+
+#[test]
+fn a_bold_font_with_no_program_is_drawn_at_the_named_instance_of_a_variable_face() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("helvetica-variable.ttf");
+    std::fs::write(&path, variable_helvetica()).unwrap();
+    let list = FontList::index(&[path], &NoProgress).unwrap();
+    assert_eq!(list.faces().len(), 2);
+    let draw = |base_font: &str| {
+        let objects: Vec<(u32, Vec<u8>)> = vec![(
+            20,
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /{base_font} /Encoding /WinAnsiEncoding >>"
+            )
+            .into_bytes(),
+        )];
+        let doc = page_with("BT /F1 20 Tf 2 2 Td (A) Tj ET", &objects);
+        let options = RenderOptions {
+            fonts: Some(&list),
+            ..Default::default()
+        };
+        render_with(&doc, &options).unwrap()
+    };
+    // Regular: the default face, 10 points wide as `truetype` gives.
+    let regular = draw("Helvetica");
+    assert_box(&regular, 2, 4, 12, 18, BLACK);
+    assert_eq!(px(&regular, 14, 10), WHITE);
+    // Bold: the Bold instance, 300 units (6 points) wider.
+    let bold = draw("Helvetica-Bold");
+    assert_box(&bold, 2, 4, 18, 18, BLACK);
+    assert_eq!(px(&bold, 19, 10), WHITE);
+}

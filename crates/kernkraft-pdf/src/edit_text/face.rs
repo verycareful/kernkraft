@@ -230,7 +230,12 @@ pub(super) fn embed(
             source,
         })
     })?;
-    let embedder = FontEmbedder::new(data, face.index)?;
+    let variations = face
+        .instance
+        .as_ref()
+        .map(kernkraft_font::Instance::variations)
+        .unwrap_or_default();
+    let embedder = FontEmbedder::with_variations(data, face.index, &variations)?;
     for character in text.chars() {
         if !embedder.covers(character)? {
             return Err(PdfError::NoGlyphForCharacter { character });

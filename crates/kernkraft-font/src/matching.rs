@@ -91,6 +91,7 @@ fn style_order(q: &Query<'_>, a: &FaceInfo, b: &FaceInfo) -> Ordering {
             weight_key(q.weight, f.weight),
             f.path.clone(),
             f.index,
+            f.instance.as_ref().map(|instance| instance.number),
         )
     };
     key(a).cmp(&key(b))

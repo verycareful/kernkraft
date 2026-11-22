@@ -28,7 +28,7 @@ mod variation;
 
 pub use coverage::Coverage;
 pub use error::FontError;
-pub use list::{FaceInfo, FontList, Skipped};
+pub use list::{FaceInfo, FontList, Instance, Skipped};
 pub use matching::Query;
 pub use outline::{Outline, Point, Segment};
 pub use program::{CmapSelector, Format, GlyphId, Metrics, Names, Program};

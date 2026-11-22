@@ -415,6 +415,31 @@ class CompareBbox(unittest.TestCase):
         self.assertIn("only theirs 1", report[0])
         self.assertIn("oblique ours 1 theirs 1", report[0])
 
+    def test_a_word_of_theirs_that_holds_an_oblique_word_is_set_aside(self):
+        # The other tool joined two turned digits into one wide word whose
+        # centre is in neither of ours.
+        ours = ours_file(
+            [
+                (
+                    200,
+                    100,
+                    0,
+                    [
+                        ("1", 0.1, 0.3, 0.12, 0.4, 3.8),
+                        ("2", 0.3, 0.3, 0.32, 0.4, 3.8),
+                        ("Hello", 0.5, 0.6, 0.7, 0.7),
+                    ],
+                )
+            ]
+        )
+        theirs = theirs_file(
+            [(200, 100, [("12", 20, 30, 64, 40), ("Hello", 100, 60, 140, 70)])]
+        )
+        report, ok = self.run_compare(ours, theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("in place 1 displaced 0 only ours 0 only theirs 0", report[0])
+        self.assertIn("oblique ours 2 theirs 1", report[0])
+
     def test_a_word_within_two_degrees_is_compared_as_straight(self):
         ours = ours_file([(200, 100, 0, [("Hello", 0.1, 0.3, 0.3, 0.4, 2.0)])])
         theirs = theirs_file([(200, 100, [("Hello", 20, 30, 60, 40)])])

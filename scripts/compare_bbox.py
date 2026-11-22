@@ -54,8 +54,10 @@ one and not for the other):
     their own line of the report, never as words whose text agrees;
   - oblique: a word of ours more than OBLIQUE_DEGREES off the page's axes is
     outside this comparison (a box that is axis-aligned says too little of
-    it), as are the words of theirs whose centre lies in its box. They are
-    counted on the page's line, never dropped without trace.
+    it), as are the words of theirs whose centre lies in its box, and those
+    whose box holds its centre (the other tool joined several turned words
+    into one). They are counted on the page's line, never dropped without
+    trace.
 A word that is still unpaired is reported as only ours or only theirs.
 
 A page passes when no pair is displaced and at least MATCH_LIMIT of its
@@ -428,7 +430,9 @@ def compare_page(number, ours_page, their_page):
     ]
     oblique = [w for w in words if w.off > OBLIQUE_DEGREES]
     straight = [w for w in words if w.off <= OBLIQUE_DEGREES]
-    kept = [t for t in theirs if not any(holds(o, t) for o in oblique)]
+    kept = [
+        t for t in theirs if not any(holds(o, t) or holds(t, o) for o in oblique)
+    ]
     set_aside = len(theirs) - len(kept)
 
     placed, only_ours, only_theirs = pair(straight, kept, vertical, True)

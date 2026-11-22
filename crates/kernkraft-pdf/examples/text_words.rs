@@ -27,9 +27,11 @@
 //! on one line of the page; a skewed glyph has a side that leans, and the
 //! box of the word reaches to the farther end of it. `OFF` is how far, in degrees from 0 to 45, the
 //! word's text lies off the nearest axis of the page (0 for a horizontal or
-//! vertical word and for a word of one character), measured from the first
-//! character's centre to the last one's, when the word has three characters
-//! or more whose centres lie on one line (see `off_axis_degrees`). A word is a run of characters of one line
+//! vertical word), the larger of two measures: from the first character's
+//! centre to the last one's, when the word has three characters or more whose
+//! centres lie on one line (see `off_axis_degrees`), and the direction of the
+//! first drawn glyph's own baseline, its quad's corner 0 to corner 1 (see
+//! `glyph_off_degrees`), which a word of one or two characters has too. A word is a run of characters of one line
 //! between white space; a space the layout read between two glyphs ends a
 //! word like any other. Exits with 0 when every page is listed, and 1 on
 //! any failure.
@@ -109,6 +111,21 @@ fn off_axis_degrees(rects: &[Rect], width: f64, height: f64) -> f64 {
     turn.min(QUARTER_TURN_DEGREES - turn)
 }
 
+/// How far the baseline of a glyph, from `quad`'s corner 0 to corner 1 (as
+/// fractions of a page `width` by `height` points), lies off the nearest
+/// axis of the page, in degrees from 0 to 45. A glyph's own baseline says
+/// what a word of one or two characters cannot say by its centres, and a
+/// skewed glyph's baseline stays on its line, so a slant is not a turn.
+fn glyph_off_degrees(quad: &[(f64, f64); 4], width: f64, height: f64) -> f64 {
+    let across = (quad[1].0 - quad[0].0) * width;
+    let down = (quad[1].1 - quad[0].1) * height;
+    if across.hypot(down) == 0.0 {
+        return 0.0;
+    }
+    let turn = down.atan2(across).to_degrees().abs() % QUARTER_TURN_DEGREES;
+    turn.min(QUARTER_TURN_DEGREES - turn)
+}
+
 /// A word of the text layer.
 struct Word {
     /// The rectangle that holds its characters.
@@ -156,7 +173,11 @@ fn push_word(
         .filter(|ch| ch.rect.right > ch.rect.left)
         .collect();
     let rects: Vec<Rect> = drawn.iter().map(|ch| ch.rect).collect();
-    let off = off_axis_degrees(&rects, width, height);
+    let off = off_axis_degrees(&rects, width, height).max(
+        drawn
+            .first()
+            .map_or(0.0, |ch| glyph_off_degrees(&ch.quad, width, height)),
+    );
     let around = Rect::around(
         chars
             .iter()

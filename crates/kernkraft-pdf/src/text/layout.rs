@@ -42,8 +42,10 @@ const SPACE_GAP: f64 = 0.1;
 /// stretch of a justified space.
 const MAX_JOIN_GAP: f64 = 1.0;
 
-/// How near, along the line and in ems, two glyphs of the same text are
-/// to be one glyph drawn twice (a bold made by overprinting).
+/// How near, along the line and across it, in ems, two glyphs of the same
+/// text are to be one glyph drawn twice (a bold made by overprinting). Across
+/// it matters: the dots of a vertical ellipsis share a position along the
+/// line and are a few points apart across it.
 const SAME_POSITION: f64 = 0.1;
 
 /// The most room, in ems of the larger line, between the baselines of
@@ -302,8 +304,18 @@ fn split_cluster(
         if let Some(&(last, _)) = current.last() {
             let size = glyphs[last].size.max(glyphs[glyph].size);
             let gap = start[glyph] - reach;
-            let drawn_twice = start[glyph] - start[last] <= SAME_POSITION * size
-                && glyphs[glyph].text == glyphs[last].text;
+            let drawn_twice = current
+                .iter()
+                .rev()
+                .take_while(|&&(other, _)| {
+                    start[glyph] - start[other]
+                        <= SAME_POSITION * glyphs[other].size.max(glyphs[glyph].size)
+                })
+                .any(|&(other, _)| {
+                    (perp[glyph] - perp[other]).abs()
+                        <= SAME_POSITION * glyphs[other].size.max(glyphs[glyph].size)
+                        && glyphs[glyph].text == glyphs[other].text
+                });
             if drawn_twice {
                 continue;
             }

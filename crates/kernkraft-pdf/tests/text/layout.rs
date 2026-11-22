@@ -175,6 +175,25 @@ fn the_same_letters_one_glyph_apart_are_not_a_duplicate() {
 }
 
 #[test]
+fn the_same_letter_one_above_another_is_not_drawn_twice() {
+    // A vertical ellipsis: three periods at one x, 4 points apart, one
+    // 10 point glyph each, set with T* (9.4.2). They share the position along
+    // the line, so only their place across it tells them from one glyph
+    // overprinted: 4 points is 0.4 em, over the 0.1 em of an overprint.
+    let page = page("BT /F1 10 Tf 4 TL 100 700 Td (.) Tj T* (.) Tj T* (.) Tj ET");
+    assert_eq!(page.text().matches('.').count(), 3, "{:?}", page.text());
+}
+
+#[test]
+fn text_drawn_twice_a_tenth_of_an_em_up_is_still_read_once() {
+    // The copy of a bold made by overprinting may be a little up as well as
+    // along: 0.5 points is 0.05 em.
+    let page =
+        page("BT /F1 10 Tf 100 700 Td (Hello) Tj ET BT /F1 10 Tf 100.3 700.5 Td (Hello) Tj ET");
+    assert_eq!(page.text(), "Hello");
+}
+
+#[test]
 fn text_drawn_out_of_order_is_read_in_order_along_the_line() {
     let page = page("BT /F1 10 Tf 134 700 Td (World) Tj ET BT /F1 10 Tf 100 700 Td (Hello) Tj ET");
     assert_eq!(page.text(), "Hello World");

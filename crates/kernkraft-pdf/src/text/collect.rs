@@ -11,7 +11,8 @@
 //! the glyphs into lines and blocks.
 
 use crate::content::{
-    Context, Device, FormInfo, MarkedContent, OperatorSpan, PlacedGlyph, StreamId, TextRun,
+    Context, Device, FormInfo, MarkedContent, Matrix, OperatorSpan, Path, PathPaint, PathSegment,
+    PlacedGlyph, StreamId, TextRun,
 };
 use crate::display::PageView;
 use crate::font::Font;
@@ -35,6 +36,27 @@ pub(crate) const FALLBACK_DESCENT: f64 = -200.0;
 /// square of a full-width character (9.7.4.3 centres the glyph on the
 /// position vector).
 const VERTICAL_GLYPH_WIDTH: f64 = 1.0;
+
+/// How many times longer than thick a painted segment is to be a rule: a
+/// fraction bar, an underline or the line of a table are many times longer
+/// than the stroke that draws them, a block or a dot is not.
+const RULE_ASPECT: f64 = 4.0;
+
+/// The cosine of the angle between two sides of a filled quadrilateral, past
+/// which it is not a rectangle: a rectangle's sides meet at right angles, and
+/// a matrix that is not a rotation and a scale does not keep that.
+const RIGHT_ANGLE_TOLERANCE: f64 = 1e-3;
+
+/// A thin straight line the page paints: the bar of a fraction, an
+/// underline, a table's border. It is a segment in points on the displayed
+/// page with the width it is drawn at. The text layer reads these as the
+/// marks that tell a numerator from a superscript.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RawRule {
+    pub from: (f64, f64),
+    pub to: (f64, f64),
+    pub thickness: f64,
+}
 
 /// One glyph of the page.
 #[derive(Debug, Clone)]
@@ -60,6 +82,10 @@ pub(super) struct RawGlyph {
 /// What the page's glyphs came to.
 pub(super) struct Collected {
     pub glyphs: Vec<RawGlyph>,
+    /// The thin straight lines the page paints. They are kept without a
+    /// bound of their own: a page's operators are already bounded by the
+    /// interpreter, and a rule is a few numbers.
+    pub rules: Vec<RawRule>,
     /// The first operation that showed a glyph with no Unicode text.
     pub unmapped: Option<OperatorSpan>,
     /// Whether the page showed more glyphs than the caller allows.
@@ -97,6 +123,7 @@ impl<'a> Collector<'a> {
             invocations: Vec::new(),
             out: Collected {
                 glyphs: Vec::new(),
+                rules: Vec::new(),
                 unmapped: None,
                 overflow: None,
             },
@@ -196,6 +223,123 @@ impl<'a> Collector<'a> {
     }
 }
 
+/// The rules a painted path holds, on the displayed page: each thin
+/// rectangle a fill paints, and each straight stroked segment drawn at
+/// `width` points (8.5.3.2 and 8.5.3.3). A path with a curve in a
+/// subpath gives nothing for that subpath.
+fn rules_of(path: &Path, paint: PathPaint, to_page: Matrix, line_width: f64) -> Vec<RawRule> {
+    let mut subpaths: Vec<Subpath> = Vec::new();
+    for segment in &path.segments {
+        match *segment {
+            PathSegment::MoveTo(x, y) => subpaths.push(Subpath {
+                points: vec![to_page.apply(x, y)],
+                curved: false,
+                closed: false,
+            }),
+            PathSegment::LineTo(x, y) => {
+                if let Some(subpath) = subpaths.last_mut() {
+                    subpath.points.push(to_page.apply(x, y));
+                }
+            }
+            PathSegment::CurveTo(..) => {
+                if let Some(subpath) = subpaths.last_mut() {
+                    subpath.curved = true;
+                }
+            }
+            PathSegment::Close => {
+                if let Some(subpath) = subpaths.last_mut() {
+                    subpath.closed = true;
+                }
+            }
+        }
+    }
+    let scale = (to_page.a * to_page.d - to_page.b * to_page.c).abs().sqrt();
+    let stroked = line_width * scale;
+    let mut rules = Vec::new();
+    for mut subpath in subpaths {
+        if subpath.curved {
+            continue;
+        }
+        if paint.fill.is_some() {
+            rules.extend(rectangle_rule(&subpath.points));
+        }
+        if paint.stroke {
+            if subpath.closed && subpath.points.len() > 1 {
+                subpath.points.push(subpath.points[0]);
+            }
+            for pair in subpath.points.windows(2) {
+                rules.extend(rule(pair[0], pair[1], stroked));
+            }
+        }
+    }
+    rules
+}
+
+/// A run of straight segments of a path, on the displayed page.
+struct Subpath {
+    points: Vec<(f64, f64)>,
+    curved: bool,
+    closed: bool,
+}
+
+/// The segment from `from` to `to` drawn `thickness` thick, when it is a
+/// rule: finite, with length, and many times longer than thick.
+fn rule(from: (f64, f64), to: (f64, f64), thickness: f64) -> Option<RawRule> {
+    let length = (to.0 - from.0).hypot(to.1 - from.1);
+    let finite = [from.0, from.1, to.0, to.1, thickness]
+        .iter()
+        .all(|value| value.is_finite());
+    (finite && length > 0.0 && length >= RULE_ASPECT * thickness).then_some(RawRule {
+        from,
+        to,
+        thickness,
+    })
+}
+
+/// The rule a filled rectangle is: the segment along its middle, as thick
+/// as its short side. `points` are the corners of a subpath, the first
+/// repeated at the end or not.
+fn rectangle_rule(points: &[(f64, f64)]) -> Option<RawRule> {
+    let corners = match points {
+        [a, b, c, d] => [*a, *b, *c, *d],
+        [a, b, c, d, e] if a == e => [*a, *b, *c, *d],
+        _ => return None,
+    };
+    let side = |from: (f64, f64), to: (f64, f64)| (to.0 - from.0, to.1 - from.1);
+    let (first, second) = (side(corners[0], corners[1]), side(corners[1], corners[2]));
+    let (third, fourth) = (side(corners[2], corners[3]), side(corners[3], corners[0]));
+    let (long_a, long_b) = (first.0.hypot(first.1), second.0.hypot(second.1));
+    let square = |u: (f64, f64), v: (f64, f64)| {
+        let lengths = u.0.hypot(u.1) * v.0.hypot(v.1);
+        lengths == 0.0 || (u.0 * v.0 + u.1 * v.1).abs() / lengths <= RIGHT_ANGLE_TOLERANCE
+    };
+    let opposite = |u: (f64, f64), v: (f64, f64)| {
+        (u.0 + v.0).abs() <= RIGHT_ANGLE_TOLERANCE * (long_a + long_b).max(f64::MIN_POSITIVE)
+            && (u.1 + v.1).abs() <= RIGHT_ANGLE_TOLERANCE * (long_a + long_b).max(f64::MIN_POSITIVE)
+    };
+    if !(square(first, second)
+        && square(second, third)
+        && opposite(first, third)
+        && opposite(second, fourth))
+    {
+        return None;
+    }
+    let middle = |a: (f64, f64), b: (f64, f64)| ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+    if long_a >= long_b {
+        rule(
+            middle(corners[3], corners[0]),
+            middle(corners[1], corners[2]),
+            long_b,
+        )
+    } else {
+        rule(
+            middle(corners[0], corners[1]),
+            middle(corners[2], corners[3]),
+            long_a,
+        )
+    }
+}
+
 /// The least and greatest of `values`.
 fn bounds(values: impl Iterator<Item = f64>) -> (f64, f64) {
     values.fold(
@@ -228,6 +372,22 @@ impl Device for Collector<'_> {
 
     fn end_form(&mut self, _ctx: &Context<'_>, _form: &FormInfo) {
         self.invocations.pop();
+    }
+
+    fn path(
+        &mut self,
+        ctx: &Context<'_>,
+        path: &Path,
+        paint: PathPaint,
+        _construction: OperatorSpan,
+    ) {
+        if !ctx.visible {
+            return;
+        }
+        let to_page = ctx.state.ctm.then(self.view.matrix);
+        self.out
+            .rules
+            .extend(rules_of(path, paint, to_page, ctx.state.line_width));
     }
 
     fn begin_marked(&mut self, ctx: &Context<'_>) {

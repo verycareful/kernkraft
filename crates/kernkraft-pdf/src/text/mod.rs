@@ -341,7 +341,7 @@ impl TextExtractor {
         diagnostics.set_object(None);
         self.doc.record_diagnostics(diagnostics);
         result?;
-        let laid = layout::lay_out(&collected.glyphs, &view);
+        let laid = layout::lay_out(&collected.glyphs, &collected.rules, &view);
         Ok(TextPage::new(number, laid.blocks, laid.tagged))
     }
 }

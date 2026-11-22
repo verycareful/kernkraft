@@ -628,3 +628,78 @@ fn a_superscript_and_a_subscript_stay_on_their_line() {
     );
     assert_eq!(line_texts(&page), ["N2xi"]);
 }
+
+/// A numerator of 7 points whose baseline is 3.9 above that of the 10 point
+/// `+1`, a denominator `dx` of 7 points 3.4 below it, and between the two the
+/// bar: a fraction as TeX sets it. Half the larger size is 5 points, so
+/// both small clusters are within reach of the line as scripts.
+const FRACTION: &str = "BT /F1 7 Tf 101.4 703.9 Td (d) Tj ET \
+     BT /F1 7 Tf 100 696.6 Td (dx) Tj ET \
+     BT /F1 10 Tf 112 700 Td (+1) Tj ET";
+
+#[test]
+fn a_numerator_is_a_script_of_the_line_below_it_when_no_bar_parts_them() {
+    let page = page(FRACTION);
+    assert!(
+        !line_texts(&page).contains(&"d".to_string()),
+        "{:?}",
+        line_texts(&page)
+    );
+}
+
+#[test]
+fn a_filled_bar_between_a_numerator_and_the_line_keeps_them_apart() {
+    // The bar is 0.4 points thick, between the baselines 700 and 703.9.
+    let page = page(&format!("{FRACTION} 100 702.5 9 0.4 re f"));
+    let lines = line_texts(&page);
+    assert!(lines.contains(&"d".to_string()), "{lines:?}");
+    assert!(lines.contains(&"dx +1".to_string()), "{lines:?}");
+}
+
+#[test]
+fn a_stroked_bar_keeps_them_apart_too() {
+    let page = page(&format!("{FRACTION} 0.4 w 100 702.7 m 109 702.7 l S"));
+    let lines = line_texts(&page);
+    assert!(lines.contains(&"d".to_string()), "{lines:?}");
+}
+
+#[test]
+fn a_bar_under_a_matrix_is_found_where_it_is_drawn_on_the_page() {
+    // The same bar written in a space scaled by 2 and moved: its page
+    // coordinates are those of the filled one above.
+    let page = page(&format!(
+        "{FRACTION} q 2 0 0 2 100 702.5 cm 0 0 4.5 0.2 re f Q"
+    ));
+    assert!(line_texts(&page).contains(&"d".to_string()));
+}
+
+#[test]
+fn a_bar_that_does_not_reach_the_numerator_does_not_part_it() {
+    // It lies between the baselines but 50 points to the right.
+    let page = page(&format!("{FRACTION} 150 702.5 9 0.4 re f"));
+    assert!(!line_texts(&page).contains(&"d".to_string()));
+}
+
+#[test]
+fn a_block_is_not_a_bar() {
+    // A filled square 9 points on a side is a shape, not a rule.
+    let page = page(&format!("{FRACTION} 100 700.5 9 9 re f"));
+    assert!(!line_texts(&page).contains(&"d".to_string()));
+}
+
+#[test]
+fn a_bar_that_is_not_painted_is_not_a_bar() {
+    let page = page(&format!("{FRACTION} 100 702.5 9 0.4 re n"));
+    assert!(!line_texts(&page).contains(&"d".to_string()));
+}
+
+#[test]
+fn a_bar_beside_a_script_that_lies_between_nothing_leaves_scripts_alone() {
+    // Text rise of 4.5 for a 7 point digit, as in the test of the scripts
+    // above, with a rule 40 points below the line.
+    let page = page(
+        "BT /F1 10 Tf 100 700 Td (N) Tj /F1 7 Tf 4.5 Ts (2) Tj /F1 10 Tf 0 Ts (x) Tj ET \
+         100 660 30 0.4 re f",
+    );
+    assert_eq!(line_texts(&page), ["N2x"]);
+}

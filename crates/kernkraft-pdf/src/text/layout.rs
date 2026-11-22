@@ -15,7 +15,7 @@
 //! by recursive cuts at the widest gap otherwise.
 
 use crate::display::PageView;
-use crate::text::collect::RawGlyph;
+use crate::text::collect::{RawGlyph, RawRule};
 use crate::text::{TextBlock, TextChar, TextLine};
 
 /// The sine of the angle two glyphs' directions may differ by and still
@@ -47,6 +47,12 @@ const MAX_JOIN_GAP: f64 = 1.0;
 /// it matters: the dots of a vertical ellipsis share a position along the
 /// line and are a few points apart across it.
 const SAME_POSITION: f64 = 0.1;
+
+/// The most a bar may be thick, in ems of the smaller of the glyphs it
+/// parts, to be a fraction bar and not a shape: a bar is a hairline (TeX
+/// draws one at 0.4 points under text of 7 to 10 points), and a quarter of
+/// an em is far past any line a writer draws as one.
+const BAR_THICKNESS: f64 = 0.25;
 
 /// The most room, in ems of the larger line, between the baselines of
 /// two lines of one block: the leading of body text is 1.2 ems and a
@@ -137,9 +143,45 @@ fn cross(a: (f64, f64), direction: (f64, f64)) -> f64 {
     a.0 * direction.1 - a.1 * direction.0
 }
 
+/// A rule parallel to a group's text, as its measures along and across the
+/// group's direction.
+struct Bar {
+    perp: f64,
+    from: f64,
+    to: f64,
+    thickness: f64,
+}
+
+/// The rules parallel to `direction`, ordered by place across it.
+fn bars(rules: &[RawRule], direction: (f64, f64)) -> Vec<Bar> {
+    let mut bars: Vec<Bar> = rules
+        .iter()
+        .filter_map(|rule| {
+            let along = (rule.to.0 - rule.from.0, rule.to.1 - rule.from.1);
+            let length = along.0.hypot(along.1);
+            if cross(along, direction).abs() > DIRECTION_TOLERANCE * length {
+                return None;
+            }
+            let (a, b) = (dot(rule.from, direction), dot(rule.to, direction));
+            let middle = (
+                (rule.from.0 + rule.to.0) / 2.0,
+                (rule.from.1 + rule.to.1) / 2.0,
+            );
+            Some(Bar {
+                perp: cross(middle, direction),
+                from: a.min(b),
+                to: a.max(b),
+                thickness: rule.thickness,
+            })
+        })
+        .collect();
+    bars.sort_by(|a, b| a.perp.total_cmp(&b.perp));
+    bars
+}
+
 /// Lays `glyphs` out.
-pub(super) fn lay_out(glyphs: &[RawGlyph], view: &PageView) -> Laid {
-    let lines = lines(glyphs);
+pub(super) fn lay_out(glyphs: &[RawGlyph], rules: &[RawRule], view: &PageView) -> Laid {
+    let lines = lines(glyphs, rules);
     let blocks = blocks(&lines);
     let order = reading_order(&lines, &blocks);
     let tagged = blocks
@@ -153,7 +195,7 @@ pub(super) fn lay_out(glyphs: &[RawGlyph], view: &PageView) -> Laid {
 }
 
 /// The lines of the page, unordered.
-fn lines(glyphs: &[RawGlyph]) -> Vec<Line> {
+fn lines(glyphs: &[RawGlyph], rules: &[RawRule]) -> Vec<Line> {
     // Glyphs flowing the same way share a group; the first glyph of a
     // group gives the direction the group's measures are taken in.
     let mut groups: Vec<(f64, f64)> = Vec::new();
@@ -213,8 +255,36 @@ fn lines(glyphs: &[RawGlyph]) -> Vec<Line> {
             _ => clusters.push(vec![glyph]),
         }
     }
+    let bars: Vec<Vec<Bar>> = groups
+        .iter()
+        .map(|&direction| bars(rules, direction))
+        .collect();
+    // Whether a bar lies between two clusters and reaches the first: the
+    // fraction bar between a numerator and what is below it.
+    let parted = |script: &[usize], other: &[usize]| {
+        let (&a, &b) = (&script[script.len() / 2], &other[other.len() / 2]);
+        let (low, high) = (perp[a].min(perp[b]), perp[a].max(perp[b]));
+        let along = |cluster: &[usize]| {
+            cluster
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(from, to), &glyph| {
+                    (
+                        from.min(start[glyph]),
+                        to.max(start[glyph] + glyphs[glyph].extent),
+                    )
+                })
+        };
+        let (from, to) = along(script);
+        let size = glyphs[a].size.min(glyphs[b].size);
+        let group = &bars[group_of[a]];
+        let first = group.partition_point(|bar| bar.perp <= low);
+        group[first..]
+            .iter()
+            .take_while(|bar| bar.perp < high)
+            .any(|bar| bar.thickness <= BAR_THICKNESS * size && bar.from < to && bar.to > from)
+    };
     let mut lines = Vec::new();
-    for cluster in attach_scripts(clusters, glyphs, &group_of, &perp, &key) {
+    for cluster in attach_scripts(clusters, glyphs, &group_of, &perp, &key, &parted) {
         split_cluster(&cluster, glyphs, &group_of, &perp, &start, &mut lines);
     }
     lines
@@ -226,7 +296,8 @@ fn lines(glyphs: &[RawGlyph]) -> Vec<Line> {
 /// fewer glyphs, and whose baseline is within [`BASELINE_TOLERANCE`] of the
 /// larger size from its own (the nearest such, the lowest first on a tie).
 /// A superscript or a subscript is smaller than its base and is a few glyphs
-/// beside many; a line is neither smaller nor shorter than the large glyph
+/// beside many, and is not parted from it by a bar: a numerator, set apart
+/// from what is below it by the bar of its fraction, is a line of its own; a line is neither smaller nor shorter than the large glyph
 /// (the delimiter of a displayed formula) set between it and the next line,
 /// so the lines stay apart and the glyph is a line of its own or the script
 /// of neither. A script of a script goes to the cluster at the end of the
@@ -241,6 +312,7 @@ fn attach_scripts(
     group_of: &[usize],
     perp: &[f64],
     key: &dyn Fn(usize) -> Option<usize>,
+    parted: &dyn Fn(&[usize], &[usize]) -> bool,
 ) -> Vec<Vec<usize>> {
     let middle = |cluster: &[usize]| cluster[cluster.len() / 2];
     let size = |index: usize| glyphs[middle(&clusters[index])].size;
@@ -264,7 +336,8 @@ fn attach_scripts(
             let apart = (level(other) - level(script)).abs();
             let holds = size(other) > size(script)
                 && clusters[other].len() >= clusters[script].len()
-                && apart <= BASELINE_TOLERANCE * size(other);
+                && apart <= BASELINE_TOLERANCE * size(other)
+                && !parted(&clusters[script], &clusters[other]);
             if holds && best.is_none_or(|(nearest, _)| apart < nearest) {
                 best = Some((apart, other));
             }

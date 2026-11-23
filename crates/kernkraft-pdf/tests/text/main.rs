@@ -18,6 +18,7 @@
 #[path = "../pdf_fixture/mod.rs"]
 mod pdf_fixture;
 
+mod bidi;
 mod layout;
 mod links;
 mod robustness;

@@ -134,7 +134,7 @@ fn inspect(
     let sources: Vec<GlyphSource> = block
         .lines
         .iter()
-        .flat_map(|line| line.chars.iter())
+        .flat_map(|line| line.visual_chars())
         .filter_map(|ch| ch.source)
         .collect();
     if sources.is_empty() {
@@ -703,7 +703,7 @@ fn frame_of(inspected: &Inspected, block: &TextBlock) -> Result<Frame, PdfError>
     let mut width = 0.0f64;
     let mut starts = Vec::new();
     for line in &block.lines {
-        let mut sources = line.chars.iter().filter_map(|ch| ch.source);
+        let mut sources = line.visual_chars().into_iter().filter_map(|ch| ch.source);
         let (Some(head), tail) = (sources.next(), sources.next_back()) else {
             continue;
         };

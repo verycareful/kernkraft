@@ -248,18 +248,20 @@ mod tests {
     fn page_of(lines: &[&[&str]]) -> TextPage {
         let lines = lines
             .iter()
-            .map(|chars| TextLine {
-                rect: Rect::default(),
-                chars: chars
-                    .iter()
-                    .map(|text| TextChar {
-                        text: (*text).to_owned(),
-                        rect: Rect::default(),
-                        quad: [(0.0, 0.0); 4],
-                        synthetic: false,
-                        source: None,
-                    })
-                    .collect(),
+            .map(|chars| {
+                TextLine::new(
+                    Rect::default(),
+                    chars
+                        .iter()
+                        .map(|text| TextChar {
+                            text: (*text).to_owned(),
+                            rect: Rect::default(),
+                            quad: [(0.0, 0.0); 4],
+                            synthetic: false,
+                            source: None,
+                        })
+                        .collect(),
+                )
             })
             .collect();
         TextPage::new(

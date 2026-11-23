@@ -15,12 +15,16 @@
 //! Text in the invisible render mode is text of the page: it is how a
 //! scanned page carries its recognised text. Text that optional content
 //! hides, that has no size, or that lies wholly off the displayed page is
-//! not. Lines are in visual order, left to right for text that flows that
-//! way: a right-to-left script is not reordered into its logical order.
+//! not. Lines are laid out left to right for text that flows that
+//! way. The characters of a line are in logical order, the order the text
+//! was typed in: a Hebrew word's letters come first letter first, whatever
+//! side of the line they are drawn on, and each character keeps the box
+//! where it is drawn ([`bidi`]).
 //!
 //! A [`TextPage`] is searched with [`TextPage::search`], and a document
 //! with [`Document::search`].
 
+mod bidi;
 pub(crate) mod collect;
 mod layout;
 mod search;
@@ -97,12 +101,47 @@ pub struct TextChar {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextLine {
     pub rect: Rect,
+    /// The characters in logical order. In a line of right-to-left or mixed
+    /// text this is not the order they stand in along the line; see
+    /// [`visual_chars`](Self::visual_chars).
     pub chars: Vec<TextChar>,
+    /// Where each character of `chars` stands along the line, counted from
+    /// its start; empty when the two orders are the same.
+    visual: Vec<usize>,
 }
 
 impl TextLine {
+    /// A line whose characters are in the order they stand along it.
+    pub fn new(rect: Rect, chars: Vec<TextChar>) -> Self {
+        Self {
+            rect,
+            chars,
+            visual: Vec::new(),
+        }
+    }
+
+    /// The text of the line, in logical order.
     pub fn text(&self) -> String {
         self.chars.iter().map(|ch| ch.text.as_str()).collect()
+    }
+
+    /// Where character `index` of [`chars`](Self::chars) stands along the
+    /// line, counted from its start.
+    pub fn visual_index(&self, index: usize) -> usize {
+        self.visual.get(index).copied().unwrap_or(index)
+    }
+
+    /// The characters in the order they stand along the line, from its
+    /// start: left to right for text that flows that way.
+    pub fn visual_chars(&self) -> Vec<&TextChar> {
+        let mut chars: Vec<(usize, &TextChar)> = self
+            .chars
+            .iter()
+            .enumerate()
+            .map(|(index, ch)| (self.visual_index(index), ch))
+            .collect();
+        chars.sort_by_key(|(place, _)| *place);
+        chars.into_iter().map(|(_, ch)| ch).collect()
     }
 }
 
@@ -128,7 +167,8 @@ pub struct Selection {
     /// The text, a line feed after each line and a blank line between
     /// blocks.
     pub text: String,
-    /// The part of each line selected.
+    /// The part of each line selected, a rectangle for each stretch of a
+    /// line (see `TextPage::rects_of`).
     pub rects: Vec<Rect>,
 }
 
@@ -207,19 +247,43 @@ impl TextPage {
     }
 
     /// The part of each line that characters `start` to `end` (exclusive)
-    /// cover.
+    /// cover: one rectangle for each stretch of a line that the characters
+    /// fill without a gap along the line. A range of a line of mixed text
+    /// may cover two stretches, which a rectangle from one end to the other
+    /// would join.
     pub(crate) fn rects_of(&self, start: usize, end: usize) -> Vec<Rect> {
+        let end = end.min(self.places.len());
         let mut rects: Vec<Rect> = Vec::new();
-        let mut before: Option<(usize, usize)> = None;
-        for place in &self.places[start.min(self.places.len())..end.min(self.places.len())] {
-            let rect = self.blocks[place.block].lines[place.line].chars[place.chars].rect;
-            match (before, rects.last_mut()) {
-                (Some(line), Some(last)) if line == (place.block, place.line) => {
-                    *last = last.union(&rect);
-                }
-                _ => rects.push(rect),
+        let mut index = start.min(end);
+        while index < end {
+            let (block, line) = (self.places[index].block, self.places[index].line);
+            let stop = (index..end)
+                .find(|&at| (self.places[at].block, self.places[at].line) != (block, line))
+                .unwrap_or(end);
+            let text_line = &self.blocks[block].lines[line];
+            let mut chosen: Vec<(usize, Rect)> = self.places[index..stop]
+                .iter()
+                .map(|place| {
+                    (
+                        text_line.visual_index(place.chars),
+                        text_line.chars[place.chars].rect,
+                    )
+                })
+                .collect();
+            chosen.sort_by_key(|(place, _)| *place);
+            let mut stretch: Option<(usize, Rect)> = None;
+            for (place, rect) in chosen {
+                stretch = match stretch {
+                    Some((last, joined)) if place == last + 1 => Some((place, joined.union(&rect))),
+                    Some((_, joined)) => {
+                        rects.push(joined);
+                        Some((place, rect))
+                    }
+                    None => Some((place, rect)),
+                };
             }
-            before = Some((place.block, place.line));
+            rects.extend(stretch.map(|(_, joined)| joined));
+            index = stop;
         }
         rects
     }

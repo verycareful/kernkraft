@@ -10,7 +10,7 @@ resolver = "2"
 # commit index on a dev branch) is written as its first three parts with the
 # rest as build metadata: label 0.1.0.0 is 0.1.0+0, label 0.1.0.0.3 is
 # 0.1.0+0.3. The kernkraft-fs version test checks the two agree.
-version = "0.1.3+1.44"
+version = "0.1.3+1.45"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -49,6 +49,10 @@ sha2 = "0.10"
 unicode-normalization = "0.1"
 # Line break opportunities (UAX #14, Unicode 15.0 tables), Apache-2.0.
 unicode-linebreak = "0.1"
+# The Unicode Bidirectional Algorithm (UAX #9), for the logical order of
+# right-to-left and mixed text and the visual order of an edit; no
+# dependencies, no unsafe, MIT OR Apache-2.0.
+unicode-bidi = "0.3"
 # ICC profile colour transforms (ICCBased colour spaces); no unsafe in the
 # transform path we call, BSD-3-Clause OR Apache-2.0.
 moxcms = "0.8"

@@ -15,6 +15,7 @@
 //! by recursive cuts at the widest gap otherwise.
 
 use crate::display::PageView;
+use crate::text::bidi;
 use crate::text::collect::{RawGlyph, RawRule};
 use crate::text::{TextBlock, TextChar, TextLine};
 
@@ -671,6 +672,7 @@ fn build_block(glyphs: &[RawGlyph], lines: &[Line], block: &[usize], view: &Page
     for &line in block {
         out.push(build_line(glyphs, &lines[line], view));
     }
+    bidi::in_logical_order(&mut out);
     let rect = out
         .iter()
         .map(|line| line.rect)
@@ -714,5 +716,5 @@ fn build_line(glyphs: &[RawGlyph], line: &Line, view: &PageView) -> TextLine {
             (line.bounds.right, line.bounds.bottom),
         ])
         .unwrap_or_default();
-    TextLine { rect, chars }
+    TextLine::new(rect, chars)
 }

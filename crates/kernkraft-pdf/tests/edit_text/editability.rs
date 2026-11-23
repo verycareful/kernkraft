@@ -151,10 +151,7 @@ fn a_block_of_only_synthetic_spaces_has_no_glyphs() {
     };
     let block = TextBlock {
         rect: Rect::default(),
-        lines: vec![TextLine {
-            rect: Rect::default(),
-            chars: vec![space],
-        }],
+        lines: vec![TextLine::new(Rect::default(), vec![space])],
     };
     let doc = one_page(HELLO).open();
     assert_eq!(

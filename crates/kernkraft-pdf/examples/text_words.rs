@@ -144,13 +144,13 @@ struct Word {
 fn words(line: &TextLine, width: f64, height: f64) -> Vec<Word> {
     let mut words = Vec::new();
     let mut text = String::new();
-    let mut chars: Vec<&TextChar> = Vec::new();
-    for ch in &line.chars {
+    let mut chars: Vec<(usize, &TextChar)> = Vec::new();
+    for (index, ch) in line.chars.iter().enumerate() {
         if ch.text.chars().all(char::is_whitespace) {
             push_word(&mut words, &mut text, &mut chars, width, height);
         } else {
             text.push_str(&ch.text);
-            chars.push(ch);
+            chars.push((line.visual_index(index), ch));
         }
     }
     push_word(&mut words, &mut text, &mut chars, width, height);
@@ -160,18 +160,21 @@ fn words(line: &TextLine, width: f64, height: f64) -> Vec<Word> {
 fn push_word(
     words: &mut Vec<Word>,
     text: &mut String,
-    chars: &mut Vec<&TextChar>,
+    chars: &mut Vec<(usize, &TextChar)>,
     width: f64,
     height: f64,
 ) {
     // A character with no width (a zero-width space, a joiner) has no place
     // along the text, so it does not give the word's direction or its
-    // sides.
-    let drawn: Vec<&TextChar> = chars
+    // sides. The word's first and last glyphs are those at the two ends
+    // along the line, whatever their order in reading.
+    let mut drawn: Vec<(usize, &TextChar)> = chars
         .iter()
         .copied()
-        .filter(|ch| ch.rect.right > ch.rect.left)
+        .filter(|(_, ch)| ch.rect.right > ch.rect.left)
         .collect();
+    drawn.sort_by_key(|(place, _)| *place);
+    let drawn: Vec<&TextChar> = drawn.into_iter().map(|(_, ch)| ch).collect();
     let rects: Vec<Rect> = drawn.iter().map(|ch| ch.rect).collect();
     let off = off_axis_degrees(&rects, width, height).max(
         drawn
@@ -181,7 +184,7 @@ fn push_word(
     let around = Rect::around(
         chars
             .iter()
-            .flat_map(|ch| [(ch.rect.left, ch.rect.top), (ch.rect.right, ch.rect.bottom)]),
+            .flat_map(|(_, ch)| [(ch.rect.left, ch.rect.top), (ch.rect.right, ch.rect.bottom)]),
     );
     if let Some(rect) = around {
         let sides = match (drawn.first(), drawn.last()) {

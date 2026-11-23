@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
 //! Tests of the colour layer: `functions.rs` (ISO 32000-1:2008, 7.10),
-//! `spaces.rs` (8.6 and 10.3) and `icc.rs` (8.6.5.5), with a mutation test
+//! `spaces.rs` (8.6 and 10.3), `icc.rs` (8.6.5.5) and `cmyk.rs` (14.11.5), with a mutation test
 //! over them. Files are written by `pdf_fixture`, byte by byte, and each
 //! test's expectations are derived from the specification's formulas and
 //! from how its file is built, never from a run.
@@ -12,6 +12,7 @@
 #[path = "../pdf_fixture/mod.rs"]
 mod pdf_fixture;
 
+mod cmyk;
 mod functions;
 mod icc;
 mod robustness;

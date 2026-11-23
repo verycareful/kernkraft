@@ -65,7 +65,7 @@ impl<'d> Colours<'d> {
         let device = match &paint.space {
             ColorSpace::DeviceGray => Some(ColourSpace::DeviceGray),
             ColorSpace::DeviceRGB => Some(ColourSpace::DeviceRgb),
-            ColorSpace::DeviceCMYK => Some(ColourSpace::DeviceCmyk),
+            ColorSpace::DeviceCMYK => Some(self.doc.device_cmyk()?),
             _ => None,
         };
         if let Some(device) = device {

@@ -58,6 +58,22 @@ fn a_highlight_lists_its_quads_text_colour_opacity_and_date() {
     assert!(annotation.line_width.is_none());
 }
 
+/// A four-number `C` is DeviceCMYK, converted through the CMYK profile of
+/// the document: here the application's, which makes cyan neutral.
+#[test]
+fn a_cmyk_colour_follows_the_cmyk_profile_of_the_document() {
+    let annotation = b"<< /Type /Annot /Subtype /Square /Rect [0 0 10 10] /C [1 0 0 0] >>".to_vec();
+    let fixture = annotated("", &[50], &[(50, annotation.as_slice())]);
+    let document = fixture.open();
+    document
+        .set_cmyk_profile(&crate::pdf_fixture::grey_by_black_profile())
+        .unwrap();
+    let colour = document.annotations(1).unwrap()[0].colour.unwrap();
+    for level in [colour.r, colour.g, colour.b] {
+        assert!((level - 1.0).abs() < 0.01, "{colour:?}");
+    }
+}
+
 #[test]
 fn colours_of_one_three_and_four_components_and_none() {
     let make = |c: &str| {
@@ -85,15 +101,16 @@ fn colours_of_one_three_and_four_components_and_none() {
     assert_close(c.r, 0.25, "red");
     assert_close(c.g, 0.5, "green");
     assert_close(c.b, 0.75, "blue");
-    // DeviceCMYK to RGB (10.3.5): black is the full K, white no ink.
+    // DeviceCMYK goes through the CMYK profile: the full K is a dark
+    // colour (a printed black is not a screen's 0), no ink is the paper.
     let black = colour(1).unwrap();
     assert!(
-        black.r < 0.01 && black.g < 0.01 && black.b < 0.01,
+        black.r < 0.25 && black.g < 0.25 && black.b < 0.25,
         "{black:?}"
     );
     let white = colour(2).unwrap();
     assert!(
-        white.r > 0.99 && white.g > 0.99 && white.b > 0.99,
+        white.r > 0.98 && white.g > 0.98 && white.b > 0.98,
         "{white:?}"
     );
     // An empty array is transparent (Table 164), and two numbers are no

@@ -461,9 +461,9 @@ fn a_jpeg_image() {
 }
 
 /// The CMYK file stores (10, 20, 30, 40) inverted, as Adobe does, and the
-/// image says so with `Decode [1 0 ...]`. 10.3.5 gives red as
-/// 1 - min(1, c + k): 1 - (10 + 40) / 255 = 205, green 1 - 60 / 255 = 195
-/// and blue 1 - 70 / 255 = 185.
+/// image says so with `Decode [1 0 ...]`. The colour it comes to is
+/// (10, 20, 30, 40) of 255 through the CMYK profile, converted here by
+/// `moxcms` from the bundled profile's bytes.
 #[test]
 fn an_adobe_cmyk_jpeg_is_turned_right_by_its_decode_array() {
     let data = image(
@@ -472,7 +472,56 @@ fn an_adobe_cmyk_jpeg_is_turned_right_by_its_decode_array() {
         CMYK_JPEG,
     );
     let raster = render(&page(FULL, &[(IMAGE, &data)]));
-    assert_near(px(&raster, 10, 10), [205, 195, 185, 255], 2);
+    let expected = through_bundled_profile([10.0, 20.0, 30.0, 40.0].map(|level| level / 255.0));
+    assert_near(
+        px(&raster, 10, 10),
+        [expected[0], expected[1], expected[2], 255],
+        2,
+    );
+}
+
+/// `colour` (four components, 0 to 1) in sRGB levels, by `moxcms` alone:
+/// the bundled profile to sRGB, relative colorimetric (8.6.5.8).
+fn through_bundled_profile(colour: [f64; 4]) -> [u8; 3] {
+    use moxcms::{ColorProfile, Layout, RenderingIntent, TransformOptions};
+    let source = ColorProfile::new_from_slice(kernkraft_pdf::colour::BUNDLED_PROFILE).unwrap();
+    let options = TransformOptions {
+        rendering_intent: RenderingIntent::RelativeColorimetric,
+        ..TransformOptions::default()
+    };
+    let transform = source
+        .create_transform_f32(
+            Layout::Rgba,
+            &ColorProfile::new_srgb(),
+            Layout::Rgb,
+            options,
+        )
+        .unwrap();
+    let mut out = [0f32; 3];
+    transform
+        .transform(&colour.map(|level| level as f32), &mut out)
+        .unwrap();
+    out.map(|level| (f64::from(level).clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+
+/// The same file in a document whose CMYK profile is the application's,
+/// a profile whose lightness is that of the black ink alone: the colour is
+/// a grey, `L* = 100 (1 - 40 / 255)`, encoded by sRGB.
+#[test]
+fn a_cmyk_image_follows_the_cmyk_profile_of_the_document() {
+    let data = image(
+        "/Width 8 /Height 8 /ColorSpace /DeviceCMYK /BitsPerComponent 8 /Filter /DCTDecode \
+         /Decode [1 0 1 0 1 0 1 0]",
+        CMYK_JPEG,
+    );
+    let doc = page(FULL, &[(IMAGE, &data)]);
+    doc.set_cmyk_profile(&crate::pdf_fixture::grey_by_black_profile())
+        .unwrap();
+    let lightness = 100.0 * (1.0 - 40.0 / 255.0);
+    let linear = ((lightness + 16.0) / 116.0_f64).powi(3);
+    let encoded = 1.055 * linear.powf(1.0 / 2.4) - 0.055;
+    let grey = (encoded * 255.0).round() as u8;
+    assert_near(px(&render(&doc), 10, 10), [grey, grey, grey, 255], 3);
 }
 
 #[test]

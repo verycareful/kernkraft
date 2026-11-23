@@ -88,7 +88,7 @@ impl Document {
         let id = resolved.id();
         let invalid = |key| PdfError::InvalidEntry { object: id, key };
         match resolved.value() {
-            Value::Name(name) => device_name(name).ok_or_else(|| invalid("ColorSpace")),
+            Value::Name(name) => self.device_name(name)?.ok_or_else(|| invalid("ColorSpace")),
             Value::Array(items) => {
                 let family = match items.first() {
                     Some(first) => match self.resolve(first)?.value() {
@@ -115,9 +115,9 @@ impl Document {
         let invalid = |key| PdfError::InvalidEntry { object: id, key };
         diagnostics.set_object(id);
         match family.as_bytes() {
-            b"DeviceGray" | b"G" | b"DeviceRGB" | b"RGB" | b"DeviceCMYK" | b"CMYK" => {
-                device_name(family).ok_or_else(|| invalid("ColorSpace"))
-            }
+            b"DeviceGray" | b"G" | b"DeviceRGB" | b"RGB" | b"DeviceCMYK" | b"CMYK" => self
+                .device_name(family)?
+                .ok_or_else(|| invalid("ColorSpace")),
             b"CalGray" => {
                 let dictionary = self.space_dictionary(items, id)?;
                 let white_point = self.white_point(&dictionary, id)?;
@@ -343,11 +343,11 @@ impl Document {
                         },
                         0,
                     );
-                    device_space(components)
+                    self.device_space(components)?
                 }
                 Err(error) => return Err(error),
             },
-            None => device_space(components),
+            None => self.device_space(components)?,
         };
         diagnostics.set_object(Some(stream_id));
         let transform = match self.icc_profile(stream_id, &object) {
@@ -490,25 +490,27 @@ impl Document {
     }
 }
 
-/// The device space of 1, 3 or 4 components.
-fn device_space(components: usize) -> ColourSpace {
-    match components {
-        1 => ColourSpace::DeviceGray,
-        3 => ColourSpace::DeviceRgb,
-        _ => ColourSpace::DeviceCmyk,
+impl Document {
+    /// The device space of 1, 3 or 4 components.
+    fn device_space(&self, components: usize) -> Result<ColourSpace, PdfError> {
+        match components {
+            1 => Ok(ColourSpace::DeviceGray),
+            3 => Ok(ColourSpace::DeviceRgb),
+            _ => self.device_cmyk(),
+        }
     }
-}
 
-/// The device space (or the Pattern space) a name stands for; the short
-/// names of Table 94 are the ones inline images use.
-fn device_name(name: &Name) -> Option<ColourSpace> {
-    Some(match name.as_bytes() {
-        b"DeviceGray" | b"G" => ColourSpace::DeviceGray,
-        b"DeviceRGB" | b"RGB" => ColourSpace::DeviceRgb,
-        b"DeviceCMYK" | b"CMYK" => ColourSpace::DeviceCmyk,
-        b"Pattern" => ColourSpace::Pattern(None),
-        _ => return None,
-    })
+    /// The device space (or the Pattern space) a name stands for; the short
+    /// names of Table 94 are the ones inline images use.
+    fn device_name(&self, name: &Name) -> Result<Option<ColourSpace>, PdfError> {
+        Ok(Some(match name.as_bytes() {
+            b"DeviceGray" | b"G" => ColourSpace::DeviceGray,
+            b"DeviceRGB" | b"RGB" => ColourSpace::DeviceRgb,
+            b"DeviceCMYK" | b"CMYK" => self.device_cmyk()?,
+            b"Pattern" => ColourSpace::Pattern(None),
+            _ => return Ok(None),
+        }))
+    }
 }
 
 /// The bytes one Indexed table entry can take: four components of one

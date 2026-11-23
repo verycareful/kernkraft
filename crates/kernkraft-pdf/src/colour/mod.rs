@@ -15,9 +15,10 @@
 //!
 //! - DeviceGray gives equal red, green and blue (10.3.2) and DeviceRGB is
 //!   taken as sRGB.
-//! - DeviceCMYK follows 10.3.5: `red = 1 - min(1, cyan + black)`, and so
-//!   for green and blue. It is the format's own approximation; a CMYK
-//!   colour in an ICCBased space goes through its profile instead.
+//! - DeviceCMYK goes through a CMYK profile (see `cmyk`): the file's output
+//!   intent, else the application's profile, else the bundled one. The
+//!   format's own approximation of 10.3.5 (`red = 1 - min(1, cyan +
+//!   black)`) gives pure cyan as (0, 255, 255) and is not used.
 //! - CalGray, CalRGB and Lab give CIE XYZ, which is adapted to the sRGB
 //!   white (see `cie`).
 //! - ICCBased goes through the profile with the relative colorimetric
@@ -37,6 +38,7 @@
 //! DeviceN.
 
 mod cie;
+mod cmyk;
 mod function;
 mod icc;
 mod parse;
@@ -44,6 +46,8 @@ mod parse;
 use std::sync::Arc;
 
 pub use cie::{CalGray, CalRgb, Lab};
+pub(crate) use cmyk::IntentOutcome;
+pub use cmyk::{CmykProfile, CmykSource, BUNDLED_PROFILE};
 pub use function::{Function, FunctionFault, PostScript, MAX_FUNCTION_BYTES, MAX_SAMPLED_INPUTS};
 pub use icc::IccTransform;
 
@@ -98,12 +102,18 @@ impl IccBased {
     /// The space of an ICC profile that is not in an ICCBased stream (a
     /// JPEG 2000 file's), of `components` channels with the default range.
     /// A profile that cannot be used leaves the device space of that many
-    /// components in its place; [`Self::uses_profile`] says which.
-    pub fn from_profile(profile: &[u8], components: usize) -> Option<ColourSpace> {
+    /// components in its place; [`Self::uses_profile`] says which. `cmyk`
+    /// is the document's DeviceCMYK profile, for the four-component
+    /// device space.
+    pub fn from_profile(
+        profile: &[u8],
+        components: usize,
+        cmyk: &CmykProfile,
+    ) -> Option<ColourSpace> {
         let alternate = match components {
             1 => ColourSpace::DeviceGray,
             3 => ColourSpace::DeviceRgb,
-            4 => ColourSpace::DeviceCmyk,
+            4 => ColourSpace::DeviceCmyk(cmyk.clone()),
             _ => return None,
         };
         let range = vec![[0.0, 1.0]; components];
@@ -156,7 +166,9 @@ impl Tint {
 pub enum ColourSpace {
     DeviceGray,
     DeviceRgb,
-    DeviceCmyk,
+    /// DeviceCMYK, with the profile it is converted through
+    /// ([`Document::cmyk_profile`]).
+    DeviceCmyk(CmykProfile),
     CalGray(CalGray),
     CalRgb(CalRgb),
     Lab(Lab),
@@ -176,7 +188,7 @@ impl ColourSpace {
         match self {
             Self::DeviceGray | Self::CalGray(_) | Self::Indexed(_) => 1,
             Self::DeviceRgb | Self::CalRgb(_) | Self::Lab(_) => 3,
-            Self::DeviceCmyk => 4,
+            Self::DeviceCmyk(_) => 4,
             Self::IccBased(icc) => icc.components,
             Self::Separation(_) => 1,
             Self::DeviceN(tint) => tint.names.len(),
@@ -190,7 +202,7 @@ impl ColourSpace {
     /// tint of a Separation or DeviceN space.
     pub fn initial_colour(&self) -> Vec<f64> {
         match self {
-            Self::DeviceCmyk => vec![0.0, 0.0, 0.0, 1.0],
+            Self::DeviceCmyk(_) => vec![0.0, 0.0, 0.0, 1.0],
             Self::Lab(lab) => vec![
                 0.0,
                 0.0f64.clamp(lab.range[0], lab.range[1]),
@@ -238,22 +250,19 @@ impl ColourSpace {
         Ok(match self {
             Self::DeviceGray => gray(colour[0]),
             Self::DeviceRgb => rgb(colour[0], colour[1], colour[2]),
-            Self::DeviceCmyk => cmyk(colour[0], colour[1], colour[2], colour[3]),
+            Self::DeviceCmyk(profile) => match profile.convert_one(colour) {
+                Some([r, g, b]) => Rgb { r, g, b },
+                None => return Err(cmyk_failed()),
+            },
             Self::CalGray(space) => space.to_rgb(colour[0]),
             Self::CalRgb(space) => space.to_rgb([colour[0], colour[1], colour[2]]),
             Self::Lab(space) => space.to_rgb([colour[0], colour[1], colour[2]]),
-            Self::IccBased(icc) => match &icc.transform {
-                Some(transform) => {
-                    let mut out = Vec::with_capacity(1);
-                    match transform.convert(colour, &mut out) {
-                        Some(()) if !out.is_empty() => Rgb {
-                            r: out[0][0],
-                            g: out[0][1],
-                            b: out[0][2],
-                        },
-                        _ => icc.alternate.to_rgb(colour)?,
-                    }
-                }
+            Self::IccBased(icc) => match icc
+                .transform
+                .as_ref()
+                .and_then(|transform| transform.convert_one(colour))
+            {
+                Some([r, g, b]) => Rgb { r, g, b },
                 None => icc.alternate.to_rgb(colour)?,
             },
             Self::Indexed(space) => space.to_rgb(colour[0])?,
@@ -281,16 +290,23 @@ impl ColourSpace {
                 found: colours.len(),
             });
         }
-        if let Self::IccBased(IccBased {
-            transform: Some(transform),
-            ..
-        }) = self
-        {
-            let mut converted = Vec::with_capacity(colours.len() / components);
-            if transform.convert(colours, &mut converted).is_some() {
+        let mut converted = Vec::with_capacity(colours.len() / components);
+        match self {
+            Self::DeviceCmyk(profile) => {
+                if profile.convert(colours, &mut converted).is_none() {
+                    return Err(cmyk_failed());
+                }
                 out.extend(converted.into_iter().map(|[r, g, b]| Rgb { r, g, b }));
                 return Ok(());
             }
+            Self::IccBased(IccBased {
+                transform: Some(transform),
+                ..
+            }) if transform.convert(colours, &mut converted).is_some() => {
+                out.extend(converted.into_iter().map(|[r, g, b]| Rgb { r, g, b }));
+                return Ok(());
+            }
+            _ => {}
         }
         for colour in colours.chunks_exact(components) {
             out.push(self.to_rgb(colour)?);
@@ -350,14 +366,10 @@ fn rgb(r: f64, g: f64, b: f64) -> Rgb {
     }
 }
 
-/// 10.3.5.
-fn cmyk(c: f64, m: f64, y: f64, k: f64) -> Rgb {
-    let k = unit(k);
-    Rgb {
-        r: 1.0 - (unit(c) + k).min(1.0),
-        g: 1.0 - (unit(m) + k).min(1.0),
-        b: 1.0 - (unit(y) + k).min(1.0),
-    }
+/// The error of a CMYK profile whose transform fails, which it does not for
+/// whole colours.
+fn cmyk_failed() -> PdfError {
+    PdfError::Invalid("the CMYK profile could not convert a colour".into())
 }
 
 /// The colour spaces a resource dictionary substitutes for the device
@@ -377,7 +389,7 @@ impl DefaultSpaces {
         let replacement = match space {
             ColourSpace::DeviceGray => &self.gray,
             ColourSpace::DeviceRgb => &self.rgb,
-            ColourSpace::DeviceCmyk => &self.cmyk,
+            ColourSpace::DeviceCmyk(_) => &self.cmyk,
             _ => return space,
         };
         replacement.as_ref().unwrap_or(space)
@@ -385,6 +397,11 @@ impl DefaultSpaces {
 }
 
 impl Document {
+    /// DeviceCMYK as this document converts it ([`Self::cmyk_profile`]).
+    pub fn device_cmyk(&self) -> Result<ColourSpace, PdfError> {
+        Ok(ColourSpace::DeviceCmyk(self.cmyk_profile()?))
+    }
+
     /// The colour space that a content stream's current colour is in
     /// (8.6.8): a device space, the Pattern space, or the `ColorSpace`
     /// resource it names.
@@ -392,7 +409,7 @@ impl Document {
         match space {
             content::ColorSpace::DeviceGray => Ok(ColourSpace::DeviceGray),
             content::ColorSpace::DeviceRGB => Ok(ColourSpace::DeviceRgb),
-            content::ColorSpace::DeviceCMYK => Ok(ColourSpace::DeviceCmyk),
+            content::ColorSpace::DeviceCMYK => self.device_cmyk(),
             content::ColorSpace::Pattern => Ok(ColourSpace::Pattern(None)),
             content::ColorSpace::Resource { object, .. } => self.colour_space(object),
         }

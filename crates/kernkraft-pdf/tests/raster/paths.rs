@@ -174,9 +174,12 @@ fn stroking_alpha_is_the_other_constant() {
 
 #[test]
 fn colours_of_every_device_space_are_converted() {
-    // 10.3.5: DeviceCMYK black is 0 0 0 1; gray 0.5 is 128.
+    // DeviceCMYK black is 0 0 0 1, a dark colour through the CMYK
+    // profile; gray 0.5 is 128.
     let raster = draw("0 0 0 1 k 0 0 10 20 re f 0.5 g 10 0 10 20 re f");
-    assert_eq!(px(&raster, 5, 10), BLACK);
+    let black = px(&raster, 5, 10);
+    assert!(black[..3].iter().all(|level| *level <= 64), "{black:?}");
+    assert_eq!(black[3], 255);
     assert_near(px(&raster, 15, 10), [128, 128, 128, 255], 1);
 }
 

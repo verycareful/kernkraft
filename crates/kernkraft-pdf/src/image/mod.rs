@@ -338,14 +338,14 @@ impl<'d> Loader<'d> {
         let space = match &raw.jpx_colour {
             Some(JpxColour::Gray) => ColourSpace::DeviceGray,
             Some(JpxColour::Rgb) => ColourSpace::DeviceRgb,
-            Some(JpxColour::Cmyk) => ColourSpace::DeviceCmyk,
+            Some(JpxColour::Cmyk) => self.doc.device_cmyk()?,
             Some(JpxColour::Icc { profile, channels }) => {
-                IccBased::from_profile(profile, usize::from(*channels))
+                IccBased::from_profile(profile, usize::from(*channels), &self.doc.cmyk_profile()?)
                     .ok_or(ImageFault::ColourSpace)?
             }
             Some(JpxColour::Unknown { channels: 1 }) => ColourSpace::DeviceGray,
             Some(JpxColour::Unknown { channels: 3 }) => ColourSpace::DeviceRgb,
-            Some(JpxColour::Unknown { channels: 4 }) => ColourSpace::DeviceCmyk,
+            Some(JpxColour::Unknown { channels: 4 }) => self.doc.device_cmyk()?,
             _ => return Err(ImageFault::ColourSpace.into()),
         };
         Ok(self.options.defaults.apply(&space).clone())

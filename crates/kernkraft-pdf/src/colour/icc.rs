@@ -16,6 +16,9 @@ use moxcms::{ColorProfile, DataColorSpace, Layout, RenderingIntent, TransformOpt
 /// (its limit is 10 MiB, which fits the large CMYK profiles of print
 /// standards).
 pub(crate) const MAX_PROFILE_BYTES: usize = 10 << 20;
+/// The most components of an ICC colour space this layer takes: gray, RGB
+/// or CMYK.
+const MAX_COMPONENTS: usize = 4;
 
 /// An ICC profile's transform from its colour space to sRGB.
 #[derive(Clone)]
@@ -63,6 +66,34 @@ impl IccTransform {
         })
     }
 
+    /// The sRGB of the one colour `colour`, which has the transform's
+    /// component count (at most four): the same as [`Self::convert`], with
+    /// no allocation, for the colour of a fill or a gradient stop.
+    pub(crate) fn convert_one(&self, colour: &[f64]) -> Option<[f64; 3]> {
+        if colour.len() != self.components || self.components > MAX_COMPONENTS {
+            return None;
+        }
+        let mut source = [0.0f32; MAX_COMPONENTS];
+        for ((slot, value), range) in source.iter_mut().zip(colour).zip(&self.range) {
+            *slot = self.normalise(*value, *range);
+        }
+        let mut destination = [0.0f32; 3];
+        self.executor
+            .transform(&source[..self.components], &mut destination)
+            .ok()?;
+        Some(destination.map(|channel| f64::from(channel).clamp(0.0, 1.0)))
+    }
+
+    /// `value` as a fraction of `[low, high]`, 0 to 1; NaN is 0.
+    fn normalise(&self, value: f64, [low, high]: [f64; 2]) -> f32 {
+        let width = high - low;
+        if width == 0.0 || value.is_nan() {
+            0.0
+        } else {
+            ((value - low) / width).clamp(0.0, 1.0) as f32
+        }
+    }
+
     /// The sRGB of each colour in `colours` (components one after the
     /// other, `components` to a colour), appended to `out`. `None` when
     /// the transform fails, which it does not for whole colours.
@@ -73,14 +104,8 @@ impl IccTransform {
         let count = colours.len() / self.components;
         let mut source = Vec::with_capacity(colours.len());
         for colour in colours.chunks_exact(self.components) {
-            for (value, [low, high]) in colour.iter().zip(&self.range) {
-                let width = high - low;
-                let unit = if width == 0.0 {
-                    0.0
-                } else {
-                    (value - low) / width
-                };
-                source.push(unit.clamp(0.0, 1.0) as f32);
+            for (value, range) in colour.iter().zip(&self.range) {
+                source.push(self.normalise(*value, *range));
             }
         }
         let mut destination = vec![0.0f32; count * 3];

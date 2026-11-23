@@ -104,17 +104,28 @@ fn an_unusable_profile_is_replaced_by_the_alternate_and_reported() {
         1
     );
     // The Alternate of a four-component space is used for its colours.
-    let (_, space) = icc_space(" /N 4 /Alternate /DeviceCMYK", b"");
-    assert_rgb(rgb(&space.unwrap(), &[0.0, 0.0, 0.0, 1.0]), [0.0; 3], 0.0);
+    let (document, space) = icc_space(" /N 4 /Alternate /DeviceCMYK", b"");
+    let cmyk = document.device_cmyk().unwrap();
+    let black = cmyk.to_rgb(&[0.0, 0.0, 0.0, 1.0]).unwrap();
+    assert_rgb(
+        rgb(&space.unwrap(), &[0.0, 0.0, 0.0, 1.0]),
+        [black.r, black.g, black.b],
+        0.0,
+    );
 }
 
 /// Without an `Alternate` the device space of `N` components stands in.
 #[test]
 fn the_default_alternate_is_the_device_space_of_n_components() {
-    let (_, space) = icc_space(" /N 4", b"x");
+    let (document, space) = icc_space(" /N 4", b"x");
+    let cyan = document
+        .device_cmyk()
+        .unwrap()
+        .to_rgb(&[1.0, 0.0, 0.0, 0.0])
+        .unwrap();
     assert_rgb(
         rgb(&space.unwrap(), &[1.0, 0.0, 0.0, 0.0]),
-        [0.0, 1.0, 1.0],
+        [cyan.r, cyan.g, cyan.b],
         0.0,
     );
 }

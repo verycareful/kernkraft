@@ -52,22 +52,6 @@ fn gray_gives_equal_components() {
     assert_rgb(rgb(&space, &[-1.0]), [0.0; 3], 0.0);
 }
 
-/// 10.3.5: `red = 1 - min(1, cyan + black)`, and so for green and blue.
-#[test]
-fn cmyk_follows_the_conversion_of_the_format() {
-    let space = ColourSpace::DeviceCmyk;
-    assert_rgb(rgb(&space, &[0.0, 0.0, 0.0, 0.0]), [1.0, 1.0, 1.0], 0.0);
-    assert_rgb(rgb(&space, &[1.0, 0.0, 0.0, 0.0]), [0.0, 1.0, 1.0], 0.0);
-    assert_rgb(rgb(&space, &[0.0, 1.0, 0.0, 0.0]), [1.0, 0.0, 1.0], 0.0);
-    assert_rgb(rgb(&space, &[0.0, 0.0, 1.0, 0.0]), [1.0, 1.0, 0.0], 0.0);
-    assert_rgb(rgb(&space, &[0.0, 0.0, 0.0, 1.0]), [0.0, 0.0, 0.0], 0.0);
-    // 1 - min(1, 0.25 + 0.5), 1 - min(1, 0.5 + 0.5), 1 - min(1, 0 + 0.5).
-    assert_rgb(rgb(&space, &[0.25, 0.5, 0.0, 0.5]), [0.25, 0.0, 0.5], 1e-12);
-    // The sum is capped at 1: 0.8 + 0.8 leaves no red; green is
-    // 1 - min(1, 0 + 0.8) and blue the same.
-    assert_rgb(rgb(&space, &[0.8, 0.0, 0.0, 0.8]), [0.0, 0.2, 0.2], 1e-12);
-}
-
 #[test]
 fn device_rgb_is_clipped_and_nan_is_zero() {
     let space = ColourSpace::DeviceRgb;
@@ -174,7 +158,7 @@ fn initial_colours_follow_table_74() {
     assert_eq!(ColourSpace::DeviceGray.initial_colour(), [0.0]);
     assert_eq!(ColourSpace::DeviceRgb.initial_colour(), [0.0; 3]);
     assert_eq!(
-        ColourSpace::DeviceCmyk.initial_colour(),
+        document(&[]).device_cmyk().unwrap().initial_colour(),
         [0.0, 0.0, 0.0, 1.0]
     );
     // 8.6.5.4: zero is outside a Range that does not include it, so the
@@ -284,17 +268,29 @@ const TINT_TO_CMYK: &[u8] = b"<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1
 
 #[test]
 fn separation_runs_its_tint_transform_into_the_alternate_space() {
-    let (_, space) = space_of(&[
+    let (document, space) = space_of(&[
         (60, b"[/Separation /Spot /DeviceCMYK 61 0 R]"),
         (61, TINT_TO_CMYK),
     ]);
     let space = space.unwrap();
     assert_eq!(space.components(), 1);
     assert_eq!(space.initial_colour(), [1.0]);
-    // Tint 1: cmyk (0 1 1 0) is red; tint 0: white; tint 0.5: (1 .5 .5).
-    assert_rgb(rgb(&space, &[1.0]), [1.0, 0.0, 0.0], 1e-12);
-    assert_rgb(rgb(&space, &[0.0]), [1.0, 1.0, 1.0], 1e-12);
-    assert_rgb(rgb(&space, &[0.5]), [1.0, 0.5, 0.5], 1e-12);
+    // 8.6.6.4: the tint goes through the transform, and the result is
+    // converted in the alternate space. The transform here is linear from
+    // cmyk (0 0 0 0) at tint 0 to (0 1 1 0) at tint 1.
+    let cmyk = document.device_cmyk().unwrap();
+    for (tint, colour) in [
+        (0.0, [0.0, 0.0, 0.0, 0.0]),
+        (0.5, [0.0, 0.5, 0.5, 0.0]),
+        (1.0, [0.0, 1.0, 1.0, 0.0]),
+    ] {
+        let expected = cmyk.to_rgb(&colour).unwrap();
+        assert_rgb(
+            rgb(&space, &[tint]),
+            [expected.r, expected.g, expected.b],
+            1e-12,
+        );
+    }
     assert_eq!(space.default_decode(8), [[0.0, 1.0]]);
     let ColourSpace::Separation(tint) = &space else {
         panic!("not a Separation space")
@@ -467,8 +463,8 @@ fn default_colour_spaces_replace_the_device_spaces() {
         ColourSpace::DeviceGray
     ));
     assert!(matches!(
-        defaults.apply(&ColourSpace::DeviceCmyk),
-        ColourSpace::DeviceCmyk
+        defaults.apply(&document.device_cmyk().unwrap()),
+        ColourSpace::DeviceCmyk(_)
     ));
     assert_eq!(
         of_kind(

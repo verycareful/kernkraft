@@ -200,7 +200,7 @@ fn backdrop_colour(
         (Some(space), _) => space.clone(),
         (None, Some(components)) => match components.len() {
             3 => ColourSpace::DeviceRgb,
-            4 => ColourSpace::DeviceCmyk,
+            4 => doc.device_cmyk()?,
             _ => ColourSpace::DeviceGray,
         },
         (None, None) => ColourSpace::DeviceGray,

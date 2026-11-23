@@ -304,10 +304,13 @@ mod tests {
 
     #[test]
     fn cmyk_goes_through_the_space() {
-        // No ink is white and full black ink is black (10.3.5).
+        // No ink is the paper, white, and full black ink is dark.
         let (packed, _) = Packed::new(2, 1, 4, 8, vec![0, 0, 0, 0, 0, 0, 0, 255]);
-        let rgba = to_rgba(&packed, &ColourSpace::DeviceCmyk, &[[0.0, 1.0]; 4], None).unwrap();
-        assert_eq!(rgba, [255, 255, 255, 255, 0, 0, 0, 255]);
+        let space = ColourSpace::DeviceCmyk(crate::colour::CmykProfile::bundled().unwrap());
+        let rgba = to_rgba(&packed, &space, &[[0.0, 1.0]; 4], None).unwrap();
+        assert!(rgba[..3].iter().all(|level| *level >= 250), "{rgba:?}");
+        assert!(rgba[4..7].iter().all(|level| *level <= 64), "{rgba:?}");
+        assert_eq!([rgba[3], rgba[7]], [255, 255]);
     }
 
     #[test]

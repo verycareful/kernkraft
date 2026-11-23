@@ -31,6 +31,7 @@ pub use pages::{Page, Rectangle};
 pub use text::{decode_text_string, encode_text_string, Date, TextString};
 pub use tree::{NameTree, NumberTree};
 
+use crate::colour::{CmykProfile, IntentOutcome};
 use crate::crypt::{decrypt_file, Decryptor, Encryption};
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::file::{Body, Location, ObjectStream, PdfFile, ReadLimits, XrefEntry};
@@ -202,6 +203,12 @@ struct Base {
     /// Whether the file is an earlier revision of the bytes the source
     /// holds ([`Document::open_revision`]).
     revision_view: bool,
+    /// The CMYK profile the application gave
+    /// ([`Document::set_cmyk_profile`]), shared by every snapshot.
+    application_cmyk: Arc<Mutex<Option<CmykProfile>>>,
+    /// What each output intent's profile stream came to
+    /// ([`Document::cmyk_profile`]), for the streams no edit touched.
+    intent_profiles: Mutex<HashMap<ObjectId, IntentOutcome>>,
 }
 
 /// What a snapshot holds beyond the file: the objects its edits set or
@@ -240,6 +247,9 @@ pub struct Document {
     base: Arc<Base>,
     edits: Arc<Edits>,
     pages: Arc<Mutex<Option<Arc<PageList>>>>,
+    /// The CMYK profile of the snapshot's output intents once read: the
+    /// outer `None` is not read yet, the inner `None` is no usable intent.
+    output_intent: Arc<Mutex<Option<Option<CmykProfile>>>>,
 }
 
 impl std::fmt::Debug for Document {
@@ -255,7 +265,7 @@ impl std::fmt::Debug for Document {
 /// Locks `mutex`. A thread that panicked while holding one of the
 /// document's locks left a cache or a log that is still whole, since none
 /// of them is left half changed by any step that can panic.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -359,6 +369,8 @@ impl Document {
                 object_streams: Mutex::new(Lru::new(options.cached_object_streams)),
                 log: Arc::new(Mutex::new(log)),
                 revision_view,
+                application_cmyk: Arc::default(),
+                intent_profiles: Mutex::new(HashMap::new()),
             }),
             edits: Arc::new(Edits {
                 objects: HashMap::new(),
@@ -366,6 +378,7 @@ impl Document {
                 next_number,
             }),
             pages: Arc::new(Mutex::new(None)),
+            output_intent: Arc::default(),
         }
     }
 
@@ -407,10 +420,25 @@ impl Document {
                 object_streams: Mutex::new(Lru::new(base.options.cached_object_streams)),
                 log: base.log.clone(),
                 revision_view: base.revision_view,
+                application_cmyk: base.application_cmyk.clone(),
+                intent_profiles: Mutex::new(HashMap::new()),
             }),
             edits: self.edits.clone(),
             pages: Arc::new(Mutex::new(None)),
+            output_intent: Arc::default(),
         })
+    }
+
+    pub(crate) fn application_cmyk(&self) -> &Mutex<Option<CmykProfile>> {
+        &self.base.application_cmyk
+    }
+
+    pub(crate) fn intent_profile_cache(&self) -> &Mutex<HashMap<ObjectId, IntentOutcome>> {
+        &self.base.intent_profiles
+    }
+
+    pub(crate) fn output_intent_cache(&self) -> &Mutex<Option<Option<CmykProfile>>> {
+        &self.output_intent
     }
 
     /// The file the document was read from.
@@ -496,6 +524,7 @@ impl Document {
                 next_number: first_free_number(&self.base.file),
             }),
             pages: Arc::new(Mutex::new(None)),
+            output_intent: Arc::default(),
         }
     }
 
@@ -847,6 +876,7 @@ impl Document {
             base: self.base.clone(),
             edits: Arc::new(edits),
             pages: Arc::new(Mutex::new(None)),
+            output_intent: Arc::default(),
         })
     }
 

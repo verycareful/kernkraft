@@ -512,3 +512,98 @@ pub fn embedded_page(embedder: &FontEmbedder, content: Vec<u8>) -> (Document, Ob
     let doc = base.apply(builder.finish()).expect("the changes apply");
     (doc, font)
 }
+
+// A CMYK profile written by hand (ICC.1:2010, 6 and 10.8).
+
+/// An `s15Fixed16Number` (ICC.1:2010, 4.6).
+pub fn s15(value: f64) -> [u8; 4] {
+    ((value * 65536.0).round() as i32).to_be_bytes()
+}
+
+pub fn xyz_tag(x: f64, y: f64, z: f64) -> Vec<u8> {
+    let mut tag = b"XYZ \0\0\0\0".to_vec();
+    for value in [x, y, z] {
+        tag.extend_from_slice(&s15(value));
+    }
+    tag
+}
+
+/// The D50 illuminant of the profile connection space (ICC.1:2010, 7.2.16).
+pub const D50: [f64; 3] = [0.9642, 1.0, 0.8249];
+
+/// A `lut8Type` (10.8) from four channels to Lab with two grid points a
+/// channel: a CLUT of 16 entries, which `lightness` gives the L* byte of
+/// from the four channels (0 or 1 each). The matrix is the identity and
+/// the tables are ramps, so the CLUT alone decides.
+pub fn lut8(lightness: impl Fn([u8; 4]) -> u8) -> Vec<u8> {
+    let mut tag = b"mft1\0\0\0\0".to_vec();
+    // Input channels, output channels, grid points, padding.
+    tag.extend_from_slice(&[4, 3, 2, 0]);
+    for value in [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        tag.extend_from_slice(&s15(value));
+    }
+    let ramp: Vec<u8> = (0..=255u8).collect();
+    for _ in 0..4 {
+        tag.extend_from_slice(&ramp);
+    }
+    // The first channel varies slowest (10.8).
+    for index in 0..16u8 {
+        let corner = [index >> 3 & 1, index >> 2 & 1, index >> 1 & 1, index & 1];
+        // a* and b* are zero: the 8-bit encoding of Lab puts them at 128.
+        tag.extend_from_slice(&[lightness(corner), 128, 128]);
+    }
+    for _ in 0..3 {
+        tag.extend_from_slice(&ramp);
+    }
+    tag
+}
+
+/// A CMYK profile whose lightness is `100 * (1 - k)`: white without black
+/// ink, black with it, and neutral whatever the cyan, magenta and yellow.
+pub fn grey_by_black_profile() -> Vec<u8> {
+    let table = lut8(|[_, _, _, k]| 255 * (1 - k));
+    let white = xyz_tag(D50[0], D50[1], D50[2]);
+    // The tags: the table is both the perceptual and the relative
+    // colorimetric one, and shared.
+    let tags: [(&[u8; 4], &Vec<u8>, bool); 3] = [
+        (b"A2B0", &table, false),
+        (b"A2B1", &table, true),
+        (b"wtpt", &white, false),
+    ];
+    let mut offset = 128 + 4 + 12 * tags.len();
+    let mut table_of_tags = (tags.len() as u32).to_be_bytes().to_vec();
+    let mut data = Vec::new();
+    let mut shared_at = None;
+    for (signature, bytes, shares) in tags {
+        let at = match (shares, shared_at) {
+            (true, Some(at)) => at,
+            _ => {
+                let at = offset + data.len();
+                data.extend_from_slice(bytes);
+                while data.len() % 4 != 0 {
+                    data.push(0);
+                }
+                at
+            }
+        };
+        if signature == b"A2B0" {
+            shared_at = Some(at);
+        }
+        table_of_tags.extend_from_slice(signature);
+        table_of_tags.extend_from_slice(&(at as u32).to_be_bytes());
+        table_of_tags.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    }
+    offset += data.len();
+    let mut header = vec![0u8; 128];
+    header[0..4].copy_from_slice(&(offset as u32).to_be_bytes());
+    // Version 2.1.0.
+    header[8..12].copy_from_slice(&[2, 0x10, 0, 0]);
+    header[12..16].copy_from_slice(b"prtr");
+    header[16..20].copy_from_slice(b"CMYK");
+    header[20..24].copy_from_slice(b"Lab ");
+    header[36..40].copy_from_slice(b"acsp");
+    for (at, value) in D50.iter().enumerate() {
+        header[68 + 4 * at..72 + 4 * at].copy_from_slice(&s15(*value));
+    }
+    [header, table_of_tags, data].concat()
+}

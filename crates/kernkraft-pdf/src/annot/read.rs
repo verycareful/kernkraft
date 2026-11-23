@@ -113,7 +113,7 @@ fn colour_of(document: &Document, dictionary: &Dictionary) -> Result<Option<Rgb>
     let space = match components.len() {
         GRAY => ColourSpace::DeviceGray,
         RGB => ColourSpace::DeviceRgb,
-        CMYK => ColourSpace::DeviceCmyk,
+        CMYK => document.device_cmyk()?,
         _ => return Ok(None),
     };
     space.to_rgb(&components).map(Some)

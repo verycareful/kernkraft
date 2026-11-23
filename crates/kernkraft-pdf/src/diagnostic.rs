@@ -315,6 +315,9 @@ pub enum DiagnosticKind {
     /// components the stream states, or the profile has no usable
     /// transform. The space's `Alternate`, or the device space of `N`
     /// components, stands in for it.
+    /// The same for an output intent (14.11.5) that is damaged or whose
+    /// CMYK profile cannot be used: the next intent, the application's
+    /// profile or the bundled one stands in for it.
     IccProfileUnusable,
     /// A sampled function (type 0) whose `Order` is 3 (cubic spline
     /// interpolation, 7.10.2). Linear interpolation is used.

@@ -18,6 +18,8 @@
 //! of the text they are kept. A soft hyphen (U+00AD) is not text and is
 //! dropped, as in the text search.
 
+use std::ops::Range;
+
 use unicode_linebreak::{linebreaks, BreakOpportunity};
 
 use crate::PdfError;
@@ -51,21 +53,38 @@ pub(super) fn shown(text: &str) -> String {
         .collect()
 }
 
+/// A line of the text set: its characters, and where they are in
+/// [`Set::text`].
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Line {
+    pub text: String,
+    /// The bytes of [`Set::text`] the line is. The characters a wrap or a
+    /// hard break drops are outside it.
+    pub range: Range<usize>,
+}
+
+/// Text broken into lines.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Set {
+    /// The text with its soft hyphens taken out, which the lines are
+    /// slices of.
+    pub text: String,
+    pub lines: Vec<Line>,
+}
+
 /// `text` broken into lines no wider than `width` (text space units), or
 /// not broken but at its hard breaks when `width` is not a positive number.
 /// A hard break at the very end of the text leaves an empty last line.
-pub(super) fn lines(
-    text: &str,
-    width: f64,
-    advance: &Advance<'_>,
-) -> Result<Vec<String>, PdfError> {
+pub(super) fn lines(text: &str, width: f64, advance: &Advance<'_>) -> Result<Set, PdfError> {
     let text: String = text.chars().filter(|&c| c != SOFT_HYPHEN).collect();
     let limit = width * (1.0 + fit_slack(text.chars().count()));
-    let mut out = Vec::new();
+    let mut out: Vec<Line> = Vec::new();
     let mut line = String::new();
+    let mut line_start = 0;
     let mut taken = 0.0;
     let mut start = 0;
     for (end, kind) in linebreaks(&text) {
+        let segment_start = start;
         let segment = &text[start..end];
         start = end;
         let body = segment.trim_end_matches(HARD_BREAKS);
@@ -73,24 +92,41 @@ pub(super) fn lines(
         let ink_width = measure(ink, advance)?;
         let line_has_ink = !line.trim_end_matches(' ').is_empty();
         if width > 0.0 && line_has_ink && taken + ink_width > limit {
-            out.push(line.trim_end_matches(' ').to_owned());
-            line.clear();
+            let kept = line.trim_end_matches(' ').len();
+            line.truncate(kept);
+            out.push(Line {
+                text: std::mem::take(&mut line),
+                range: line_start..line_start + kept,
+            });
             taken = 0.0;
+        }
+        if line.is_empty() {
+            line_start = segment_start;
         }
         line.push_str(body);
         taken += ink_width + measure(&body[ink.len()..], advance)?;
         if kind == BreakOpportunity::Mandatory {
-            out.push(std::mem::take(&mut line));
+            let length = line.len();
+            out.push(Line {
+                text: std::mem::take(&mut line),
+                range: line_start..line_start + length,
+            });
             taken = 0.0;
             if end == text.len() && segment.len() != body.len() {
-                out.push(String::new());
+                out.push(Line {
+                    text: String::new(),
+                    range: end..end,
+                });
             }
         }
     }
     if out.is_empty() {
-        out.push(String::new());
+        out.push(Line {
+            text: String::new(),
+            range: 0..0,
+        });
     }
-    Ok(out)
+    Ok(Set { text, lines: out })
 }
 
 fn measure(text: &str, advance: &Advance<'_>) -> Result<f64, PdfError> {
@@ -109,7 +145,12 @@ mod tests {
     }
 
     fn wrapped(text: &str, width: f64) -> Vec<String> {
-        lines(text, width, &unit).expect("unit advance never fails")
+        lines(text, width, &unit)
+            .expect("unit advance never fails")
+            .lines
+            .into_iter()
+            .map(|line| line.text)
+            .collect()
     }
 
     #[test]
@@ -189,6 +230,25 @@ mod tests {
     #[test]
     fn a_soft_hyphen_is_dropped() {
         assert_eq!(wrapped("ab\u{00AD}cd", 2.0), ["abcd"]);
+    }
+
+    #[test]
+    fn a_line_is_the_slice_of_the_text_it_was_cut_from() {
+        let set = lines("ab cd\nef  gh", 5.0, &unit).unwrap();
+        for line in &set.lines {
+            assert_eq!(set.text[line.range.clone()], line.text);
+        }
+        // `ab cd`, `ef` (the two spaces that end the wrapped line are
+        // outside it) and `gh`.
+        let ranges: Vec<_> = set.lines.iter().map(|line| line.range.clone()).collect();
+        assert_eq!(ranges, [0..5, 6..8, 10..12]);
+    }
+
+    #[test]
+    fn a_soft_hyphen_is_outside_the_text_the_ranges_are_of() {
+        let set = lines("ab\u{00AD}cd", 9.0, &unit).unwrap();
+        assert_eq!(set.text, "abcd");
+        assert_eq!(set.lines[0].range, 0..4);
     }
 
     #[test]

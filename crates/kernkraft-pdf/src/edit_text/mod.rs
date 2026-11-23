@@ -21,9 +21,11 @@
 //! when that font can show it, else in a face of the font list handed in;
 //! in the block's width, after the `ET` of its last text object.
 
+mod arrange;
 mod collect;
 mod face;
 mod insert;
+mod mirrored_table;
 mod splice;
 mod typeset;
 
@@ -665,6 +667,9 @@ struct Frame {
     first: Matrix,
     /// The width of the widest line, in text space units.
     width: f64,
+    /// How far the block reaches to the right of the first glyph's origin,
+    /// in text space units: where a right-to-left paragraph is set against.
+    right: f64,
     /// The distance from the baseline of the first line to that of the
     /// second, along text space's `-y`, in text space units, when the block
     /// has two. It is negative when the second line is further along `+y`,
@@ -701,6 +706,7 @@ fn frame_of(inspected: &Inspected, block: &TextBlock) -> Result<Frame, PdfError>
         return Err(invalid("a text matrix that cannot be inverted"));
     };
     let mut width = 0.0f64;
+    let mut right = f64::NEG_INFINITY;
     let mut starts = Vec::new();
     for line in &block.lines {
         let mut sources = line.visual_chars().into_iter().filter_map(|ch| ch.source);
@@ -717,6 +723,7 @@ fn frame_of(inspected: &Inspected, block: &TextBlock) -> Result<Frame, PdfError>
         let end_point = tail_glyph.matrix.apply(tail_glyph.width / 1000.0, 0.0);
         let end = to_text.apply(end_point.0, end_point.1);
         width = width.max(end.0 - start.0);
+        right = right.max(end.0);
         starts.push(start);
     }
     let pitch = match starts.as_slice() {
@@ -726,6 +733,7 @@ fn frame_of(inspected: &Inspected, block: &TextBlock) -> Result<Frame, PdfError>
     Ok(Frame {
         first: tm,
         width,
+        right: if right.is_finite() { right } else { width },
         pitch,
         size,
     })
@@ -827,14 +835,29 @@ fn compose(
         let word = if face.takes_word_spacing(c) { tw } else { 0.0 };
         Ok((face.width(c)? * size / 1000.0 + tc + word) * th)
     };
-    let lines = typeset::lines(&edit.text, frame.width, &advance)?;
+    let set = typeset::lines(&edit.text, frame.width, &advance)?;
+    let arranged = arrange::arrange(&set, &advance)?;
     let pitch = match frame.pitch {
         Some(measured) => measured * size / frame.size,
         None => face.line_height()? / 1000.0 * size,
     };
-    let mut codes = Vec::with_capacity(lines.len());
-    for line in &lines {
-        codes.push(face.encode(line)?);
+    let mut codes: Vec<Vec<insert::Piece>> = Vec::with_capacity(arranged.len());
+    for line in &arranged {
+        // A right-to-left paragraph ends at the block's right edge, a
+        // left-to-right one starts at its first glyph.
+        let line_left = if line.right_to_left {
+            frame.right - line.width
+        } else {
+            0.0
+        };
+        let mut row = Vec::with_capacity(line.pieces.len());
+        for piece in &line.pieces {
+            row.push(insert::Piece {
+                left: line_left + piece.left,
+                codes: face.encode(&piece.text)?,
+            });
+        }
+        codes.push(row);
     }
 
     let (name, new_resources) = match &mut face {
@@ -858,7 +881,7 @@ fn compose(
     };
     let mut bytes = vec![b'\n'];
     bytes.extend(insert::show(&setting, &codes)?);
-    Ok((bytes, lines.len(), new_resources))
+    Ok((bytes, set.lines.len(), new_resources))
 }
 
 /// Replaces the text of `block`, a block of page `page` (counted from 1)
@@ -878,9 +901,14 @@ fn compose(
 /// Lines are as far apart as the block's first two were, or as the font's
 /// ascent, descent and leading say.
 ///
-/// Shaping is not done: one character is one glyph of the font's Unicode
-/// map, so ligatures, kerning, combining marks and right-to-left text are
-/// not formed.
+/// The text is in logical order, as typed. A paragraph is right to left when
+/// its first strong character is (UAX #9, P2 and P3); its lines are shown in
+/// the order their levels give and are set against the block's right edge,
+/// and the glyphs are written in the order typed, each piece where it
+/// stands. Shaping is not done: one character is one glyph of the font's
+/// Unicode map, so ligatures, kerning, combining marks and the joining of
+/// Arabic letters are not formed, and a character that is drawn mirrored in
+/// a right-to-left run (a bracket) is [`PdfError::MirroredGlyphNotSet`].
 ///
 /// A block that [`Document::text_block_editability`] refuses is
 /// [`PdfError::TextNotEditable`]; a character no usable font has is

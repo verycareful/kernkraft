@@ -30,8 +30,10 @@
 //!
 //! The crate does not apply rule L4 (mirroring), and none is applied here:
 //! the text of a glyph is what the font's `ToUnicode` map or encoding says
-//! it is, which for the producers read so far is the character typed, not
-//! the mirrored form drawn.
+//! it is. A producer that draws the mirrored glyph of a bracket in a
+//! right-to-left run (Cairo does, and gives the character typed as the
+//! `ActualText` of the marked content around it) therefore reads back as the
+//! character of the glyph drawn.
 
 use unicode_bidi::{bidi_class, BidiClass, BidiInfo, Level};
 

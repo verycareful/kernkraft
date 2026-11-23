@@ -95,8 +95,16 @@ pub(super) struct Setting<'a> {
     pub cm: Option<Matrix>,
 }
 
-/// The `q ... Q` that shows `lines` (each the bytes of one line's string).
-pub(super) fn show(setting: &Setting<'_>, lines: &[Vec<u8>]) -> Result<Vec<u8>, PdfError> {
+/// The bytes of a string and where it starts on its line.
+pub(super) struct Piece {
+    /// The distance from the first glyph's origin along the line, in text
+    /// space units.
+    pub left: f64,
+    pub codes: Vec<u8>,
+}
+
+/// The `q ... Q` that shows `lines`, each the pieces of one line.
+pub(super) fn show(setting: &Setting<'_>, lines: &[Vec<Piece>]) -> Result<Vec<u8>, PdfError> {
     let text = &setting.state.text;
     let mut out = ContentBuilder::new();
     out.save_state()?;
@@ -125,13 +133,13 @@ pub(super) fn show(setting: &Setting<'_>, lines: &[Vec<u8>]) -> Result<Vec<u8>, 
         "Tr",
     )?;
     out.operator(&numbers(&[text.rise])?, "Ts")?;
-    for (index, codes) in lines.iter().enumerate() {
-        if codes.is_empty() {
-            continue;
+    for (index, pieces) in lines.iter().enumerate() {
+        for piece in pieces.iter().filter(|piece| !piece.codes.is_empty()) {
+            let at =
+                Matrix::translation(piece.left, -setting.pitch * index as f64).then(setting.first);
+            out.operator(&numbers(&at.to_array())?, "Tm")?;
+            out.show_text(&piece.codes)?;
         }
-        let line = Matrix::translation(0.0, -setting.pitch * index as f64).then(setting.first);
-        out.operator(&numbers(&line.to_array())?, "Tm")?;
-        out.show_text(codes)?;
     }
     out.end_text()?;
     out.restore_state()?;

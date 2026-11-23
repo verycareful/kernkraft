@@ -211,6 +211,7 @@ pub fn kind_of(error: &PdfError) -> String {
         PdfError::Function(..) => "Function",
         PdfError::ColourComponents { .. } => "ColourComponents",
         PdfError::NoGlyphForCharacter { .. } => "NoGlyphForCharacter",
+        PdfError::MirroredGlyphNotSet { .. } => "MirroredGlyphNotSet",
         PdfError::Cancelled => "Cancelled",
     };
     own.to_owned()

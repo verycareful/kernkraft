@@ -35,6 +35,8 @@ fn hebrew_font() -> (u32, Vec<u8>) {
 
 const SHALOM: &str = "\u{05e9}\u{05dc}\u{05d5}\u{05dd}";
 const OLAM: &str = "\u{05e2}\u{05d5}\u{05dc}\u{05dd}";
+const SHIN: &str = "\u{05e9}";
+const LAMED: &str = "\u{05dc}";
 
 /// The text layer of a page that shows `hex` (the code string of one `Tj`)
 /// at (100, 700) in the Hebrew font, and `more` after it.
@@ -205,4 +207,98 @@ fn glyphs_drawn_along_the_line_leave_the_base_to_the_majority() {
     glyphs.sort_by_key(|&(_, place)| place);
     let page = placed(&glyphs);
     assert_eq!(page.text(), format!("abc {SHALOM} {OLAM} def"));
+}
+
+/// The text layer of a page whose content, a text object, is `shows`: each
+/// glyph set by `Tm` at its place, from x 100 in 6 point steps, in the
+/// Hebrew font.
+fn drawn_with(shows: &str) -> TextPage {
+    let content = format!("BT /F3 10 Tf {shows} ET");
+    let fixture = document(
+        &[PageSpec {
+            content: &content,
+            entries: "/Resources << /Font << /F3 80 0 R >> >>",
+        }],
+        "",
+        "",
+        &[(80, hebrew_font().1.as_slice())],
+    );
+    text_of(&fixture)
+}
+
+/// `<code> Tj` at `place`, wrapped in an `ActualText` span of `typed`
+/// (a UTF-16BE string, hexadecimal) when there is one.
+fn glyph(code: u8, place: u32, typed: Option<&str>) -> String {
+    let show = format!("1 0 0 1 {} 700 Tm <{code:02x}> Tj ", 100 + 6 * place);
+    match typed {
+        Some(hex) => format!("/Span << /ActualText <FEFF{hex}> >> BDC {show}EMC "),
+        None => show,
+    }
+}
+
+#[test]
+fn a_mirrored_bracket_with_an_actual_text_reads_as_the_character_typed() {
+    // Typed shin, a space, `(`, lamed, `)` in a right-to-left paragraph,
+    // all level 1 (the brackets pair around a right-to-left letter, N0),
+    // so from the left the line is `)`, lamed, `(`, a space, shin. A
+    // producer draws the mirrored glyph for each bracket: the glyph of `(`
+    // for the typed `)` at place 0 and the glyph of `)` for the typed `(`
+    // at place 2, and says what was typed in an `ActualText`. The glyphs
+    // are drawn in the order typed.
+    let shows = [
+        glyph(1, 4, None),
+        glyph(b' ', 3, None),
+        glyph(b')', 2, Some("0028")),
+        glyph(2, 1, None),
+        glyph(b'(', 0, Some("0029")),
+    ]
+    .concat();
+    let page = drawn_with(&shows);
+    assert_eq!(page.text(), format!("{SHIN} ({LAMED})"));
+    // The boxes are where the glyphs are drawn: shin is at place 4.
+    assert_eq!(page.char(0).unwrap().text, SHIN);
+    assert_close(page.char(0).unwrap().rect.left, 124.0 / PAGE_WIDTH, "shin");
+    assert_close(page.char(2).unwrap().rect.left, 112.0 / PAGE_WIDTH, "(");
+}
+
+#[test]
+fn a_right_to_left_run_with_brackets_in_a_left_to_right_paragraph_is_read_in_order_typed() {
+    // Typed `A `, shin, a space, `(`, lamed, `)`, a space and `B` in a left
+    // to right paragraph. The run from shin to `)` is level 1 (the brackets
+    // pair around a right-to-left letter after a right-to-left one, N0) and
+    // is shown reversed in places 2 to 6; two Latin letters against two
+    // Hebrew ones leave the majority to chance, and the order the glyphs
+    // were drawn in settles it.
+    let shows = [
+        glyph(b'A', 0, None),
+        glyph(b' ', 1, None),
+        glyph(1, 6, None),
+        glyph(b' ', 5, None),
+        glyph(b')', 4, Some("0028")),
+        glyph(2, 3, None),
+        glyph(b'(', 2, Some("0029")),
+        glyph(b' ', 7, None),
+        glyph(b'B', 8, None),
+    ]
+    .concat();
+    let page = drawn_with(&shows);
+    assert_eq!(page.text(), format!("A {SHIN} ({LAMED}) B"));
+}
+
+#[test]
+fn an_actual_text_of_several_glyphs_is_the_text_of_the_first_and_the_rest_keep_their_boxes() {
+    // Two glyphs, `A` and `B` of the Latin part, that stand for `xy`.
+    let shows = format!(
+        "/Span << /ActualText <FEFF00780079> >> BDC {}{}EMC ",
+        glyph(b'A', 0, None),
+        glyph(b'B', 1, None)
+    );
+    let page = drawn_with(&shows);
+    assert_eq!(page.text(), "xy");
+    assert_eq!(page.len(), 2);
+    assert_close(
+        page.char(1).unwrap().rect.left,
+        106.0 / PAGE_WIDTH,
+        "second",
+    );
 }

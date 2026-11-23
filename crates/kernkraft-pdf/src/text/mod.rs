@@ -15,7 +15,9 @@
 //! Text in the invisible render mode is text of the page: it is how a
 //! scanned page carries its recognised text. Text that optional content
 //! hides, that has no size, or that lies wholly off the displayed page is
-//! not. Lines are laid out left to right for text that flows that
+//! not. Where a marked-content sequence has an `ActualText` (14.9.4) it is
+//! the text of the sequence's first glyph and the others have none, each
+//! keeping its box. Lines are laid out left to right for text that flows that
 //! way. The characters of a line are in logical order, the order the text
 //! was typed in: a Hebrew word's letters come first letter first, whatever
 //! side of the line they are drawn on, and each character keeps the box

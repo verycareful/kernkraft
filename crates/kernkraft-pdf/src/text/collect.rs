@@ -15,7 +15,9 @@ use crate::content::{
     PlacedGlyph, StreamId, TextRun,
 };
 use crate::display::PageView;
+use crate::doc::decode_text_string;
 use crate::font::Font;
+use crate::syntax::{Object, Value};
 use crate::text::structure::{Slot, StructureIndex};
 use crate::text::GlyphSource;
 
@@ -92,6 +94,17 @@ pub(super) struct Collected {
     pub overflow: Option<OperatorSpan>,
 }
 
+/// The `ActualText` of a marked-content sequence (14.9.4): the text the
+/// sequence's content stands for, whatever its glyphs say.
+enum Actual {
+    /// The sequence has none.
+    None,
+    /// Not yet given to a glyph.
+    Pending(String),
+    /// Given to the first glyph of the sequence; the others have no text.
+    Spent,
+}
+
 pub(super) struct Collector<'a> {
     view: &'a PageView,
     structure: &'a StructureIndex,
@@ -101,6 +114,9 @@ pub(super) struct Collector<'a> {
     /// interpreter without an event, so only the entries below the depth
     /// the context reports are current.
     streams: Vec<StreamId>,
+    /// What each open marked-content sequence says about its text (14.9.4),
+    /// outermost first and as long as `streams`.
+    actual: Vec<Actual>,
     /// How many forms the page has invoked so far, and the invocations
     /// that are open, innermost last.
     invoked: u32,
@@ -119,6 +135,7 @@ impl<'a> Collector<'a> {
             structure,
             max_glyphs,
             streams: Vec::new(),
+            actual: Vec::new(),
             invoked: 0,
             invocations: Vec::new(),
             out: Collected {
@@ -132,6 +149,20 @@ impl<'a> Collector<'a> {
 
     pub(super) fn finish(self) -> Collected {
         self.out
+    }
+
+    /// The text the outermost open sequence with an `ActualText` gives the
+    /// next glyph: the whole of it for the first glyph, nothing for the
+    /// rest. `None` when no open sequence has one.
+    fn actual_for_next_glyph(&mut self, ctx: &Context<'_>) -> Option<String> {
+        let open = ctx.marked.len().min(self.actual.len());
+        let sequence = self.actual[..open]
+            .iter_mut()
+            .find(|actual| !matches!(actual, Actual::None))?;
+        match std::mem::replace(sequence, Actual::Spent) {
+            Actual::Pending(text) => Some(text),
+            Actual::Spent | Actual::None => Some(String::new()),
+        }
     }
 
     /// The structure slot of the innermost marked-content sequence that
@@ -340,6 +371,23 @@ fn rectangle_rule(points: &[(f64, f64)]) -> Option<RawRule> {
     }
 }
 
+/// The `ActualText` of `sequence` (14.9.4), a text string.
+fn actual_text_of(sequence: Option<&MarkedContent>) -> Actual {
+    let Some(Value::String(bytes)) = sequence
+        .and_then(|marked| marked.properties.as_ref())
+        .and_then(|properties| properties.get(b"ActualText"))
+        .map(Object::value)
+    else {
+        return Actual::None;
+    };
+    let decoded = decode_text_string(bytes.as_bytes());
+    if decoded.exact {
+        Actual::Pending(decoded.text)
+    } else {
+        Actual::None
+    }
+}
+
 /// The least and greatest of `values`.
 fn bounds(values: impl Iterator<Item = f64>) -> (f64, f64) {
     values.fold(
@@ -391,8 +439,11 @@ impl Device for Collector<'_> {
     }
 
     fn begin_marked(&mut self, ctx: &Context<'_>) {
-        self.streams.truncate(ctx.marked.len().saturating_sub(1));
+        let below = ctx.marked.len().saturating_sub(1);
+        self.streams.truncate(below);
         self.streams.push(ctx.span.stream);
+        self.actual.truncate(below);
+        self.actual.push(actual_text_of(ctx.marked.last()));
     }
 
     fn text(&mut self, ctx: &Context<'_>, run: &TextRun) {
@@ -417,13 +468,17 @@ impl Device for Collector<'_> {
                 invocation: self.invocations.last().copied().unwrap_or(0),
             };
             string.1 += source.len;
-            let text = match glyph.unicode.as_deref() {
-                // A character the font maps to no text at all.
-                Some("") => continue,
-                Some(text) => text.to_owned(),
-                None => {
-                    self.out.unmapped.get_or_insert(ctx.span);
-                    char::REPLACEMENT_CHARACTER.to_string()
+            let text = if let Some(text) = self.actual_for_next_glyph(ctx) {
+                text
+            } else {
+                match glyph.unicode.as_deref() {
+                    // A character the font maps to no text at all.
+                    Some("") => continue,
+                    Some(text) => text.to_owned(),
+                    None => {
+                        self.out.unmapped.get_or_insert(ctx.span);
+                        char::REPLACEMENT_CHARACTER.to_string()
+                    }
                 }
             };
             if let Some(raw) = self.glyph(run, glyph, text, slot, source) {

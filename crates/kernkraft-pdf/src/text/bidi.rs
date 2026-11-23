@@ -21,19 +21,25 @@
 //! reading of the line, not a proof: the same picture can come from a left
 //! to right paragraph with a Hebrew phrase inside it and from a right to
 //! left one with a Latin phrase at each end, and the rules cannot tell
-//! them apart. The base direction is therefore a choice, made in two steps.
+//! them apart. Two things settle it.
+//!
 //! A producer that draws the glyphs of a line in the order they were typed,
-//! each placed where it belongs (Cairo does), has settled it: when exactly
-//! one of the two readings of a line is the order its glyphs were drawn in,
-//! that reading is taken. Otherwise the line takes the block's base, the
-//! direction most of the block's strong characters have ([`base_level`]).
+//! each placed where it belongs (Cairo does), has settled it: when the order
+//! the glyphs were drawn in, run through the algorithm the other way, puts
+//! every glyph exactly where the page shows it, for a paragraph of one
+//! direction or the other, that order is the logical one and is taken as it
+//! is ([`drawn_order`]).
+//!
+//! Otherwise the direction is a choice made for a whole block, by
+//! [`base_level`]: the direction most of its strong characters have, unless
+//! one of the two readings of a line is the order its glyphs were drawn in.
 //!
 //! The crate does not apply rule L4 (mirroring), and none is applied here:
 //! the text of a glyph is what the font's `ToUnicode` map or encoding says
-//! it is. A producer that draws the mirrored glyph of a bracket in a
-//! right-to-left run (Cairo does, and gives the character typed as the
-//! `ActualText` of the marked content around it) therefore reads back as the
-//! character of the glyph drawn.
+//! it is, or the `ActualText` of the marked content around it (ISO 32000-1,
+//! 14.9.4). A producer that draws the mirrored glyph of a bracket in a
+//! right-to-left run (Cairo does) says the character typed there, so the
+//! text of that glyph is the character typed.
 
 use unicode_bidi::{bidi_class, BidiClass, BidiInfo, Level};
 
@@ -160,10 +166,136 @@ fn is_drawing_order(places: &[Option<(u32, u32, u32)>], order: &[usize]) -> bool
     })
 }
 
-/// The order of a line's characters in reading order, as [`logical_order`]
-/// gives it for `base`, unless the other base gives the order the glyphs
-/// were drawn in and `base` does not.
+/// The order of the characters of a line in logical order, when the order
+/// its glyphs were drawn in is that order: the characters drawn, taken in
+/// that order and shown for a paragraph of one direction or the other
+/// (UAX #9, rule L2 applied forward), stand exactly where the page shows
+/// them. Element `k` is the place along the line, counted from the left, of
+/// the `k`-th character in reading order, as for [`logical_order`]. A space
+/// the layout read between glyphs, which no glyph drew, goes after the
+/// neighbour that comes first in reading order.
+///
+/// `None` when the glyphs were not all drawn by one stream, when no
+/// character is of a right-to-left script, or when they were drawn from
+/// left to right, which says nothing of the order they were typed in.
+fn drawn_order(line: &TextLine) -> Option<Vec<usize>> {
+    let places = drawing_places(&line.chars)?;
+    let mut drawn: Vec<(usize, (u32, u32, u32))> = places
+        .iter()
+        .enumerate()
+        .filter_map(|(at, place)| place.map(|place| (at, place)))
+        .collect();
+    if drawn.len() < 2
+        || !drawn
+            .iter()
+            .any(|&(at, _)| has_right_to_left(&line.chars[at].text))
+    {
+        return None;
+    }
+    drawn.sort_by_key(|&(_, place)| place);
+    if drawn.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+        return None;
+    }
+    let units: Vec<&str> = drawn
+        .iter()
+        .map(|&(at, _)| line.chars[at].text.as_str())
+        .collect();
+    let base = [Level::ltr(), Level::rtl()]
+        .into_iter()
+        .find(|&base| shown_in_place(&units, base, &drawn))?;
+    Some(with_spaces(line, &drawn, base))
+}
+
+/// Whether `units`, in logical order, are shown for the paragraph level
+/// `base` in the places `drawn` gives (each entry's first element), from
+/// the left.
+fn shown_in_place(units: &[&str], base: Level, drawn: &[(usize, (u32, u32, u32))]) -> bool {
+    let mut text = String::new();
+    let mut starts = Vec::with_capacity(units.len());
+    for unit in units {
+        starts.push(text.len());
+        text.push_str(unit);
+    }
+    let info = BidiInfo::new(&text, Some(base));
+    let [paragraph] = info.paragraphs.as_slice() else {
+        return false;
+    };
+    let levels = info.reordered_levels(paragraph, 0..text.len());
+    let levels: Vec<Level> = units
+        .iter()
+        .zip(&starts)
+        .map(|(unit, &start)| match levels.get(start) {
+            Some(&level) if !unit.is_empty() => level,
+            _ => base,
+        })
+        .collect();
+    let shown = BidiInfo::reorder_visual(&levels);
+    shown
+        .windows(2)
+        .all(|pair| drawn[pair[0]].0 < drawn[pair[1]].0)
+}
+
+/// `drawn` (the places of the characters a glyph drew, in logical order)
+/// with the places of the other characters of `line` put in. Such a
+/// character is a space the layout read between two glyphs. It goes where
+/// the algorithm for `base` shows it between those glyphs: next to one of
+/// them in reading order, or else after the one that comes first.
+fn with_spaces(line: &TextLine, drawn: &[(usize, (u32, u32, u32))], base: Level) -> Vec<usize> {
+    let mut rank = vec![None; line.chars.len()];
+    for (k, &(at, _)) in drawn.iter().enumerate() {
+        rank[at] = Some(k);
+    }
+    let units_with = |space: usize, index: usize| -> bool {
+        let mut units: Vec<&str> = drawn
+            .iter()
+            .map(|&(at, _)| line.chars[at].text.as_str())
+            .collect();
+        let mut entries = drawn.to_vec();
+        units.insert(index, line.chars[space].text.as_str());
+        entries.insert(index, (space, (0, 0, 0)));
+        shown_in_place(&units, base, &entries)
+    };
+    // The spaces to put before each character drawn, and at the end.
+    let mut slots: Vec<Vec<usize>> = vec![Vec::new(); drawn.len() + 1];
+    for at in (0..line.chars.len()).filter(|&at| rank[at].is_none()) {
+        let neighbours: Vec<usize> = [
+            (0..at).rev().find(|&other| rank[other].is_some()),
+            (at + 1..line.chars.len()).find(|&other| rank[other].is_some()),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|other| rank[other])
+        .collect();
+        let candidates: Vec<usize> = neighbours
+            .iter()
+            .flat_map(|&ranked| [ranked + 1, ranked])
+            .collect();
+        let index = candidates
+            .iter()
+            .copied()
+            .find(|&index| units_with(at, index))
+            .or_else(|| neighbours.iter().min().map(|&ranked| ranked + 1))
+            .unwrap_or(drawn.len());
+        slots[index].push(at);
+    }
+    let mut order = Vec::with_capacity(line.chars.len());
+    for (k, spaces) in slots.iter().enumerate() {
+        order.extend(spaces);
+        if let Some(&(at, _)) = drawn.get(k) {
+            order.push(at);
+        }
+    }
+    order
+}
+
+/// The order of a line's characters in reading order: the order its glyphs
+/// were drawn in when that is a logical order ([`drawn_order`]), and else
+/// as [`logical_order`] gives it for `base`, unless the other base gives the
+/// order the glyphs were drawn in and `base` does not.
 fn reading_order(line: &TextLine, units: &[&str], base: Level) -> Vec<usize> {
+    if let Some(order) = drawn_order(line) {
+        return order;
+    }
     let order = logical_order(units, base);
     let Some(places) = drawing_places(&line.chars) else {
         return order;

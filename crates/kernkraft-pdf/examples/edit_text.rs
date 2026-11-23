@@ -9,7 +9,8 @@
 //! and a footer line, set in Helvetica) and OUT_DIR/after-reuse.pdf (the
 //! first line replaced, set in Helvetica again). With FONT, a TrueType or
 //! OpenType file, also OUT_DIR/after-font.pdf (the line replaced, set in
-//! FONT's first family, embedded). Prints `band TOP BOTTOM`, the vertical
+//! FONT's first family, embedded) and OUT_DIR/bidi-after.pdf (a Hebrew
+//! line with brackets set in it; FONT must have Hebrew). Prints `band TOP BOTTOM`, the vertical
 //! extent of the replaced line as fractions of the page's height, for the
 //! script's comparison of what lies outside it. Exits 0 when the files are
 //! written and 1 on any failure.
@@ -39,6 +40,17 @@ const SEED: WriteOptions = WriteOptions { seed: [0x5A; 32] };
 const CONTENT: &str = "0.8 0.1 0.1 rg 20 20 100 30 re f 0 g\n\
     BT /F1 14 Tf 50 150 Td (Hello World) Tj ET\n\
     BT /F1 14 Tf 50 60 Td (Footer text stays) Tj ET\n";
+
+/// Shalom, `(`, shin lamed, `)` and `abc`: a right-to-left paragraph whose
+/// brackets pair around right-to-left letters.
+const BIDI_LINE: &str = "\u{05e9}\u{05dc}\u{05d5}\u{05dd} (\u{05e9}\u{05dc}) abc";
+
+fn list_family(list: &FontList) -> Result<String, PdfError> {
+    list.faces()
+        .first()
+        .and_then(|face| face.families.first().cloned())
+        .ok_or_else(|| PdfError::Invalid("the font has no family name".to_owned()))
+}
 
 fn input() -> Result<Document, PdfError> {
     let objects: [String; 5] = [
@@ -145,6 +157,14 @@ fn run(out: &Path, font: Option<&str>) -> Result<(), PdfError> {
             .with_fonts(&list);
         let embedded = edit_text(&before, 1, block, &edit, &NoProgress)?;
         save(&embedded.document, &out.join("after-font.pdf"))?;
+
+        // A right-to-left paragraph with brackets around a right-to-left
+        // word: the brackets are drawn mirrored.
+        let hebrew = TextEdit::new(BIDI_LINE)
+            .with_style(TextStyle::default().with_family(list_family(&list)?))
+            .with_fonts(&list);
+        let mixed = edit_text(&before, 1, block, &hebrew, &NoProgress)?;
+        save(&mixed.document, &out.join("bidi-after.pdf"))?;
     }
     Ok(())
 }

@@ -4,8 +4,7 @@
 //! Setting a line of new text in the order it is shown in: Unicode Standard
 //! Annex #9 (UAX #9), P2 and P3 (the level of a paragraph), W1 to W7, N0 to
 //! N2 and I1 to I2 (the level of a character), L1 and L2 (the order of a
-//! line) and L4 (mirroring, which is refused: see
-//! [`PdfError::MirroredGlyphNotSet`]).
+//! line) and L4 (mirroring), with the pairs of BidiMirroring.txt.
 //!
 //! The text of an edit is in logical order, the order it was typed in. A
 //! line is broken in that order ([`super::typeset`]), and each broken line
@@ -16,19 +15,30 @@
 //! glyphs were drawn in. A piece is a run of characters that stand side by
 //! side in the order they were typed in, so a line of left-to-right text is
 //! one piece, and a right-to-left word is a piece for each letter.
+//!
+//! A character that is drawn mirrored where its level is odd (a bracket) is
+//! a piece of its own: the glyph of the character that is its mirror image,
+//! with the character typed as its `ActualText` (ISO 32000-1, 14.9.4), as
+//! Cairo writes it. One with no exact mirror image (a pair that
+//! BidiMirroring.txt marks as a best fit, or none) is
+//! [`PdfError::MirroredGlyphNotSet`].
 
 use std::ops::Range;
 
 use unicode_bidi::{BidiInfo, Level};
 
-use super::mirrored_table::BIDI_MIRRORED;
+use super::mirrored_table::{BIDI_MIRRORED, MIRROR_PAIRS};
 use super::typeset::{Advance, Set};
 use crate::PdfError;
 
 /// A run of characters shown side by side in the order they were typed in.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Piece {
+    /// The characters whose glyphs are drawn.
     pub text: String,
+    /// What the glyphs stand for when it is not `text`: the character typed
+    /// where `text` is its mirror image.
+    pub actual: Option<String>,
     /// The distance from the left edge of the line to the piece's left
     /// edge, in text space units.
     pub left: f64,
@@ -63,6 +73,25 @@ fn is_mirrored(c: char) -> bool {
         .is_ok()
 }
 
+/// The character whose glyph is the mirror image of `c`'s, when there is
+/// one that is exact.
+fn mirror_of(c: char) -> Option<char> {
+    let code = u32::from(c);
+    let at = MIRROR_PAIRS
+        .binary_search_by_key(&code, |&(first, _)| first)
+        .ok()?;
+    char::from_u32(MIRROR_PAIRS[at].1)
+}
+
+/// `text` and, after it, the mirror image of each of its characters that
+/// has one: the characters a font must have for `text` to be set whatever
+/// the direction of its runs.
+pub(super) fn with_mirror_images(text: &str) -> String {
+    let mut all = text.to_owned();
+    all.extend(text.chars().filter_map(mirror_of));
+    all
+}
+
 /// The pieces of the line of `set` that is `range` of `set.text`, in the
 /// paragraph `levels` and `info` give.
 fn pieces_of(
@@ -73,34 +102,41 @@ fn pieces_of(
     advance: &Advance<'_>,
 ) -> Result<(Vec<Piece>, f64), PdfError> {
     let levels = info.reordered_levels(paragraph, range.clone());
-    let chars: Vec<(char, Level)> = text
-        .char_indices()
-        .map(|(offset, c)| (c, levels[range.start + offset]))
-        .collect();
-    if let Some(&(character, _)) = chars
-        .iter()
-        .find(|(c, level)| level.is_rtl() && is_mirrored(*c))
-    {
-        return Err(PdfError::MirroredGlyphNotSet { character });
+    // What is drawn for each character, in logical order: the character, or
+    // its mirror image where it is mirrored.
+    let mut drawn: Vec<(char, Option<char>, Level)> = Vec::new();
+    for (offset, c) in text.char_indices() {
+        let level = levels[range.start + offset];
+        if level.is_rtl() && is_mirrored(c) {
+            let Some(image) = mirror_of(c) else {
+                return Err(PdfError::MirroredGlyphNotSet { character: c });
+            };
+            drawn.push((image, Some(c), level));
+        } else {
+            drawn.push((c, None, level));
+        }
     }
-    let level_list: Vec<Level> = chars.iter().map(|&(_, level)| level).collect();
+    let level_list: Vec<Level> = drawn.iter().map(|&(_, _, level)| level).collect();
     // `visual_to_logical[place]` is the character shown at `place`.
     let visual_to_logical = BidiInfo::reorder_visual(&level_list);
-    let mut place_of = vec![0usize; chars.len()];
-    let mut left_of = vec![0.0f64; chars.len()];
+    let mut place_of = vec![0usize; drawn.len()];
+    let mut left_of = vec![0.0f64; drawn.len()];
     let mut width = 0.0;
     for (place, &logical) in visual_to_logical.iter().enumerate() {
         place_of[logical] = place;
         left_of[logical] = width;
-        width += advance(chars[logical].0)?;
+        width += advance(drawn[logical].0)?;
     }
     let mut pieces: Vec<Piece> = Vec::new();
-    for (logical, &(c, _)) in chars.iter().enumerate() {
+    for (logical, &(c, typed, _)) in drawn.iter().enumerate() {
         let continues = logical > 0 && place_of[logical] == place_of[logical - 1] + 1;
         match pieces.last_mut() {
-            Some(piece) if continues => piece.text.push(c),
+            Some(piece) if continues && typed.is_none() && piece.actual.is_none() => {
+                piece.text.push(c);
+            }
             _ => pieces.push(Piece {
                 text: c.to_string(),
+                actual: typed.map(String::from),
                 left: left_of[logical],
             }),
         }
@@ -131,6 +167,7 @@ pub(super) fn arrange(set: &Set, advance: &Advance<'_>) -> Result<Vec<Arranged>,
                 let width = line.text.chars().map(advance).sum::<Result<f64, _>>()?;
                 let pieces = vec![Piece {
                     text: line.text.clone(),
+                    actual: None,
                     left: 0.0,
                 }];
                 (pieces, width, false)
@@ -251,13 +288,51 @@ mod tests {
     }
 
     #[test]
-    fn a_bracket_in_a_right_to_left_run_is_refused() {
+    fn a_bracket_in_a_right_to_left_run_is_its_mirror_image_with_the_text_typed() {
+        // `(`, shin, lamed, `)` in a right-to-left paragraph: the brackets
+        // pair around right-to-left letters, so all four are level 1 and
+        // the line is reversed. The typed `(` is at the rightmost place,
+        // drawn as the glyph of `)`, and the typed `)` at the leftmost,
+        // drawn as the glyph of `(`.
         let text = format!("({SHIN}{LAMED})");
+        let all = arranged(&text, 99.0);
+        let pieces: Vec<(&str, Option<&str>, f64)> = all[0]
+            .pieces
+            .iter()
+            .map(|piece| (piece.text.as_str(), piece.actual.as_deref(), piece.left))
+            .collect();
+        assert_eq!(
+            pieces,
+            [
+                (")", Some("("), 3.0),
+                (SHIN, None, 2.0),
+                (LAMED, None, 1.0),
+                ("(", Some(")"), 0.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_mirrored_character_with_only_a_best_fit_image_is_refused() {
+        // U+2209 is the best fit of U+220C, not an exact image, and is
+        // level 1 after a right-to-left letter.
+        let text = format!("{SHIN}\u{2209}");
         let set = lines(&text, 99.0, &unit).unwrap();
         assert!(matches!(
             arrange(&set, &unit),
-            Err(PdfError::MirroredGlyphNotSet { character: '(' })
+            Err(PdfError::MirroredGlyphNotSet {
+                character: '\u{2209}'
+            })
         ));
+    }
+
+    #[test]
+    fn the_mirror_image_of_a_bracket_is_the_other_bracket() {
+        assert_eq!(mirror_of('('), Some(')'));
+        assert_eq!(mirror_of(']'), Some('['));
+        assert_eq!(mirror_of('a'), None);
+        assert_eq!(mirror_of('\u{2209}'), None);
+        assert_eq!(with_mirror_images("(a"), "(a)");
     }
 
     #[test]

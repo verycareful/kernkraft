@@ -747,7 +747,9 @@ fn choose_face(
     diagnostics: &mut Diagnostics,
 ) -> Result<Face, PdfError> {
     // A hard break ends a line and a soft hyphen is dropped: neither is drawn.
-    let shown = typeset::shown(&edit.text);
+    // A bracket in a right-to-left run is drawn as its mirror image, so the
+    // face needs that glyph too.
+    let shown = arrange::with_mirror_images(&typeset::shown(&edit.text));
     if edit.style.family.is_none() {
         if let Some(reused) = face::reuse(document, op, &shown, diagnostics)? {
             return Ok(Face::Reused(reused));
@@ -855,6 +857,7 @@ fn compose(
             row.push(insert::Piece {
                 left: line_left + piece.left,
                 codes: face.encode(&piece.text)?,
+                actual: piece.actual.clone(),
             });
         }
         codes.push(row);
@@ -907,8 +910,10 @@ fn compose(
 /// and the glyphs are written in the order typed, each piece where it
 /// stands. Shaping is not done: one character is one glyph of the font's
 /// Unicode map, so ligatures, kerning, combining marks and the joining of
-/// Arabic letters are not formed, and a character that is drawn mirrored in
-/// a right-to-left run (a bracket) is [`PdfError::MirroredGlyphNotSet`].
+/// Arabic letters are not formed. A character that is drawn mirrored in a
+/// right-to-left run (a bracket) is set as the glyph of its mirror image,
+/// with the character typed as the `ActualText` around it; one with no exact
+/// mirror image is [`PdfError::MirroredGlyphNotSet`].
 ///
 /// A block that [`Document::text_block_editability`] refuses is
 /// [`PdfError::TextNotEditable`]; a character no usable font has is

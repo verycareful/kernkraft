@@ -308,9 +308,9 @@ pub enum PdfError {
     #[error("font program: {0}")]
     Font(#[from] kernkraft_font::FontError),
     /// A character that is drawn mirrored in a right-to-left run (Unicode
-    /// Standard Annex 9, rule L4: a bracket, for one) stands in such a run
-    /// of text to be set, and setting a mirrored glyph is not done.
-    #[error("U+{:04X} would be drawn mirrored in a right-to-left run, which text editing does not set", u32::from(*.character))]
+    /// Standard Annex 9, rule L4) stands in such a run of text to be set,
+    /// and no character is its exact mirror image.
+    #[error("U+{:04X} would be drawn mirrored in a right-to-left run and has no exact mirror image to set", u32::from(*.character))]
     MirroredGlyphNotSet { character: char },
     /// A character the font being embedded has no glyph for.
     #[error("the font has no glyph for U+{:04X}", u32::from(*.character))]

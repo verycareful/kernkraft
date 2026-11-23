@@ -80,6 +80,23 @@ if bad:
 PY
 done
 
+# With a FONT that has Hebrew, the line edited to a right-to-left paragraph
+# with brackets around a right-to-left word (the brackets are drawn mirrored,
+# each in an ActualText of the character typed) must be a valid file that
+# MuPDF reads back as typed, and poppler must give the brackets as typed too.
+bidi="$out_dir/bidi-after.pdf"
+if [ -f "$bidi" ]; then
+    qpdf --check "$bidi" >"$out_dir/bidi-after.qpdf.txt" 2>&1 || fail bidi-after "qpdf --check"
+    mutool info "$bidi" >/dev/null 2>&1 || fail bidi-after "mutool info"
+    shalom=$'\u05e9\u05dc\u05d5\u05dd'
+    pair=$'(\u05e9\u05dc)'
+    mutool draw -F text "$bidi" 2>/dev/null | grep -qF "$shalom $pair" \
+        || fail bidi-after "mutool does not give the line as typed"
+    pdftotext -raw "$bidi" - | tr -d '\n' | grep -qF '( ' \
+        || fail bidi-after "pdftotext lacks the opening bracket"
+    pdftotext -raw "$bidi" - | grep -qF ')' || fail bidi-after "pdftotext lacks the closing bracket"
+fi
+
 if [ "$failed" -ne 0 ]; then
     echo "$failed checks failed"
     exit 1

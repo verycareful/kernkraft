@@ -137,16 +137,36 @@ fn a_left_to_right_line_with_hebrew_in_it_reads_back_as_typed() {
 }
 
 #[test]
-fn a_bracket_that_would_be_mirrored_is_refused_and_one_that_is_not_is_set() {
+fn a_bracket_in_a_right_to_left_run_is_set_mirrored_and_reads_back_as_typed() {
+    // `(`, shin, lamed, `)` in a right-to-left paragraph: four glyphs of 5
+    // points end at 130, so from the left the line is the glyph of `(` for
+    // the typed `)` at 110, lamed at 115, shin at 120 and the glyph of `)`
+    // for the typed `(` at 125. The glyphs are drawn in the order typed,
+    // the brackets each in an `ActualText` of the character typed, and the
+    // page reads back as typed.
     let dir = tempfile::tempdir().unwrap();
-    let list = font_list(&dir);
-    let refused = edited(&format!("({SHIN}{LAMED})"), &list);
-    assert!(matches!(
-        refused,
-        Err(PdfError::MirroredGlyphNotSet { character: '(' })
-    ));
-    let doc = edited("(AB)", &list).unwrap();
-    assert_eq!(doc.text_page(1, &NoProgress).unwrap().text(), "(AB)");
+    let typed = format!("({SHIN}{LAMED})");
+    let doc = edited(&typed, &font_list(&dir)).unwrap();
+    let page = doc.text_page(1, &NoProgress).unwrap();
+    assert_eq!(page.text(), typed);
+    for (index, left) in [(0, 125.0), (1, 120.0), (2, 115.0), (3, 110.0)] {
+        assert_left(&page, index, left);
+    }
+    let stream = doc
+        .content_stream(
+            kernkraft_pdf::content::StreamId::Page(kernkraft_pdf::syntax::ObjectId {
+                number: PAGE,
+                generation: 0,
+            }),
+            1 << 20,
+        )
+        .unwrap()
+        .data;
+    let stream = String::from_utf8_lossy(&stream);
+    assert_eq!(stream.matches("/ActualText").count(), 2, "{stream}");
+    // A bracket in a left-to-right run is drawn as typed, in no span.
+    let plain = edited("(AB)", &font_list(&dir)).unwrap();
+    assert_eq!(plain.text_page(1, &NoProgress).unwrap().text(), "(AB)");
 }
 
 #[test]

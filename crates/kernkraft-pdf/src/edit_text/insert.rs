@@ -13,8 +13,9 @@
 use crate::build::{number, ContentBuilder};
 use crate::colour::Rgb;
 use crate::content::{ColorSpace, GraphicsState, Matrix, Paint, RenderMode};
+use crate::doc::encode_text_string;
 use crate::pages::rewrite::{direct, name_object, reference_object, Rewriter};
-use crate::syntax::{Dictionary, Name, Object, ObjectId, Value};
+use crate::syntax::{Dictionary, Name, Object, ObjectId, PdfString, Value};
 use crate::PdfError;
 
 /// The number a `Tr` operator takes for a render mode (Table 106).
@@ -101,6 +102,19 @@ pub(super) struct Piece {
     /// space units.
     pub left: f64,
     pub codes: Vec<u8>,
+    /// The text the glyphs stand for when it is not what they show, as the
+    /// `ActualText` of a marked-content sequence around them.
+    pub actual: Option<String>,
+}
+
+/// The property list `<< /ActualText text >>` (14.9.4).
+fn actual_text(text: &str) -> Object {
+    let mut properties = Dictionary::new();
+    properties.insert(
+        Name::new(&b"ActualText"[..]),
+        Object::new(Value::String(PdfString::new(encode_text_string(text)))),
+    );
+    direct(Value::Dictionary(properties))
 }
 
 /// The `q ... Q` that shows `lines`, each the pieces of one line.
@@ -137,8 +151,14 @@ pub(super) fn show(setting: &Setting<'_>, lines: &[Vec<Piece>]) -> Result<Vec<u8
         for piece in pieces.iter().filter(|piece| !piece.codes.is_empty()) {
             let at =
                 Matrix::translation(piece.left, -setting.pitch * index as f64).then(setting.first);
+            if let Some(typed) = &piece.actual {
+                out.operator(&[name_object(b"Span"), actual_text(typed)], "BDC")?;
+            }
             out.operator(&numbers(&at.to_array())?, "Tm")?;
             out.show_text(&piece.codes)?;
+            if piece.actual.is_some() {
+                out.operator(&[], "EMC")?;
+            }
         }
     }
     out.end_text()?;

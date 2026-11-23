@@ -44,6 +44,7 @@ pub const COMMANDS: &[&str] = &[
     "pdf_save",
     "pdf_compact",
     "pdf_set_system_fonts",
+    "pdf_set_cmyk_profile",
     "pdf_render_size",
     "pdf_render",
     "pdf_merge",

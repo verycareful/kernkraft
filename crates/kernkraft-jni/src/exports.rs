@@ -117,6 +117,10 @@ export!(
     Java_dev_kern_pdfbridge_KernkraftPdf_nativeSetSystemFonts,
     |r| bridge().set_system_fonts(r)
 );
+export!(
+    Java_dev_kern_pdfbridge_KernkraftPdf_nativeSetCmykProfile,
+    |r| bridge().set_cmyk_profile(r)
+);
 export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeRenderSize, |r| {
     bridge().render_size(r)
 });

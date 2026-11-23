@@ -39,6 +39,7 @@ Allows every kernkraft command
 - `allow-pdf-save`
 - `allow-pdf-compact`
 - `allow-pdf-set-system-fonts`
+- `allow-pdf-set-cmyk-profile`
 - `allow-pdf-render-size`
 - `allow-pdf-render`
 - `allow-pdf-merge`
@@ -824,6 +825,32 @@ Enables the pdf_search command without any pre-configured scope.
 <td>
 
 Denies the pdf_search command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-set-cmyk-profile`
+
+</td>
+<td>
+
+Enables the pdf_set_cmyk_profile command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-set-cmyk-profile`
+
+</td>
+<td>
+
+Denies the pdf_set_cmyk_profile command without any pre-configured scope.
 
 </td>
 </tr>

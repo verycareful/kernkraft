@@ -27,6 +27,8 @@
 //! profile is a [`CmykProfile`], which a [`ColourSpace::DeviceCmyk`](super::ColourSpace::DeviceCmyk)
 //! holds.
 
+use std::io::Read;
+use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
 use super::icc::{IccTransform, MAX_PROFILE_BYTES};
@@ -113,6 +115,44 @@ impl CmykProfile {
             .ok_or_else(|| PdfError::Invalid("the bundled CMYK profile cannot be used".into()))
     }
 
+    /// The profile an application gives, from its bytes: a profile for a
+    /// CMYK colour space that can be used. Anything else is
+    /// [`PdfError::Invalid`].
+    pub fn from_bytes(profile: &[u8]) -> Result<Self, PdfError> {
+        if profile.len() > MAX_PROFILE_BYTES {
+            return Err(PdfError::Invalid(
+                "the CMYK profile is larger than a profile may be".into(),
+            ));
+        }
+        if !is_cmyk(profile) {
+            return Err(PdfError::Invalid(
+                "the profile is not for a CMYK colour space".into(),
+            ));
+        }
+        Self::new(profile, CmykSource::Application)
+            .ok_or_else(|| PdfError::Invalid("the CMYK profile cannot be used".into()))
+    }
+
+    /// The profile an application gives, from the file at `path`; see
+    /// [`Self::from_bytes`]. A file that cannot be read is
+    /// [`PdfError::Fs`], one larger than a profile may be is
+    /// [`PdfError::Invalid`] (only its first bytes are read).
+    pub fn from_file(path: &Path) -> Result<Self, PdfError> {
+        let io = |source| {
+            PdfError::Fs(kernkraft_fs::FsError::Io {
+                path: path.to_path_buf(),
+                source,
+            })
+        };
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .map_err(io)?
+            .take(MAX_PROFILE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io)?;
+        Self::from_bytes(&bytes)
+    }
+
     /// Where the profile came from.
     pub fn source(&self) -> CmykSource {
         self.source
@@ -159,20 +199,18 @@ impl Document {
     /// document uses it. A profile that is not a CMYK profile, or that
     /// cannot be used, is [`PdfError::Invalid`] and changes nothing.
     pub fn set_cmyk_profile(&self, profile: &[u8]) -> Result<(), PdfError> {
-        if profile.len() > MAX_PROFILE_BYTES {
-            return Err(PdfError::Invalid(
-                "the CMYK profile is larger than a profile may be".into(),
-            ));
-        }
-        if !is_cmyk(profile) {
-            return Err(PdfError::Invalid(
-                "the profile is not for a CMYK colour space".into(),
-            ));
-        }
-        let profile = CmykProfile::new(profile, CmykSource::Application)
-            .ok_or_else(|| PdfError::Invalid("the CMYK profile cannot be used".into()))?;
-        *lock(self.application_cmyk()) = Some(profile);
+        self.use_cmyk_profile(CmykProfile::from_bytes(profile)?);
         Ok(())
+    }
+
+    /// As [`Self::set_cmyk_profile`], for a profile already made by
+    /// [`CmykProfile::from_bytes`] or [`CmykProfile::from_file`], so that
+    /// an application building it once gives it to every document it opens.
+    pub fn use_cmyk_profile(&self, profile: CmykProfile) {
+        *lock(self.application_cmyk()) = Some(CmykProfile {
+            transform: profile.transform,
+            source: CmykSource::Application,
+        });
     }
 
     /// The first usable CMYK profile of the output intents, read once for

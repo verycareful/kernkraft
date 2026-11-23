@@ -34,6 +34,9 @@ impl Engine {
     /// is: the application has already copied it into its own cache.
     pub fn open(&self, source: Source) -> Result<Fields, WireError> {
         let document = source.open(&self.options)?;
+        if let Some(profile) = self.cmyk_profile() {
+            document.use_cmyk_profile(profile);
+        }
         let pages = document.page_count()?;
         let session = Session::new(EditSession::new(document)?);
         let handle = self.sessions.insert(session);

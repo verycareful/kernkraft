@@ -29,6 +29,7 @@ use std::sync::Mutex;
 use kernkraft_fs::{BaseDirs, FileStamp, FsError};
 use kernkraft_pdf::doc::OpenOptions;
 use kernkraft_pdf::file::ReadLimits;
+use kernkraft_pdf_engine::colour::CmykProfileRequest;
 use kernkraft_pdf_engine::edit::{ApplyRequest, Op};
 use kernkraft_pdf_engine::fonts::FontsRequest;
 use kernkraft_pdf_engine::open::Source;
@@ -240,6 +241,18 @@ impl<R: Runtime> Kernkraft<R> {
             .set_system_fonts(FontsRequest { paths: found.files })?;
         fields.insert("unreadable_dirs".to_owned(), json!(found.unreadable));
         Ok(fields)
+    }
+
+    /// Reads the ICC profile at `path`, a profile for a CMYK colour space,
+    /// and uses it for DeviceCMYK in every document opened after, where the
+    /// file has no output intent of its own; with no path the bundled
+    /// profile is used again. A document already open keeps the profile it
+    /// was opened with. Call it once at start. The answer has `source`:
+    /// `application`, or `bundled`.
+    pub fn pdf_set_cmyk_profile(&self, path: Option<PathBuf>) -> Result<Fields, WireError> {
+        Ok(self
+            .engine()
+            .set_cmyk_profile(CmykProfileRequest { path })?)
     }
 
     /// The size of the picture `pdf_render` makes: `width`, `height` and

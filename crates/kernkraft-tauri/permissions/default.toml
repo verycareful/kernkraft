@@ -39,6 +39,7 @@ permissions = [
     "allow-pdf-save",
     "allow-pdf-compact",
     "allow-pdf-set-system-fonts",
+    "allow-pdf-set-cmyk-profile",
     "allow-pdf-render-size",
     "allow-pdf-render",
     "allow-pdf-merge",

@@ -172,3 +172,119 @@ fn files_that_are_not_fonts_are_skipped_and_counted() {
         0
     );
 }
+
+// The CMYK profile of the application (`setCmykProfile`).
+
+/// A profile of a CMYK colour space whose lightness follows black ink
+/// alone: full black ink is black, where the bundled profile
+/// makes it a dark grey of about 43.
+fn grey_by_black() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testdata/icc/cmyk-grey-by-black.icc")
+}
+
+/// Black, as far as a profile transform can say: its lightness 0 comes out
+/// within a few levels of 0.
+fn assert_black(pixel: [u8; 4]) {
+    assert!(pixel[..3].iter().all(|level| *level <= 4), "{pixel:?}");
+    assert_eq!(pixel[3], 255);
+}
+
+/// A one-page file, 20 points square, that paints all of it in full black
+/// ink, DeviceCMYK `0 0 0 1`, with its cross-reference table.
+fn black_ink_page(directory: &std::path::Path) -> std::path::PathBuf {
+    let content = "0 0 0 1 k 0 0 20 20 re f";
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Contents 4 0 R >>".to_owned(),
+        format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len()
+        ),
+    ];
+    let mut file = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(file.len());
+        file.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+    }
+    let table = file.len();
+    let mut xref = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
+    for offset in offsets {
+        xref.push_str(&format!("{offset:010} 00000 n \n"));
+    }
+    xref.push_str(&format!(
+        "trailer\n<< /Root 1 0 R /Size {} >>\nstartxref\n{table}\n%%EOF\n",
+        objects.len() + 1
+    ));
+    file.extend_from_slice(xref.as_bytes());
+    let path = directory.join("black-ink.pdf");
+    std::fs::write(&path, file).unwrap();
+    path
+}
+
+/// The pixel in the middle of the page of `path`, opened by `engine`.
+fn middle_pixel(engine: &Bridge, path: &std::path::Path) -> [u8; 4] {
+    let opened = ok(&engine.open(&json!({ "path": path }).to_string()));
+    let handle = opened["handle"].as_i64().unwrap();
+    let request = json!({ "handle": handle, "page": 1, "width_px": 20 });
+    let asked = ok(&engine.render_size(&request.to_string()));
+    let (width, height) = (
+        asked["width"].as_u64().unwrap() as usize,
+        asked["height"].as_u64().unwrap() as usize,
+    );
+    let mut buffer = vec![0_u8; asked["bytes"].as_u64().unwrap() as usize];
+    ok(&engine.render(&request.to_string(), &mut buffer));
+    let at = ((height / 2) * width + width / 2) * 4;
+    [buffer[at], buffer[at + 1], buffer[at + 2], buffer[at + 3]]
+}
+
+#[test]
+fn the_cmyk_profile_of_the_application_is_used_by_the_documents_opened_after() {
+    let directory = tempfile::tempdir().unwrap();
+    let page = black_ink_page(directory.path());
+    let engine = Bridge::new();
+
+    // The bundled profile: black ink is dark, not black.
+    let bundled = middle_pixel(&engine, &page);
+    assert!(
+        bundled[..3].iter().all(|level| (1..=64).contains(level)),
+        "{bundled:?}"
+    );
+
+    let answer = ok(&engine.set_cmyk_profile(&json!({ "path": grey_by_black() }).to_string()));
+    assert_eq!(answer["source"], "application");
+    assert_black(middle_pixel(&engine, &page));
+
+    // No path takes it away.
+    let answer = ok(&engine.set_cmyk_profile("{}"));
+    assert_eq!(answer["source"], "bundled");
+    assert_eq!(middle_pixel(&engine, &page), bundled);
+}
+
+#[test]
+fn a_cmyk_profile_that_cannot_be_used_is_refused_and_the_one_in_force_stays() {
+    let directory = tempfile::tempdir().unwrap();
+    let page = black_ink_page(directory.path());
+    let engine = Bridge::new();
+    ok(&engine.set_cmyk_profile(&json!({ "path": grey_by_black() }).to_string()));
+
+    // Not a profile at all, and a file that is missing.
+    let not_a_profile = directory.path().join("not-a-profile.icc");
+    std::fs::write(&not_a_profile, b"not a profile").unwrap();
+    for path in [not_a_profile, directory.path().join("missing.icc")] {
+        let answer = engine.set_cmyk_profile(&json!({ "path": path }).to_string());
+        assert!(
+            ["Invalid", "Io"].contains(&failure_kind(&answer).as_str()),
+            "{answer}"
+        );
+    }
+    // A request that names something else is not understood.
+    assert_eq!(
+        failure_kind(&engine.set_cmyk_profile(&json!({ "profile": "x" }).to_string())),
+        "BadRequest"
+    );
+
+    assert_black(middle_pixel(&engine, &page));
+}

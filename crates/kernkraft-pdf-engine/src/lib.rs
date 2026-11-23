@@ -21,6 +21,7 @@
 //! `kernkraft-tauri`) turns its own calls into these requests and these
 //! answers into its own replies.
 
+pub mod colour;
 pub mod edit;
 pub mod engine;
 pub mod error;

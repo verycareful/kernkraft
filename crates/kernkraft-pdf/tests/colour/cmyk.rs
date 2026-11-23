@@ -649,3 +649,72 @@ fn many_colours_convert_as_one_by_one() {
     // A count that is not a whole number of colours is refused.
     assert!(space.to_rgb_many(&colours[..5], &mut together).is_err());
 }
+
+/// The profile file of `testdata/icc`, which the adapters' tests use, is
+/// what the builder writes.
+#[test]
+fn the_profile_file_of_the_test_data_is_the_one_the_builder_writes() {
+    let file = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/icc/cmyk-grey-by-black.icc"
+    ))
+    .unwrap();
+    assert_eq!(file, grey_by_black_profile());
+}
+
+/// The profile of the application from a file, and from bytes it was made
+/// from: the file's, whatever was passed, is the application's.
+#[test]
+fn a_profile_is_read_from_a_file_and_given_to_a_document() {
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/icc/cmyk-grey-by-black.icc"
+    ));
+    let profile = CmykProfile::from_file(path).unwrap();
+    assert_eq!(profile.source(), CmykSource::Application);
+    let document = document(&[]);
+    document.use_cmyk_profile(profile);
+    assert_eq!(
+        document.cmyk_profile().unwrap().source(),
+        CmykSource::Application
+    );
+    assert_rgb(cmyk(&document, [1.0, 0.0, 0.0, 0.0]), [1.0; 3], TOLERANCE);
+    // The bundled profile given as the application's is the application's.
+    document.use_cmyk_profile(CmykProfile::bundled().unwrap());
+    assert_eq!(
+        document.cmyk_profile().unwrap().source(),
+        CmykSource::Application
+    );
+}
+
+#[test]
+fn a_profile_file_that_cannot_be_used_is_an_error() {
+    let directory = tempfile::tempdir().unwrap();
+    // A missing file.
+    assert!(matches!(
+        CmykProfile::from_file(&directory.path().join("missing.icc")),
+        Err(PdfError::Fs(_))
+    ));
+    // An sRGB profile, and a file that says CMYK and is not a profile.
+    for (name, bytes) in [
+        ("rgb.icc", srgb_profile()),
+        ("broken.icc", broken_cmyk_profile()),
+    ] {
+        let path = directory.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        assert!(matches!(
+            CmykProfile::from_file(&path),
+            Err(PdfError::Invalid(_))
+        ));
+    }
+    // A file past the largest profile is refused, having been read only as
+    // far as that.
+    let path = directory.path().join("large.icc");
+    let mut large = broken_cmyk_profile();
+    large.resize((10 << 20) + 1, 0);
+    std::fs::write(&path, large).unwrap();
+    assert!(matches!(
+        CmykProfile::from_file(&path),
+        Err(PdfError::Invalid(_))
+    ));
+}

@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use kernkraft_font::FontList;
 use kernkraft_fs::NoProgress;
+use kernkraft_pdf::colour::CmykProfile;
 use kernkraft_pdf::doc::{Document, OpenOptions};
 use kernkraft_pdf::text::{TextExtractor, TextPage};
 use kernkraft_pdf::{EditSession, PdfError};
@@ -177,12 +178,13 @@ pub struct PageRequest {
     pub page: u32,
 }
 
-/// Every open document, the application's fonts and the limits a file is
-/// opened under.
+/// Every open document, the application's fonts and CMYK profile, and the
+/// limits a file is opened under.
 pub struct Engine {
     pub(crate) sessions: Registry<Session>,
     pub(crate) options: OpenOptions,
     fonts: RwLock<Arc<FontList>>,
+    cmyk: RwLock<Option<CmykProfile>>,
 }
 
 impl Engine {
@@ -194,6 +196,7 @@ impl Engine {
             sessions: Registry::new(),
             options,
             fonts: RwLock::new(Arc::new(FontList::default())),
+            cmyk: RwLock::new(None),
         }
     }
 
@@ -208,6 +211,22 @@ impl Engine {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// The CMYK profile set by `set_cmyk_profile`; none until then, and the
+    /// bundled one is used.
+    pub fn cmyk_profile(&self) -> Option<CmykProfile> {
+        self.cmyk
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_cmyk(&self, profile: Option<CmykProfile>) {
+        *self
+            .cmyk
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = profile;
     }
 
     pub(crate) fn set_fonts(&self, list: FontList) {

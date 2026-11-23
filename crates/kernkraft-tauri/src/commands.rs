@@ -579,6 +579,16 @@ pub(crate) async fn pdf_set_system_fonts<R: Runtime>(
 }
 
 #[tauri::command]
+pub(crate) async fn pdf_set_cmyk_profile<R: Runtime>(
+    app: AppHandle<R>,
+    path: Option<WirePath>,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    let path = path.map(std::path::PathBuf::try_from).transpose()?;
+    blocking(move || kk.pdf_set_cmyk_profile(path)).await
+}
+
+#[tauri::command]
 pub(crate) async fn pdf_render_size<R: Runtime>(
     app: AppHandle<R>,
     handle: i64,

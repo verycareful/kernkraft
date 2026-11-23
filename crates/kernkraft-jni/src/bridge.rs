@@ -7,6 +7,7 @@
 
 use std::sync::OnceLock;
 
+use kernkraft_pdf_engine::colour::CmykProfileRequest;
 use kernkraft_pdf_engine::edit::ApplyRequest;
 use kernkraft_pdf_engine::fonts::FontsRequest;
 use kernkraft_pdf_engine::open::Source;
@@ -104,6 +105,12 @@ impl Bridge {
     pub fn set_system_fonts(&self, request: &str) -> String {
         run(request, |request: FontsRequest| {
             self.engine.set_system_fonts(request)
+        })
+    }
+
+    pub fn set_cmyk_profile(&self, request: &str) -> String {
+        run(request, |request: CmykProfileRequest| {
+            self.engine.set_cmyk_profile(request)
         })
     }
 

@@ -341,6 +341,32 @@ fn the_font_folders_are_searched_by_extension_and_what_cannot_be_read_is_counted
 }
 
 #[test]
+fn the_cmyk_profile_is_read_from_a_file_and_taken_away_by_no_path() {
+    let e = env();
+    let profile =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/icc/cmyk-grey-by-black.icc");
+
+    assert_eq!(
+        e.kk.pdf_set_cmyk_profile(Some(profile)).unwrap()["source"],
+        "application"
+    );
+    // A file that is not a profile is refused, and the profile stays.
+    let not_a_profile = e.xdg.data.join("not-a-profile.icc");
+    fs::create_dir_all(&e.xdg.data).unwrap();
+    fs::write(&not_a_profile, b"not a profile").unwrap();
+    assert_eq!(
+        e.kk.pdf_set_cmyk_profile(Some(not_a_profile))
+            .unwrap_err()
+            .kind,
+        "Invalid"
+    );
+    assert_eq!(
+        e.kk.pdf_set_cmyk_profile(None).unwrap()["source"],
+        "bundled"
+    );
+}
+
+#[test]
 fn the_commands_take_their_arguments_as_the_frontend_writes_them() {
     let e = env();
     let view = e.webview("pdf");

@@ -190,68 +190,106 @@ impl<'a> Collector<'a> {
         slot: Option<Slot>,
         source: GlyphSource,
     ) -> Option<RawGlyph> {
-        let matrix = glyph.matrix.then(self.view.matrix);
-        let (ex, ey) = ((matrix.a, matrix.b), (matrix.c, matrix.d));
-        let size = ey.0.hypot(ey.1);
-        let em_x = ex.0.hypot(ex.1);
-        let vertical = run.font.is_vertical();
-        let flow_length = if vertical { size } else { em_x };
-        if !(size.is_finite() && flow_length.is_finite()) || size == 0.0 || flow_length == 0.0 {
-            return None;
-        }
-        let dir = if vertical {
-            (-ey.0 / size, -ey.1 / size)
-        } else {
-            (ex.0 / em_x, ex.1 / em_x)
-        };
-        let (left, right, bottom, top, extent) = if vertical {
-            let reach = if run.font_size == 0.0 {
-                1.0
-            } else {
-                (glyph.advance.1 / run.font_size).abs()
-            };
-            (
-                -VERTICAL_GLYPH_WIDTH / 2.0,
-                VERTICAL_GLYPH_WIDTH / 2.0,
-                -reach,
-                0.0,
-                reach * size,
-            )
-        } else {
-            let (ascent, descent) = vertical_extent(&run.font);
-            let width = glyph.width / UNITS_PER_EM;
-            (0.0, width, descent, ascent, width * em_x)
-        };
-        let corners = [
-            matrix.apply(left, bottom),
-            matrix.apply(right, bottom),
-            matrix.apply(right, top),
-            matrix.apply(left, top),
-        ];
-        let reaches = corners.iter().all(|(x, y)| x.is_finite() && y.is_finite());
-        if !reaches || self.off_page(&corners) {
+        let placed = placement(self.view, run, glyph)?;
+        let reaches = placed
+            .corners
+            .iter()
+            .all(|(x, y)| x.is_finite() && y.is_finite());
+        if !reaches || off_page(self.view, &placed.corners) {
             return None;
         }
         Some(RawGlyph {
             text,
-            origin: matrix.apply(0.0, 0.0),
-            dir,
-            size,
-            extent,
-            corners,
+            origin: placed.origin,
+            dir: placed.dir,
+            size: placed.size,
+            extent: placed.extent,
+            corners: placed.corners,
             slot,
             source,
         })
     }
+}
 
-    /// Whether the box lies wholly outside the displayed page.
-    fn off_page(&self, corners: &[(f64, f64); 4]) -> bool {
-        let xs = corners.iter().map(|corner| corner.0);
-        let ys = corners.iter().map(|corner| corner.1);
-        let (left, right) = bounds(xs);
-        let (top, bottom) = bounds(ys);
-        right < 0.0 || bottom < 0.0 || left > self.view.width || top > self.view.height
+/// Where a glyph lies on the displayed page.
+struct Placement {
+    origin: (f64, f64),
+    dir: (f64, f64),
+    size: f64,
+    extent: f64,
+    corners: [(f64, f64); 4],
+}
+
+/// The place of `glyph`, which `run` shows. `None` for a glyph of no size,
+/// which the text layer leaves out.
+fn placement(view: &PageView, run: &TextRun, glyph: &PlacedGlyph) -> Option<Placement> {
+    let matrix = glyph.matrix.then(view.matrix);
+    let (ex, ey) = ((matrix.a, matrix.b), (matrix.c, matrix.d));
+    let size = ey.0.hypot(ey.1);
+    let em_x = ex.0.hypot(ex.1);
+    let vertical = run.font.is_vertical();
+    let flow_length = if vertical { size } else { em_x };
+    if !(size.is_finite() && flow_length.is_finite()) || size == 0.0 || flow_length == 0.0 {
+        return None;
     }
+    let dir = if vertical {
+        (-ey.0 / size, -ey.1 / size)
+    } else {
+        (ex.0 / em_x, ex.1 / em_x)
+    };
+    let (left, right, bottom, top, extent) = if vertical {
+        let reach = if run.font_size == 0.0 {
+            1.0
+        } else {
+            (glyph.advance.1 / run.font_size).abs()
+        };
+        (
+            -VERTICAL_GLYPH_WIDTH / 2.0,
+            VERTICAL_GLYPH_WIDTH / 2.0,
+            -reach,
+            0.0,
+            reach * size,
+        )
+    } else {
+        let (ascent, descent) = vertical_extent(&run.font);
+        let width = glyph.width / UNITS_PER_EM;
+        (0.0, width, descent, ascent, width * em_x)
+    };
+    let corners = [
+        matrix.apply(left, bottom),
+        matrix.apply(right, bottom),
+        matrix.apply(right, top),
+        matrix.apply(left, top),
+    ];
+    Some(Placement {
+        origin: matrix.apply(0.0, 0.0),
+        dir,
+        size,
+        extent,
+        corners,
+    })
+}
+
+/// Whether the box lies wholly outside the displayed page.
+fn off_page(view: &PageView, corners: &[(f64, f64); 4]) -> bool {
+    let xs = corners.iter().map(|corner| corner.0);
+    let ys = corners.iter().map(|corner| corner.1);
+    let (left, right) = bounds(xs);
+    let (top, bottom) = bounds(ys);
+    right < 0.0 || bottom < 0.0 || left > view.width || top > view.height
+}
+
+/// Whether the text layer leaves `glyph` of `run` out for lying wholly
+/// outside the displayed page: it has a size and its box is finite, and no
+/// part of the box is on the page.
+pub(crate) fn lies_off_page(view: &PageView, run: &TextRun, glyph: &PlacedGlyph) -> bool {
+    placement(view, run, glyph).is_some_and(|placed| {
+        placed
+            .corners
+            .iter()
+            .all(|(x, y)| x.is_finite() && y.is_finite())
+            && off_page(view, &placed.corners)
+    })
 }
 
 /// The rules a painted path holds, on the displayed page: each thin

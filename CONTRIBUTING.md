@@ -150,7 +150,7 @@ These hold everywhere in kernkraft. A change that breaks one is not merged.
   and socket crates. Unix-domain sockets, such as the session D-Bus through
   `kernkraft-bus`, are local and allowed; nothing may open an internet socket.
 - **Core crates never depend on the platform.** Only the adapter crates
-  (`kernkraft-tauri`, and later `kernkraft-jni`) may depend on `tauri`, `jni` or a UI
+  (`kernkraft-tauri` and `kernkraft-jni`) may depend on `tauri`, `jni` or a UI
   crate. `scripts/check-boundary.sh` fails the build otherwise. Long operations take a
   progress and cancel trait, never a UI emitter.
 - **Never lose or corrupt a user's file.** Every save goes through `kernkraft-fs`'s

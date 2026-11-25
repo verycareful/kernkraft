@@ -190,3 +190,93 @@ fn a_block_that_cannot_be_edited_is_refused() {
         other => panic!("not refused: {:?}", other.map(|_| ())),
     }
 }
+
+// The page is 612 points wide and a glyph is 6 points. A glyph whose box has
+// no part on the page is not text of the page, so no block holds it: the rest
+// of its line is taken with the block that is.
+
+#[test]
+fn the_glyphs_of_a_string_that_lie_past_the_right_edge_go_with_the_block() {
+    // A 590..596, B 596..602, C 602..608, D 608..614 (the edge, 612, is
+    // inside it), E 614..620 and on are off the page: the block is `ABCD`.
+    let fixture = one_page("BT /F1 10 Tf 590 700 Td (ABCDEFGH) Tj ET");
+    let (doc, before, _) = delete(&fixture, 0);
+    assert_eq!(before.blocks.len(), 1);
+    assert_eq!(before.blocks[0].lines[0].text(), "ABCD");
+    // All eight glyphs leave, 48 points: -4800.
+    assert_eq!(content(&doc), "BT /F1 10 Tf 590 700 Td [-4800] TJ ET");
+}
+
+#[test]
+fn the_glyphs_of_a_string_that_lie_past_the_left_edge_go_with_the_block() {
+    // A to D lie at -30..-6, wholly left of the page; E is -6..0, whose
+    // right edge is the page's.
+    let fixture = one_page("BT /F1 10 Tf 1 0 0 1 -30 700 Tm (ABCDEFGH) Tj ET");
+    let (doc, before, _) = delete(&fixture, 0);
+    assert_eq!(before.blocks[0].lines[0].text(), "EFGH");
+    assert_eq!(
+        content(&doc),
+        "BT /F1 10 Tf 1 0 0 1 -30 700 Tm [-4800] TJ ET"
+    );
+}
+
+#[test]
+fn every_string_of_a_tj_array_gives_up_its_off_page_glyphs() {
+    // ABCD is 590..614. The kern of -200 moves the text 2 points to the
+    // right, so EFGH starts at 616.
+    let fixture = one_page("BT /F1 10 Tf 590 700 Td [(ABCD) -200 (EFGH)] TJ ET");
+    let (doc, before, _) = delete(&fixture, 0);
+    assert_eq!(before.blocks[0].lines[0].text(), "ABCD");
+    assert_eq!(
+        content(&doc),
+        "BT /F1 10 Tf 590 700 Td [-2400 -200 -2400] TJ ET"
+    );
+}
+
+#[test]
+fn an_off_page_glyph_of_another_operation_stays() {
+    // The second `Tj` is its own showing operation and holds no glyph the
+    // block has, so the edit does not reach it.
+    let fixture = one_page("BT /F1 10 Tf 590 700 Td (ABCD) Tj (EFGH) Tj ET");
+    let (doc, before, _) = delete(&fixture, 0);
+    assert_eq!(before.blocks[0].lines[0].text(), "ABCD");
+    assert_eq!(
+        content(&doc),
+        "BT /F1 10 Tf 590 700 Td [-2400] TJ (EFGH) Tj ET"
+    );
+}
+
+#[test]
+fn the_off_page_words_of_the_same_array_go_with_the_block_on_the_page() {
+    // One `TJ` shows two words 400 points apart; the second is off the page,
+    // so only the first is a block, and the edit of it takes the second as
+    // the rest of the operation. The first word is ABCD at 400..424, the
+    // second starts at 424 + 400 = 824, wholly off the page.
+    let fixture = one_page("BT /F1 10 Tf 400 700 Td [(ABCD) -40000 (EFGH)] TJ ET");
+    let (doc, before, _) = delete(&fixture, 0);
+    assert_eq!(before.blocks.len(), 1);
+    assert_eq!(
+        content(&doc),
+        "BT /F1 10 Tf 400 700 Td [-2400 -40000 -2400] TJ ET"
+    );
+}
+
+#[test]
+fn an_edit_takes_the_off_page_glyphs_with_the_text_it_replaces() {
+    let fixture = one_page("BT /F1 10 Tf 590 700 Td (ABCDEFGH) Tj ET");
+    let doc = fixture.open();
+    let before = doc.text_page(1, &NoProgress).unwrap();
+
+    let edited = kernkraft_pdf::edit_text(
+        &doc,
+        1,
+        &before.blocks[0],
+        &kernkraft_pdf::TextEdit::new("X"),
+        &NoProgress,
+    )
+    .unwrap();
+
+    let content = content(&edited.document);
+    assert!(content.starts_with("BT /F1 10 Tf 590 700 Td [-4800] TJ ET "));
+    assert!(!content.contains("EFGH"));
+}

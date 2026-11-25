@@ -14,6 +14,13 @@
 //! `Resources` dictionary that other pages share is never changed under
 //! them.
 //!
+//! The text layer leaves out the glyphs that lie wholly off the page, so no
+//! block holds them. An edit of a block takes with it the glyphs of the
+//! showing operations the block's glyphs are in that lie wholly off the page:
+//! they are the rest of the line the block is. Text that is hidden by an
+//! optional content group, has no size, or is shown by an operation none of
+//! the block's glyphs are in is other text, and stays.
+//!
 //! [`Document::text_block_editability`] says whether a block of a
 //! [`TextPage`](crate::text::TextPage) can be edited, and when it cannot,
 //! why ([`EditBlocker`]). [`delete_text_block`] takes a block's text out
@@ -42,6 +49,7 @@ use crate::content::{
     DEFAULT_MAX_CONTENT_BYTES,
 };
 use crate::diagnostic::{DiagnosticKind, Diagnostics};
+use crate::display::PageView;
 use crate::doc::{Document, Page, StreamEncoding};
 use crate::edit_text::collect::{FormUse, OpKey, ShowCollector, ShowOp, TextEnd};
 use crate::edit_text::face::{Embedded, Face};
@@ -49,6 +57,7 @@ use crate::font::FontKind;
 use crate::pages::rewrite::{direct, reference_object, Rewriter};
 use crate::source::MemorySource;
 use crate::syntax::{Dictionary, Name, ObjectId, Value};
+use crate::text::collect::lies_off_page;
 use crate::text::{GlyphSource, TextBlock};
 use crate::PdfError;
 
@@ -109,6 +118,11 @@ struct Inspected {
     sources: Vec<GlyphSource>,
     /// The showing operations they come from.
     ops: HashMap<OpKey, ShowOp>,
+    /// For each of those operations, the glyphs it shows that lie wholly off
+    /// the page, as `(operand, offset)` like a [`GlyphSource`]'s. The text
+    /// layer leaves them out, so no block holds them; they are the rest of
+    /// the line the block is, and an edit takes them with it.
+    off_page: HashMap<OpKey, HashSet<(u32, u32)>>,
 }
 
 /// The key of the operation that showed a glyph.
@@ -208,7 +222,33 @@ fn inspect(
             }
         }
     }
-    Ok(Ok(Inspected { sources, ops }))
+    let view = PageView::of(&page, &mut Diagnostics::new());
+    let off_page = ops
+        .iter()
+        .map(|(key, op)| (*key, glyphs_off_page(&view, op)))
+        .collect();
+    Ok(Ok(Inspected {
+        sources,
+        ops,
+        off_page,
+    }))
+}
+
+/// The glyphs of `show` that lie wholly off the page, as `(operand,
+/// offset)`.
+fn glyphs_off_page(view: &PageView, show: &ShowOp) -> HashSet<(u32, u32)> {
+    let mut off = HashSet::new();
+    let mut at = (0, 0);
+    for glyph in &show.run.glyphs {
+        if glyph.operand != at.0 {
+            at = (glyph.operand, 0);
+        }
+        if lies_off_page(view, &show.run, glyph) {
+            off.insert(at);
+        }
+        at.1 += glyph.len as u32;
+    }
+    off
 }
 
 impl Document {
@@ -252,6 +292,11 @@ fn removals(inspected: &Inspected, content: &ContentStream) -> Result<Vec<Splice
             .insert((source.operand, source.offset));
     }
     let mut splices = Vec::with_capacity(by_op.len());
+    for (key, removed) in &mut by_op {
+        if let Some(off_page) = inspected.off_page.get(key) {
+            removed.extend(off_page);
+        }
+    }
     for (key, removed) in by_op {
         let show = &inspected.ops[&key];
         let (start, end) = (show.span.range.start as usize, show.span.range.end as usize);
@@ -466,7 +511,8 @@ fn commit(
 /// Takes the text of `block` out of page `page` (counted from 1) and gives
 /// the document without it. Everything else on the page stays where it is:
 /// each glyph taken out is made up for in the operation that showed it, so
-/// the text after it is not moved.
+/// the text after it is not moved. The glyphs of those operations that lie
+/// wholly off the page go with it (see the module).
 ///
 /// A block that [`Document::text_block_editability`] refuses is
 /// [`PdfError::TextNotEditable`].

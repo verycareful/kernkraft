@@ -34,7 +34,8 @@ def ours_file(pages):
     word may add a sixth item, its degrees off the page's axes (default 0),
     and a seventh, the x of its glyphs' leaning sides as ((start bottom,
     start top), (end bottom, end top)) in fractions (default: upright, the
-    box's own edges)."""
+    box's own edges). A word's text runs along the page's own axis: down the
+    page when it is turned 90 or 270, so its start side is the top edge."""
     lines = []
     for number, (width, height, rotate, words) in enumerate(pages, 1):
         lines.append(f"page {number} {width} {height} {rotate}")
@@ -43,7 +44,10 @@ def ours_file(pages):
             (s_bottom, s_top), (e_bottom, e_top) = (
                 more[1] if len(more) > 1 else ((left, left), (right, right))
             )
-            sides = f"{s_bottom} {bottom} {s_top} {top} {e_bottom} {bottom} {e_top} {top}"
+            if rotate in (90, 270) and len(more) < 2:
+                sides = f"{left} {top} {right} {top} {left} {bottom} {right} {bottom}"
+            else:
+                sides = f"{s_bottom} {bottom} {s_top} {top} {e_bottom} {bottom} {e_top} {top}"
             lines.append(f"{left} {top} {right} {bottom} {off} {sides} {text}")
     return "\n".join(lines) + "\n"
 
@@ -213,6 +217,58 @@ class CompareBbox(unittest.TestCase):
         ours = ours_file([(100, 200, 90, [("Hello", 0.1, 0.1, 0.2, 0.3)])])
         theirs = theirs_file([(200, 100, [("Hello", 10, 23, 20, 63)])])
         self.assertFalse(self.run_compare(ours, theirs)[1])
+
+    # A 200 x 100 point page, not turned, with the word Hello turned a quarter
+    # to read upward: it covers x 20..32 and y 30..70, and its start side (the
+    # first glyph's) is on the bottom edge, y 70, its end side on the top, y 30.
+    UPWARD = "0.1 0.3 0.16 0.7 0 0.16 0.7 0.1 0.7 0.16 0.3 0.1 0.3 Hello"
+
+    def upward_page(self):
+        return "page 1 200 100 0\n" + self.UPWARD + "\n"
+
+    def test_a_line_turned_a_quarter_is_compared_along_its_own_axis(self):
+        # The text runs down the page, so its ends are the top and bottom of
+        # the box: 30 and 70. Theirs starts 0.5 point lower: within the
+        # tolerance of 1 point.
+        theirs = theirs_file([(200, 100, [("Hello", 20, 30.5, 32, 70)])])
+        report, ok = self.run_compare(self.upward_page(), theirs)
+        self.assertTrue(ok, report)
+
+    def test_a_line_turned_a_quarter_fails_when_its_end_is_a_point_and_a_half_off(self):
+        theirs = theirs_file([(200, 100, [("Hello", 20, 31.5, 32, 70)])])
+        self.assertFalse(self.run_compare(self.upward_page(), theirs)[1])
+
+    def test_a_line_turned_a_quarter_is_judged_across_by_its_width(self):
+        # The word is 12 points wide, so its centre, x 26, may be 3 points
+        # from theirs: x 28 is within it and x 30 is not.
+        near = theirs_file([(200, 100, [("Hello", 22, 30, 34, 70)])])
+        far = theirs_file([(200, 100, [("Hello", 24, 30, 36, 70)])])
+        self.assertTrue(self.run_compare(self.upward_page(), near)[1])
+        self.assertFalse(self.run_compare(self.upward_page(), far)[1])
+
+    def test_a_line_turned_a_quarter_and_a_horizontal_one_are_each_compared_on_their_axis(self):
+        ours = (
+            "page 1 200 100 0\n"
+            "0.1 0.1 0.3 0.2 0 0.1 0.2 0.1 0.1 0.3 0.2 0.3 0.1 Across\n" + self.UPWARD + "\n"
+        )
+        # Across covers x 20..60, y 10..20.
+        placed = theirs_file(
+            [(200, 100, [("Across", 20, 10, 60, 20), ("Hello", 20, 30, 32, 70)])]
+        )
+        shifted = theirs_file(
+            [(200, 100, [("Across", 21.5, 10, 60, 20), ("Hello", 20, 30, 32, 70)])]
+        )
+        self.assertTrue(self.run_compare(ours, placed)[1])
+        self.assertFalse(self.run_compare(ours, shifted)[1])
+
+    def test_a_line_turned_a_quarter_that_theirs_breaks_is_one_split_pair(self):
+        # Read upward: Hel from the bottom (y 46..70), then lo (y 30..44).
+        theirs = theirs_file(
+            [(200, 100, [("lo", 20, 30, 32, 44), ("Hel", 20, 46, 32, 70)])]
+        )
+        report, ok = self.run_compare(self.upward_page(), theirs)
+        self.assertTrue(ok, report)
+        self.assertIn("split 1", report[0])
 
     def test_a_malformed_ours_line_is_refused(self):
         path = os.path.join(self.root, "ours.txt")

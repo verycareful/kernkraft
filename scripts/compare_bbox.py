@@ -23,11 +23,15 @@ checked as a pair of sides, in either order.
 Within a page the words are paired by their text (after Unicode
 compatibility normalisation, so that a ligature and its letters are one
 text): of all the pairs of one text that two words could make, the nearest
-is paired first. Text runs along the page's horizontal axis, or its vertical
-axis on a page turned 90 or 270 degrees. A pair is in place when its edges
-along the text are within EDGE_TOLERANCE_PT and its centres across the text
-are within CENTRE_TOLERANCE of the thicker of the two boxes (the height of a
-horizontal word, the width of a vertical one); otherwise it is displaced.
+is paired first. A word of ours runs along the page's horizontal axis or its
+vertical one, as its first glyph's side and its last glyph's side lie: text
+is vertical on a page turned 90 or 270 degrees, and a line turned a quarter
+inside an unturned page is vertical on it, as a horizontal line is on a
+turned page. A word of theirs is compared along the axis of the word of ours
+it is paired with. A pair is in place when its edges along the text are
+within EDGE_TOLERANCE_PT and its centres across the text are within
+CENTRE_TOLERANCE of the thicker of the two boxes (the height of a horizontal
+word, the width of a vertical one); otherwise it is displaced.
 The edge of a word of ours that its glyphs lean over (text drawn under a
 skewing text matrix: the two ends of a glyph's side lie at different places
 along the text) is the stretch between the two ends of that side, from the
@@ -36,8 +40,6 @@ one place. Two edges are within the tolerance when the stretch of one is no
 further than that from the other. An upright glyph's side lies at one place
 along the text, so for a word of upright glyphs this is the plain
 comparison of two edges.
-Text turned inside an unturned page is outside this comparison and is
-reported as displaced.
 A word with no partner of its text goes through four more steps before it
 is reported as only ours or only theirs, because the two tools break text
 into words by rules of their own (a gap that is a space for one is a kern
@@ -142,6 +144,7 @@ class Word:
         text is how far the ends of the side at each edge lie apart along it."""
         self.text = normalise(text)
         self.off = off
+        self.vertical = vertical
         self.left = left
         self.right = right
         self.top = top
@@ -246,6 +249,19 @@ def vertical_text(rotate):
     return rotate in (90, 270)
 
 
+def runs_vertically(corners, page_vertical):
+    """Whether a word of ours runs down or up the displayed page, from the
+    corners of its start side and end side (see read_ours): the way from the
+    middle of the one to the middle of the other. A word whose sides lie on
+    one point follows the page."""
+    start = ((corners[0][0] + corners[1][0]) / 2, (corners[0][1] + corners[1][1]) / 2)
+    end = ((corners[2][0] + corners[3][0]) / 2, (corners[2][1] + corners[3][1]) / 2)
+    across, down = abs(end[0] - start[0]), abs(end[1] - start[1])
+    if across == down:
+        return page_vertical
+    return down > across
+
+
 def along_across(word, vertical):
     """(start, end, centre across) of a word, along its text."""
     if vertical:
@@ -289,10 +305,11 @@ def distance(ours, theirs, vertical):
     return abs(o_start - t_start) + abs(o_end - t_end) + abs(o_across - t_across)
 
 
-def pair(ours, theirs, vertical, only_in_place):
-    """Pairs the words of one page by text: (pairs, only_ours, only_theirs).
-    With `only_in_place`, a pair is made only of words in place with each
-    other, so that a word is not taken by one of the same text elsewhere."""
+def pair_indices(ours, theirs, vertical, only_in_place):
+    """Pairs the words of one page by text: (pairs, indices of ours used,
+    indices of theirs used). With `only_in_place`, a pair is made only of
+    words in place with each other, so that a word is not taken by one of
+    the same text elsewhere."""
     by_text = {}
     for index, word in enumerate(theirs):
         by_text.setdefault(word.text, []).append(index)
@@ -310,6 +327,36 @@ def pair(ours, theirs, vertical, only_in_place):
         used_ours.add(i)
         used_theirs.add(j)
         pairs.append((ours[i], theirs[j]))
+    return pairs, used_ours, used_theirs
+
+
+def per_axis(step, ours, theirs, page_vertical):
+    """Runs a pairing step on the words of ours that run along each axis in
+    turn, the page's own axis first, each time against the words of theirs
+    no earlier pass took. `step(ours, theirs, vertical)` answers (pairs,
+    indices of its ours used, indices of its theirs used); the answer of this
+    is the same, with the indices of the lists given here."""
+    pairs, used_ours, used_theirs = [], set(), set()
+    for vertical in (page_vertical, not page_vertical):
+        mine = [i for i, w in enumerate(ours) if w.vertical == vertical]
+        free = [j for j in range(len(theirs)) if j not in used_theirs]
+        got, taken_ours, taken_theirs = step(
+            [ours[i] for i in mine], [theirs[j] for j in free], vertical
+        )
+        pairs.extend(got)
+        used_ours.update(mine[i] for i in taken_ours)
+        used_theirs.update(free[j] for j in taken_theirs)
+    return pairs, used_ours, used_theirs
+
+
+def pair(ours, theirs, page_vertical, only_in_place):
+    """Pairs the words of one page by text: (pairs, only_ours, only_theirs)."""
+    pairs, used_ours, used_theirs = per_axis(
+        lambda mine, free, vertical: pair_indices(mine, free, vertical, only_in_place),
+        ours,
+        theirs,
+        page_vertical,
+    )
     only_ours = [w for i, w in enumerate(ours) if i not in used_ours]
     only_theirs = [w for j, w in enumerate(theirs) if j not in used_theirs]
     return pairs, only_ours, only_theirs
@@ -389,6 +436,14 @@ def split_pairs(whole, parts, vertical):
                 used_parts.update(run)
                 break
     return pairs, used_whole, used_parts
+
+
+def split_theirs_whole(ours, theirs, vertical):
+    """`split_pairs` for the words of `theirs` that the words of `ours` spell
+    in a run: (pairs of (word of theirs, [words of ours]), indices of ours
+    used, indices of theirs used)."""
+    pairs, used_theirs, used_ours = split_pairs(theirs, ours, vertical)
+    return pairs, used_ours, used_theirs
 
 
 def unmapped_pairs(ours, theirs, vertical):
@@ -475,20 +530,22 @@ def compare_page(number, ours_page, their_page):
     """The report lines for one page, and whether it passes."""
     width, height, rotate, ours = ours_page
     their_width, their_height, theirs = their_page
-    vertical = vertical_text(rotate)
-    words = [
-        Word(
-            text,
-            left * width,
-            top * height,
-            right * width,
-            bottom * height,
-            off,
-            [(x * width, y * height) for x, y in sides],
-            vertical,
+    page_vertical = vertical_text(rotate)
+    words = []
+    for text, left, top, right, bottom, off, sides in ours:
+        corners = [(x * width, y * height) for x, y in sides]
+        words.append(
+            Word(
+                text,
+                left * width,
+                top * height,
+                right * width,
+                bottom * height,
+                off,
+                corners,
+                runs_vertically(corners, page_vertical),
+            )
         )
-        for text, left, top, right, bottom, off, sides in ours
-    ]
     oblique = [w for w in words if w.off > OBLIQUE_DEGREES]
     straight = [w for w in words if w.off <= OBLIQUE_DEGREES]
     kept = [
@@ -496,35 +553,39 @@ def compare_page(number, ours_page, their_page):
     ]
     set_aside = len(theirs) - len(kept)
 
-    placed, only_ours, only_theirs = pair(straight, kept, vertical, True)
+    placed, only_ours, only_theirs = pair(straight, kept, page_vertical, True)
 
     # Words that one tool breaks and the other does not.
-    our_whole, used_w, used_p = split_pairs(only_ours, only_theirs, vertical)
+    our_whole, used_w, used_p = per_axis(split_pairs, only_ours, only_theirs, page_vertical)
     only_ours_left = [w for i, w in enumerate(only_ours) if i not in used_w]
     only_theirs_left = [w for j, w in enumerate(only_theirs) if j not in used_p]
-    their_whole, used_w, used_p = split_pairs(
-        only_theirs_left, only_ours_left, vertical
+    their_whole, used_o, used_t = per_axis(
+        split_theirs_whole, only_ours_left, only_theirs_left, page_vertical
     )
-    only_theirs_left = [w for i, w in enumerate(only_theirs_left) if i not in used_w]
-    only_ours_left = [w for j, w in enumerate(only_ours_left) if j not in used_p]
+    only_theirs_left = [w for j, w in enumerate(only_theirs_left) if j not in used_t]
+    only_ours_left = [w for i, w in enumerate(only_ours_left) if i not in used_o]
     splits = len(our_whole) + len(their_whole)
     extra_ours = sum(len(p) - 1 for _, p in their_whole)
     extra_theirs = sum(len(p) - 1 for _, p in our_whole)
 
-    mapped, used_o, used_t = unmapped_pairs(only_ours_left, only_theirs_left, vertical)
+    mapped, used_o, used_t = per_axis(
+        unmapped_pairs, only_ours_left, only_theirs_left, page_vertical
+    )
     only_ours_left = [w for i, w in enumerate(only_ours_left) if i not in used_o]
     only_theirs_left = [w for j, w in enumerate(only_theirs_left) if j not in used_t]
 
     # Words that no spelling of one side by the other joins but that lie in
     # one place and hold the same characters.
-    regrouped, used_o, used_t = regrouped_pairs(only_ours_left, only_theirs_left, vertical)
+    regrouped, used_o, used_t = per_axis(
+        regrouped_pairs, only_ours_left, only_theirs_left, page_vertical
+    )
     only_ours_left = [w for i, w in enumerate(only_ours_left) if i not in used_o]
     only_theirs_left = [w for j, w in enumerate(only_theirs_left) if j not in used_t]
 
     # What is left and has the text of a word on the other side is that word
     # drawn elsewhere.
     displaced, only_ours_left, only_theirs_left = pair(
-        only_ours_left, only_theirs_left, vertical, False
+        only_ours_left, only_theirs_left, page_vertical, False
     )
 
     units_ours = (

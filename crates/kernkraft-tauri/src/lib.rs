@@ -113,6 +113,8 @@ pub fn init_with<R: Runtime>(config: Config) -> TauriPlugin<R> {
             commands::pdf_compact,
             commands::pdf_set_system_fonts,
             commands::pdf_set_cmyk_profile,
+            commands::pdf_cancel_job,
+            commands::pdf_job_progress,
             commands::pdf_render_size,
             commands::pdf_render,
             commands::pdf_merge,

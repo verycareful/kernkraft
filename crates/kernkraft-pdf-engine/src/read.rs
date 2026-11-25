@@ -4,7 +4,6 @@
 //! Opening and closing a document, and reading a page: its size, text,
 //! search matches, links and annotations.
 
-use kernkraft_fs::NoProgress;
 use kernkraft_pdf::text::SearchOptions;
 use kernkraft_pdf::{AnnotationKind, EditSession, Editability};
 use serde::Deserialize;
@@ -13,6 +12,7 @@ use serde_json::{json, Value};
 use crate::engine::{Engine, HandleRequest, PageRequest, Session};
 use crate::error::{variant_name, WireError};
 use crate::fields::{field, Fields};
+use crate::jobs::JobId;
 use crate::open::Source;
 use crate::wire;
 
@@ -27,6 +27,21 @@ pub struct SearchRequest {
     pub case_sensitive: bool,
     #[serde(default)]
     pub whole_word: bool,
+    /// The job that can cancel this request (see [`crate::jobs`]).
+    #[serde(default)]
+    pub job: Option<JobId>,
+}
+
+/// A request for a page's text.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextRequest {
+    pub handle: i64,
+    pub page: u32,
+    /// The job that can cancel this request and watch it (see
+    /// [`crate::jobs`]); `done` counts text blocks and the page's own work.
+    #[serde(default)]
+    pub job: Option<JobId>,
 }
 
 impl Engine {
@@ -48,6 +63,7 @@ impl Engine {
 
     /// Closes the session; its handle is never used again.
     pub fn close(&self, request: HandleRequest) -> Result<Fields, WireError> {
+        self.jobs.cancel_for(request.handle);
         if !self.sessions.remove(request.handle) {
             return Err(WireError::unknown_handle(request.handle));
         }
@@ -72,8 +88,9 @@ impl Engine {
     /// A page's text in reading order. `lines` carry the box of each glyph;
     /// `blocks` say whether each can be edited and, when not, why. The
     /// `revision` is the one a block index is good at.
-    pub fn text(&self, request: PageRequest) -> Result<Fields, WireError> {
-        let (document, revision, page) = self.text_page(request.handle, request.page)?;
+    pub fn text(&self, request: TextRequest) -> Result<Fields, WireError> {
+        let running = self.jobs.begin(request.job, Some(request.handle))?;
+        let (document, revision, page) = self.text_page(request.handle, request.page, &running)?;
         let mut lines = Vec::new();
         let mut blocks = Vec::new();
         for (index, block) in page.blocks.iter().enumerate() {
@@ -86,7 +103,7 @@ impl Engine {
                 }));
             }
             let mut entry = json!({ "id": index, "rect": wire::rect(&block.rect) });
-            match document.text_block_editability(request.page, block, &NoProgress)? {
+            match document.text_block_editability(request.page, block, &running)? {
                 Editability::Editable => entry["editable"] = Value::Bool(true),
                 Editability::Blocked(reason) => {
                     entry["editable"] = Value::Bool(false);
@@ -105,7 +122,8 @@ impl Engine {
     /// The matches of a query on one page. Kotlin loops over the pages, so
     /// it can stop between them.
     pub fn search(&self, request: SearchRequest) -> Result<Fields, WireError> {
-        let (_, _, page) = self.text_page(request.handle, request.page)?;
+        let running = self.jobs.begin(request.job, Some(request.handle))?;
+        let (_, _, page) = self.text_page(request.handle, request.page, &running)?;
         let options = SearchOptions {
             case_sensitive: request.case_sensitive,
             whole_word: request.whole_word,

@@ -9,7 +9,6 @@
 //! `render_size` says what it is before the buffer is allocated.
 
 use kernkraft_font::FontList;
-use kernkraft_fs::NoProgress;
 use kernkraft_pdf::doc::Document;
 use kernkraft_pdf::render::{raster_size, render_page, RenderOptions};
 use kernkraft_pdf::{PdfError, Rect};
@@ -19,6 +18,7 @@ use serde_json::json;
 use crate::engine::Engine;
 use crate::error::WireError;
 use crate::fields::Fields;
+use crate::jobs::JobId;
 use crate::wire;
 
 /// Bytes to a pixel.
@@ -40,6 +40,10 @@ pub struct RenderRequest {
     pub region: Option<[f64; 4]>,
     /// The picture's width in pixels.
     pub width_px: u32,
+    /// The job that can cancel `render` (see [`crate::jobs`]); `render_size`
+    /// has no long work and takes none.
+    #[serde(default)]
+    pub job: Option<JobId>,
 }
 
 /// What a request asks of the page, checked against the document.
@@ -73,6 +77,7 @@ impl Engine {
 
     /// Draws the page into `buffer`, which must hold the whole picture.
     pub fn render(&self, request: RenderRequest, buffer: &mut [u8]) -> Result<Fields, WireError> {
+        let running = self.jobs.begin(request.job, Some(request.handle))?;
         let target = self.target(&request)?;
         let given = u64::try_from(buffer.len()).unwrap_or(u64::MAX);
         if target.bytes > given {
@@ -80,7 +85,7 @@ impl Engine {
         }
         let fonts = self.fonts();
         let options = target.options(&fonts);
-        let raster = render_page(&target.document, request.page, &options, &NoProgress)?;
+        let raster = render_page(&target.document, request.page, &options, &running)?;
         if (raster.width, raster.height) != (target.width, target.height) {
             return Err(PdfError::Invalid(format!(
                 "the picture is {} by {} pixels, not the {} by {} that was asked",

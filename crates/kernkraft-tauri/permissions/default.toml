@@ -40,6 +40,8 @@ permissions = [
     "allow-pdf-compact",
     "allow-pdf-set-system-fonts",
     "allow-pdf-set-cmyk-profile",
+    "allow-pdf-cancel-job",
+    "allow-pdf-job-progress",
     "allow-pdf-render-size",
     "allow-pdf-render",
     "allow-pdf-merge",

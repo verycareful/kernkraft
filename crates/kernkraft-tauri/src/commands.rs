@@ -473,9 +473,10 @@ pub(crate) async fn pdf_text<R: Runtime>(
     app: AppHandle<R>,
     handle: i64,
     page: u32,
+    job: Option<u64>,
 ) -> Result<Fields, WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.pdf_text(handle, page)).await
+    blocking(move || kk.pdf_text(handle, page, job)).await
 }
 
 #[tauri::command]
@@ -486,6 +487,7 @@ pub(crate) async fn pdf_search<R: Runtime>(
     query: String,
     case_sensitive: Option<bool>,
     whole_word: Option<bool>,
+    job: Option<u64>,
 ) -> Result<Fields, WireError> {
     let kk = app.kernkraft();
     blocking(move || {
@@ -495,6 +497,7 @@ pub(crate) async fn pdf_search<R: Runtime>(
             query,
             case_sensitive.unwrap_or(false),
             whole_word.unwrap_or(false),
+            job,
         )
     })
     .await
@@ -525,9 +528,10 @@ pub(crate) async fn pdf_apply<R: Runtime>(
     app: AppHandle<R>,
     handle: i64,
     op: Op,
+    job: Option<u64>,
 ) -> Result<Fields, WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.pdf_apply(handle, op)).await
+    blocking(move || kk.pdf_apply(handle, op, job)).await
 }
 
 #[tauri::command]
@@ -555,9 +559,10 @@ pub(crate) async fn pdf_save<R: Runtime>(
     path: WirePath,
     expect: WireExpect,
     modified: String,
+    job: Option<u64>,
 ) -> Result<WireStamp, WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.pdf_save(handle, path, expect, modified)).await
+    blocking(move || kk.pdf_save(handle, path, expect, modified, job)).await
 }
 
 #[tauri::command]
@@ -565,17 +570,37 @@ pub(crate) async fn pdf_compact<R: Runtime>(
     app: AppHandle<R>,
     handle: i64,
     out: WirePath,
+    job: Option<u64>,
 ) -> Result<WirePath, WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.pdf_compact(handle, out)).await
+    blocking(move || kk.pdf_compact(handle, out, job)).await
 }
 
 #[tauri::command]
 pub(crate) async fn pdf_set_system_fonts<R: Runtime>(
     app: AppHandle<R>,
+    job: Option<u64>,
 ) -> Result<Fields, WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.pdf_set_system_fonts()).await
+    blocking(move || kk.pdf_set_system_fonts(job)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_cancel_job<R: Runtime>(
+    app: AppHandle<R>,
+    job: u64,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_cancel_job(job)).await
+}
+
+#[tauri::command]
+pub(crate) async fn pdf_job_progress<R: Runtime>(
+    app: AppHandle<R>,
+    job: u64,
+) -> Result<Fields, WireError> {
+    let kk = app.kernkraft();
+    blocking(move || kk.pdf_job_progress(job)).await
 }
 
 #[tauri::command]
@@ -608,40 +633,50 @@ pub(crate) async fn pdf_render<R: Runtime>(
     page: u32,
     region: Option<[f64; 4]>,
     width_px: u32,
+    job: Option<u64>,
 ) -> Result<tauri::ipc::Response, WireError> {
     let kk = app.kernkraft();
-    let picture = blocking(move || kk.pdf_render(handle, page, region, width_px)).await?;
+    let picture = blocking(move || kk.pdf_render(handle, page, region, width_px, job)).await?;
     Ok(tauri::ipc::Response::new(picture))
 }
 
 #[tauri::command]
 pub(crate) async fn pdf_merge<R: Runtime>(
     app: AppHandle<R>,
+    window: Window<R>,
     sources: Vec<WirePdfSource>,
     out: WirePath,
+    job: Option<u64>,
 ) -> Result<WirePath, WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.pdf_merge(sources, out)).await
+    let origin = origin(&window);
+    blocking(move || kk.pdf_merge(sources, out, job, origin)).await
 }
 
 #[tauri::command]
 pub(crate) async fn pdf_extract<R: Runtime>(
     app: AppHandle<R>,
+    window: Window<R>,
     source: WirePdfSource,
     pages: Vec<u32>,
     out: WirePath,
+    job: Option<u64>,
 ) -> Result<WirePath, WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.pdf_extract(source, pages, out)).await
+    let origin = origin(&window);
+    blocking(move || kk.pdf_extract(source, pages, out, job, origin)).await
 }
 
 #[tauri::command]
 pub(crate) async fn pdf_split<R: Runtime>(
     app: AppHandle<R>,
+    window: Window<R>,
     source: WirePdfSource,
     ranges: String,
     out_dir: WirePath,
+    job: Option<u64>,
 ) -> Result<Vec<WirePath>, WireError> {
     let kk = app.kernkraft();
-    blocking(move || kk.pdf_split(source, ranges, out_dir)).await
+    let origin = origin(&window);
+    blocking(move || kk.pdf_split(source, ranges, out_dir, job, origin)).await
 }

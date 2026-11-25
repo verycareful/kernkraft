@@ -59,6 +59,7 @@ fn rotate(engine: &Engine, handle: i64, page: u32) {
             pages: vec![page],
             degrees: 90,
         },
+        job: None,
     };
     engine.apply(request).unwrap();
 }
@@ -81,7 +82,7 @@ fn a_save_over_the_opened_file_is_the_original_bytes_and_one_update() {
     let stamp = FileStamp::of(&path).unwrap();
 
     let saved = engine
-        .save(handle, &path, Expect::Unchanged(&stamp), DATE)
+        .save(handle, &path, Expect::Unchanged(&stamp), DATE, None)
         .unwrap();
 
     let written = fs::read(&path).unwrap();
@@ -105,12 +106,13 @@ fn a_second_save_is_made_against_the_opened_bytes_not_the_first_save() {
             &path,
             Expect::Unchanged(&FileStamp::of(&path).unwrap()),
             DATE,
+            None,
         )
         .unwrap();
     rotate(&engine, handle, 2);
 
     engine
-        .save(handle, &path, Expect::Unchanged(&first), DATE)
+        .save(handle, &path, Expect::Unchanged(&first), DATE, None)
         .unwrap();
 
     let written = fs::read(&path).unwrap();
@@ -142,7 +144,7 @@ fn a_file_changed_since_it_was_stamped_is_not_replaced() {
     fs::write(&path, &changed).unwrap();
 
     let refused = engine
-        .save(handle, &path, Expect::Unchanged(&stamp), DATE)
+        .save(handle, &path, Expect::Unchanged(&stamp), DATE, None)
         .unwrap_err();
 
     assert_eq!(refused.kind, "ExternalModification");
@@ -159,14 +161,14 @@ fn a_save_expecting_nothing_does_not_replace_a_file() {
     fs::write(&taken, b"mine").unwrap();
 
     let refused = engine
-        .save(handle, &taken, Expect::Nothing, DATE)
+        .save(handle, &taken, Expect::Nothing, DATE, None)
         .unwrap_err();
 
     assert_eq!(refused.kind, "Exists");
     assert_eq!(fs::read(&taken).unwrap(), b"mine");
     let elsewhere = dir.path().join("copy.pdf");
     engine
-        .save(handle, &elsewhere, Expect::Nothing, DATE)
+        .save(handle, &elsewhere, Expect::Nothing, DATE, None)
         .unwrap();
     assert_eq!(rotation_of(&elsewhere, 1), 90);
 }
@@ -179,10 +181,10 @@ fn a_bad_date_and_an_unknown_handle_are_refused_before_anything_is_written() {
     let out = dir.path().join("out.pdf");
 
     let date = engine
-        .save(handle, &out, Expect::Nothing, "yesterday")
+        .save(handle, &out, Expect::Nothing, "yesterday", None)
         .unwrap_err();
     let unknown = engine
-        .save(handle + 1, &out, Expect::Nothing, DATE)
+        .save(handle + 1, &out, Expect::Nothing, DATE, None)
         .unwrap_err();
 
     assert_eq!(date.kind, "BadRequest");

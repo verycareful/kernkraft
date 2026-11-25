@@ -12,7 +12,7 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use kernkraft_font::FontList;
-use kernkraft_fs::NoProgress;
+use kernkraft_fs::Progress;
 use kernkraft_pdf::colour::CmykProfile;
 use kernkraft_pdf::doc::{Document, OpenOptions};
 use kernkraft_pdf::text::{TextExtractor, TextPage};
@@ -22,6 +22,7 @@ use serde_json::json;
 
 use crate::error::WireError;
 use crate::fields::Fields;
+use crate::jobs::{JobRequest, Jobs};
 use crate::registry::Registry;
 
 /// The pages a step changed, in the document the step leaves.
@@ -182,6 +183,7 @@ pub struct PageRequest {
 /// limits a file is opened under.
 pub struct Engine {
     pub(crate) sessions: Registry<Session>,
+    pub(crate) jobs: Jobs,
     pub(crate) options: OpenOptions,
     fonts: RwLock<Arc<FontList>>,
     cmyk: RwLock<Option<CmykProfile>>,
@@ -194,6 +196,7 @@ impl Engine {
     pub fn new(options: OpenOptions) -> Self {
         Self {
             sessions: Registry::new(),
+            jobs: Jobs::default(),
             options,
             fonts: RwLock::new(Arc::new(FontList::default())),
             cmyk: RwLock::new(None),
@@ -203,6 +206,21 @@ impl Engine {
     /// The limits files are opened under.
     pub fn options(&self) -> &OpenOptions {
         &self.options
+    }
+
+    /// Stops the job a long request was given (its `job` field) at the
+    /// library's next safe point: the request fails with `Cancelled` and
+    /// leaves nothing behind. `running` says whether the job was running;
+    /// a cancel for a job that has not begun is kept and applies as it
+    /// begins (see [`crate::jobs`]).
+    pub fn cancel_job(&self, request: JobRequest) -> Fields {
+        self.jobs.cancel(request.job)
+    }
+
+    /// How far a job has come: `running`, `done` out of `total` units of
+    /// `stage`. A job that is not running has nothing counted.
+    pub fn job_progress(&self, request: JobRequest) -> Fields {
+        self.jobs.progress(request.job)
     }
 
     /// The fonts set by `set_system_fonts`; none until then.
@@ -289,12 +307,13 @@ impl Engine {
         &self,
         handle: i64,
         page: u32,
+        progress: &dyn Progress,
     ) -> Result<(Document, u64, TextPage), WireError> {
         let (document, revision, extractor) = self.text_extractor(handle)?;
         let text = extractor
             .lock()
             .map_err(|_| WireError::session_poisoned(handle))?
-            .page(page, &NoProgress)?;
+            .page(page, progress)?;
         Ok((document, revision, text))
     }
 }

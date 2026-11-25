@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use kernkraft_fs::{write_bytes_atomic, Expect, FileStamp, NoProgress};
+use kernkraft_fs::{write_bytes_atomic, Expect, FileStamp};
 use kernkraft_pdf::write::save_compact;
 use kernkraft_pdf::SaveOptions;
 use serde::Deserialize;
@@ -20,6 +20,7 @@ use serde_json::json;
 use crate::engine::Engine;
 use crate::error::WireError;
 use crate::fields::{field, Fields};
+use crate::jobs::JobId;
 use crate::open::write_options;
 use crate::wire;
 
@@ -34,6 +35,10 @@ pub struct AppendRequest {
     pub out: PathBuf,
     /// The time of the save, as a PDF date.
     pub modified: String,
+    /// The job that can cancel this request and watch it (see
+    /// [`crate::jobs`]); `done` counts objects.
+    #[serde(default)]
+    pub job: Option<JobId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +54,10 @@ pub struct ConfirmRequest {
 pub struct CompactRequest {
     pub handle: i64,
     pub out: PathBuf,
+    /// The job that can cancel this request and watch it (see
+    /// [`crate::jobs`]); `done` counts objects.
+    #[serde(default)]
+    pub job: Option<JobId>,
 }
 
 impl Engine {
@@ -60,10 +69,11 @@ impl Engine {
             write: write_options()?,
             modified: wire::date(&request.modified)?,
         };
+        let running = self.jobs.begin(request.job, Some(request.handle))?;
         self.sessions.with(request.handle, |session| {
             let appended = session
                 .edit
-                .append_since(request.base_length, &options, &NoProgress)?;
+                .append_since(request.base_length, &options, &running)?;
             if !appended.bytes.is_empty() {
                 write_bytes_atomic(&request.out, Expect::Nothing, &appended.bytes)
                     .map_err(kernkraft_pdf::PdfError::from)?;
@@ -79,20 +89,24 @@ impl Engine {
     /// and gives back the stamp of the file written. The session goes on
     /// reading the bytes it opened, so a save over the opened file is safe
     /// and the next save is made against the opened bytes again. `modified`
-    /// is the time of the save as a PDF date.
+    /// is the time of the save as a PDF date. `job` names the job that can
+    /// cancel the save and watch it (see [`crate::jobs`]); a save that is
+    /// cancelled writes nothing.
     pub fn save(
         &self,
         handle: i64,
         path: &Path,
         expect: Expect<'_>,
         modified: &str,
+        job: Option<JobId>,
     ) -> Result<FileStamp, WireError> {
         let options = SaveOptions {
             write: write_options()?,
             modified: wire::date(modified)?,
         };
+        let running = self.jobs.begin(job, Some(handle))?;
         self.sessions.with(handle, |session| {
-            Ok(session.edit.save(path, expect, &options, &NoProgress)?)
+            Ok(session.edit.save(path, expect, &options, &running)?)
         })
     }
 
@@ -107,13 +121,14 @@ impl Engine {
     /// The document as it stands, written as a new, compacted file `out`;
     /// the original is untouched. Gives back `out`.
     pub fn compact(&self, request: CompactRequest) -> Result<PathBuf, WireError> {
+        let running = self.jobs.begin(request.job, Some(request.handle))?;
         let (document, _) = self.snapshot(request.handle)?;
         save_compact(
             &document,
             &request.out,
             Expect::Nothing,
             &write_options()?,
-            &NoProgress,
+            &running,
         )
         .map_err(WireError::from)?;
         Ok(request.out)

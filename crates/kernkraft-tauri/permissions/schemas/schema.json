@@ -499,6 +499,18 @@
           "markdownDescription": "Denies the pdf_apply command without any pre-configured scope."
         },
         {
+          "description": "Enables the pdf_cancel_job command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pdf-cancel-job",
+          "markdownDescription": "Enables the pdf_cancel_job command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pdf_cancel_job command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pdf-cancel-job",
+          "markdownDescription": "Denies the pdf_cancel_job command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pdf_close command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pdf-close",
@@ -533,6 +545,18 @@
           "type": "string",
           "const": "deny-pdf-extract",
           "markdownDescription": "Denies the pdf_extract command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pdf_job_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pdf-job-progress",
+          "markdownDescription": "Enables the pdf_job_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pdf_job_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pdf-job-progress",
+          "markdownDescription": "Denies the pdf_job_progress command without any pre-configured scope."
         },
         {
           "description": "Enables the pdf_links command without any pre-configured scope.",
@@ -1027,10 +1051,10 @@
           "markdownDescription": "Denies the watch_dir command without any pre-configured scope."
         },
         {
-          "description": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-entry-of`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`\n- `allow-user-dirs`\n- `allow-same-filesystem`\n- `allow-text-open`\n- `allow-text-save`\n- `allow-text-check`\n- `allow-pdf-open`\n- `allow-pdf-close`\n- `allow-pdf-page-info`\n- `allow-pdf-text`\n- `allow-pdf-search`\n- `allow-pdf-links`\n- `allow-pdf-annotations`\n- `allow-pdf-apply`\n- `allow-pdf-undo`\n- `allow-pdf-redo`\n- `allow-pdf-save`\n- `allow-pdf-compact`\n- `allow-pdf-set-system-fonts`\n- `allow-pdf-set-cmyk-profile`\n- `allow-pdf-render-size`\n- `allow-pdf-render`\n- `allow-pdf-merge`\n- `allow-pdf-extract`\n- `allow-pdf-split`\n- `allow-thumb-request`\n- `allow-thumb-cancel`\n- `allow-theme-get`\n- `allow-theme-set-prefs`\n- `allow-apps-for`\n- `allow-app-default`\n- `allow-all-apps`\n- `allow-launch-app`\n- `allow-open-default`\n- `allow-open-url`\n- `allow-set-default-app`\n- `allow-open-terminal`\n- `allow-mime-of`\n- `allow-volumes-list`\n- `allow-volumes-problems-take`\n- `allow-volume-mount`\n- `allow-volume-unmount`\n- `allow-volume-eject`\n- `allow-search`\n- `allow-documents`",
+          "description": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-entry-of`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`\n- `allow-user-dirs`\n- `allow-same-filesystem`\n- `allow-text-open`\n- `allow-text-save`\n- `allow-text-check`\n- `allow-pdf-open`\n- `allow-pdf-close`\n- `allow-pdf-page-info`\n- `allow-pdf-text`\n- `allow-pdf-search`\n- `allow-pdf-links`\n- `allow-pdf-annotations`\n- `allow-pdf-apply`\n- `allow-pdf-undo`\n- `allow-pdf-redo`\n- `allow-pdf-save`\n- `allow-pdf-compact`\n- `allow-pdf-set-system-fonts`\n- `allow-pdf-set-cmyk-profile`\n- `allow-pdf-cancel-job`\n- `allow-pdf-job-progress`\n- `allow-pdf-render-size`\n- `allow-pdf-render`\n- `allow-pdf-merge`\n- `allow-pdf-extract`\n- `allow-pdf-split`\n- `allow-thumb-request`\n- `allow-thumb-cancel`\n- `allow-theme-get`\n- `allow-theme-set-prefs`\n- `allow-apps-for`\n- `allow-app-default`\n- `allow-all-apps`\n- `allow-launch-app`\n- `allow-open-default`\n- `allow-open-url`\n- `allow-set-default-app`\n- `allow-open-terminal`\n- `allow-mime-of`\n- `allow-volumes-list`\n- `allow-volumes-problems-take`\n- `allow-volume-mount`\n- `allow-volume-unmount`\n- `allow-volume-eject`\n- `allow-search`\n- `allow-documents`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-entry-of`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`\n- `allow-user-dirs`\n- `allow-same-filesystem`\n- `allow-text-open`\n- `allow-text-save`\n- `allow-text-check`\n- `allow-pdf-open`\n- `allow-pdf-close`\n- `allow-pdf-page-info`\n- `allow-pdf-text`\n- `allow-pdf-search`\n- `allow-pdf-links`\n- `allow-pdf-annotations`\n- `allow-pdf-apply`\n- `allow-pdf-undo`\n- `allow-pdf-redo`\n- `allow-pdf-save`\n- `allow-pdf-compact`\n- `allow-pdf-set-system-fonts`\n- `allow-pdf-set-cmyk-profile`\n- `allow-pdf-render-size`\n- `allow-pdf-render`\n- `allow-pdf-merge`\n- `allow-pdf-extract`\n- `allow-pdf-split`\n- `allow-thumb-request`\n- `allow-thumb-cancel`\n- `allow-theme-get`\n- `allow-theme-set-prefs`\n- `allow-apps-for`\n- `allow-app-default`\n- `allow-all-apps`\n- `allow-launch-app`\n- `allow-open-default`\n- `allow-open-url`\n- `allow-set-default-app`\n- `allow-open-terminal`\n- `allow-mime-of`\n- `allow-volumes-list`\n- `allow-volumes-problems-take`\n- `allow-volume-mount`\n- `allow-volume-unmount`\n- `allow-volume-eject`\n- `allow-search`\n- `allow-documents`"
+          "markdownDescription": "Allows every kernkraft command\n#### This default permission set includes:\n\n- `allow-list-dir`\n- `allow-entry-of`\n- `allow-create-dir`\n- `allow-create-file`\n- `allow-rename`\n- `allow-start-op`\n- `allow-answer-conflict`\n- `allow-cancel-op`\n- `allow-trash-list`\n- `allow-trash-restore`\n- `allow-trash-purge`\n- `allow-undo`\n- `allow-redo`\n- `allow-undo-state`\n- `allow-watch-dir`\n- `allow-unwatch-dir`\n- `allow-properties`\n- `allow-user-dirs`\n- `allow-same-filesystem`\n- `allow-text-open`\n- `allow-text-save`\n- `allow-text-check`\n- `allow-pdf-open`\n- `allow-pdf-close`\n- `allow-pdf-page-info`\n- `allow-pdf-text`\n- `allow-pdf-search`\n- `allow-pdf-links`\n- `allow-pdf-annotations`\n- `allow-pdf-apply`\n- `allow-pdf-undo`\n- `allow-pdf-redo`\n- `allow-pdf-save`\n- `allow-pdf-compact`\n- `allow-pdf-set-system-fonts`\n- `allow-pdf-set-cmyk-profile`\n- `allow-pdf-cancel-job`\n- `allow-pdf-job-progress`\n- `allow-pdf-render-size`\n- `allow-pdf-render`\n- `allow-pdf-merge`\n- `allow-pdf-extract`\n- `allow-pdf-split`\n- `allow-thumb-request`\n- `allow-thumb-cancel`\n- `allow-theme-get`\n- `allow-theme-set-prefs`\n- `allow-apps-for`\n- `allow-app-default`\n- `allow-all-apps`\n- `allow-launch-app`\n- `allow-open-default`\n- `allow-open-url`\n- `allow-set-default-app`\n- `allow-open-terminal`\n- `allow-mime-of`\n- `allow-volumes-list`\n- `allow-volumes-problems-take`\n- `allow-volume-mount`\n- `allow-volume-unmount`\n- `allow-volume-eject`\n- `allow-search`\n- `allow-documents`"
         }
       ]
     }

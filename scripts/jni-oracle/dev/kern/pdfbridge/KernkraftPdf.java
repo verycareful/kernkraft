@@ -29,6 +29,8 @@ final class KernkraftPdf {
     static native String nativeCompact(String request);
     static native String nativeSetSystemFonts(String request);
     static native String nativeSetCmykProfile(String request);
+    static native String nativeCancelJob(String request);
+    static native String nativeJobProgress(String request);
     static native String nativeRenderSize(String request);
     static native String nativeRender(String request, ByteBuffer pixels);
 

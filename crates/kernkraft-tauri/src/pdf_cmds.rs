@@ -11,6 +11,15 @@
 //! fields are described on the engine's operations, and geometry is
 //! fractions of the displayed page (see `kernkraft_pdf_engine::wire`).
 //!
+//! A command that can take long (`pdf_text`, `pdf_search`, `pdf_apply`,
+//! `pdf_save`, `pdf_compact`, `pdf_render`, `pdf_merge`, `pdf_extract`,
+//! `pdf_split`, `pdf_set_system_fonts`) takes an optional `job`, a number the
+//! webview chooses and never uses twice. [`Kernkraft::pdf_cancel_job`] stops
+//! the command with that number (it fails with `Cancelled` and leaves
+//! nothing behind) and [`Kernkraft::pdf_job_progress`] says how far it has
+//! come. Closing a document stops the jobs working on it; closing a window
+//! stops the merges, extracts and splits it started.
+//!
 //! The file is the webview's to save. [`Kernkraft::pdf_open`] answers with a
 //! [`WireStamp`] of the file as opened, and [`Kernkraft::pdf_save`] writes
 //! the opened bytes and one update to a path, as far as its [`WireExpect`]
@@ -32,8 +41,9 @@ use kernkraft_pdf::file::ReadLimits;
 use kernkraft_pdf_engine::colour::CmykProfileRequest;
 use kernkraft_pdf_engine::edit::{ApplyRequest, Op};
 use kernkraft_pdf_engine::fonts::FontsRequest;
+use kernkraft_pdf_engine::jobs::{JobId, JobRequest};
 use kernkraft_pdf_engine::open::Source;
-use kernkraft_pdf_engine::read::SearchRequest;
+use kernkraft_pdf_engine::read::{SearchRequest, TextRequest};
 use kernkraft_pdf_engine::render::RenderRequest;
 use kernkraft_pdf_engine::stateless::{self, ExtractRequest, MergeRequest, SplitRequest};
 use kernkraft_pdf_engine::{Engine, Fields, HandleRequest, PageRequest};
@@ -85,6 +95,10 @@ pub(crate) struct PdfState {
     engine: Engine,
     /// Handle to window label, for the documents opened from a window.
     owners: Mutex<HashMap<i64, String>>,
+    /// Job number to window label, for the jobs of a window that work on no
+    /// document (merge, extract, split); those that work on one stop when it
+    /// is closed.
+    job_owners: Mutex<HashMap<JobId, String>>,
 }
 
 impl Default for PdfState {
@@ -92,6 +106,7 @@ impl Default for PdfState {
         Self {
             engine: Engine::new(OPEN_OPTIONS),
             owners: Mutex::new(HashMap::new()),
+            job_owners: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -113,9 +128,52 @@ impl WirePdfSource {
     }
 }
 
+/// A job of a window that works on no document, listed for as long as it
+/// runs.
+struct OwnedJob<'a> {
+    owners: &'a Mutex<HashMap<JobId, String>>,
+    job: Option<JobId>,
+}
+
+impl Drop for OwnedJob<'_> {
+    fn drop(&mut self) {
+        if let Some(job) = self.job {
+            lock(self.owners).remove(&job);
+        }
+    }
+}
+
 impl<R: Runtime> Kernkraft<R> {
     fn engine(&self) -> &Engine {
         &self.0.pdf.engine
+    }
+
+    /// Lists `job` as belonging to the window `origin` until the guard is
+    /// dropped, so that closing the window stops it.
+    fn own_job(&self, job: Option<JobId>, origin: Option<String>) -> OwnedJob<'_> {
+        if let (Some(job), Some(label)) = (job, origin) {
+            lock(&self.0.pdf.job_owners).insert(job, label);
+        }
+        OwnedJob {
+            owners: &self.0.pdf.job_owners,
+            job,
+        }
+    }
+
+    /// Stops the job `job`, which a long command was given. `running` says
+    /// whether it was running; a cancel for a job about to begin is kept and
+    /// applies as it begins. A document's job also stops when the document
+    /// is closed, and a window's other jobs when the window closes.
+    pub fn pdf_cancel_job(&self, job: JobId) -> Result<Fields, WireError> {
+        Ok(self.engine().cancel_job(JobRequest { job }))
+    }
+
+    /// How far a job has come: `running`, `done` out of `total` units of
+    /// `stage` (objects, pages or files, as the operation counts them;
+    /// `total` is 0 until it knows). The webview asks again for as long as
+    /// it wants to show it.
+    pub fn pdf_job_progress(&self, job: JobId) -> Result<Fields, WireError> {
+        Ok(self.engine().job_progress(JobRequest { job }))
     }
 
     /// Opens the PDF at `path`. The answer has `handle`, `pages`, `revision`
@@ -153,8 +211,13 @@ impl<R: Runtime> Kernkraft<R> {
 
     /// A page's text in reading order: lines, blocks (editable or not, and
     /// why not) and the `revision` a block index is good at.
-    pub fn pdf_text(&self, handle: i64, page: u32) -> Result<Fields, WireError> {
-        Ok(self.engine().text(PageRequest { handle, page })?)
+    pub fn pdf_text(
+        &self,
+        handle: i64,
+        page: u32,
+        job: Option<JobId>,
+    ) -> Result<Fields, WireError> {
+        Ok(self.engine().text(TextRequest { handle, page, job })?)
     }
 
     /// The matches of `query` on one page.
@@ -165,6 +228,7 @@ impl<R: Runtime> Kernkraft<R> {
         query: String,
         case_sensitive: bool,
         whole_word: bool,
+        job: Option<JobId>,
     ) -> Result<Fields, WireError> {
         Ok(self.engine().search(SearchRequest {
             handle,
@@ -172,6 +236,7 @@ impl<R: Runtime> Kernkraft<R> {
             query,
             case_sensitive,
             whole_word,
+            job,
         })?)
     }
 
@@ -188,8 +253,8 @@ impl<R: Runtime> Kernkraft<R> {
     /// Makes one change to the document and answers with the new
     /// `revision`, the `pages` and `changed_pages`, and whether it can be
     /// undone or redone and is `modified`.
-    pub fn pdf_apply(&self, handle: i64, op: Op) -> Result<Fields, WireError> {
-        Ok(self.engine().apply(ApplyRequest { handle, op })?)
+    pub fn pdf_apply(&self, handle: i64, op: Op, job: Option<JobId>) -> Result<Fields, WireError> {
+        Ok(self.engine().apply(ApplyRequest { handle, op, job })?)
     }
 
     /// Goes back one change; the answer is that of `pdf_apply`.
@@ -211,21 +276,27 @@ impl<R: Runtime> Kernkraft<R> {
         path: WirePath,
         expect: WireExpect,
         modified: String,
+        job: Option<JobId>,
     ) -> Result<WireStamp, WireError> {
         let path = PathBuf::try_from(path)?;
-        let stamp =
-            expect.with(|expect| Ok(self.engine().save(handle, &path, expect, &modified)?))?;
+        let stamp = expect
+            .with(|expect| Ok(self.engine().save(handle, &path, expect, &modified, job)?))?;
         Ok(WireStamp::new(&stamp))
     }
 
     /// The document as it stands, written as a new compacted file `out`
     /// that must not exist; the opened file is untouched. For a file whose
     /// cross-reference had to be rebuilt, which is not saved in place.
-    pub fn pdf_compact(&self, handle: i64, out: WirePath) -> Result<WirePath, WireError> {
+    pub fn pdf_compact(
+        &self,
+        handle: i64,
+        out: WirePath,
+        job: Option<JobId>,
+    ) -> Result<WirePath, WireError> {
         let out = PathBuf::try_from(out)?;
         let written = self
             .engine()
-            .compact(kernkraft_pdf_engine::save::CompactRequest { handle, out })?;
+            .compact(kernkraft_pdf_engine::save::CompactRequest { handle, out, job })?;
         Ok(WirePath::from(&written))
     }
 
@@ -234,11 +305,12 @@ impl<R: Runtime> Kernkraft<R> {
     /// `$XDG_DATA_DIRS`) for every text edit and render after it. The answer
     /// has `faces`, the files `skipped` (not fonts, or fonts that cannot be
     /// indexed) and the `unreadable_dirs` that could not be searched.
-    pub fn pdf_set_system_fonts(&self) -> Result<Fields, WireError> {
+    pub fn pdf_set_system_fonts(&self, job: Option<JobId>) -> Result<Fields, WireError> {
         let found = font_files(self.base()?);
-        let mut fields = self
-            .engine()
-            .set_system_fonts(FontsRequest { paths: found.files })?;
+        let mut fields = self.engine().set_system_fonts(FontsRequest {
+            paths: found.files,
+            job,
+        })?;
         fields.insert("unreadable_dirs".to_owned(), json!(found.unreadable));
         Ok(fields)
     }
@@ -271,6 +343,7 @@ impl<R: Runtime> Kernkraft<R> {
             page,
             region,
             width_px,
+            job: None,
         })?)
     }
 
@@ -282,14 +355,16 @@ impl<R: Runtime> Kernkraft<R> {
         page: u32,
         region: Option<[f64; 4]>,
         width_px: u32,
+        job: Option<JobId>,
     ) -> Result<Vec<u8>, WireError> {
-        let request = || RenderRequest {
+        let request = |job| RenderRequest {
             handle,
             page,
             region,
             width_px,
+            job,
         };
-        let size = self.engine().render_size(request())?;
+        let size = self.engine().render_size(request(None))?;
         let bytes = size
             .get("bytes")
             .and_then(serde_json::Value::as_u64)
@@ -305,7 +380,7 @@ impl<R: Runtime> Kernkraft<R> {
             })
         })?;
         let mut picture = vec![0_u8; length];
-        self.engine().render(request(), &mut picture)?;
+        self.engine().render(request(job), &mut picture)?;
         Ok(picture)
     }
 
@@ -315,6 +390,8 @@ impl<R: Runtime> Kernkraft<R> {
         &self,
         sources: Vec<WirePdfSource>,
         out: WirePath,
+        job: Option<JobId>,
+        origin: Option<String>,
     ) -> Result<WirePath, WireError> {
         let request = MergeRequest {
             sources: sources
@@ -322,8 +399,10 @@ impl<R: Runtime> Kernkraft<R> {
                 .map(WirePdfSource::into_source)
                 .collect::<Result<_, _>>()?,
             out: PathBuf::try_from(out)?,
+            job,
         };
-        one_path(stateless::merge_files(self.engine().options(), request)?)
+        let _owned = self.own_job(job, origin);
+        one_path(stateless::merge_files(self.engine(), request)?)
     }
 
     /// The listed pages of the source (counted from 1, in the order the new
@@ -333,13 +412,17 @@ impl<R: Runtime> Kernkraft<R> {
         source: WirePdfSource,
         pages: Vec<u32>,
         out: WirePath,
+        job: Option<JobId>,
+        origin: Option<String>,
     ) -> Result<WirePath, WireError> {
         let request = ExtractRequest {
             source: source.into_source()?,
             pages,
             out: PathBuf::try_from(out)?,
+            job,
         };
-        one_path(stateless::extract_pages(self.engine().options(), request)?)
+        let _owned = self.own_job(job, origin);
+        one_path(stateless::extract_pages(self.engine(), request)?)
     }
 
     /// One new file per range (`1-3,5,7-9`) in the folder `out_dir`, named
@@ -350,19 +433,31 @@ impl<R: Runtime> Kernkraft<R> {
         source: WirePdfSource,
         ranges: String,
         out_dir: WirePath,
+        job: Option<JobId>,
+        origin: Option<String>,
     ) -> Result<Vec<WirePath>, WireError> {
         let request = SplitRequest {
             source: source.into_source()?,
             ranges,
             out_dir: PathBuf::try_from(out_dir)?,
+            job,
         };
-        let made = stateless::split_by_ranges(self.engine().options(), request)?;
+        let _owned = self.own_job(job, origin);
+        let made = stateless::split_by_ranges(self.engine(), request)?;
         Ok(made.iter().map(WirePath::from).collect())
     }
 
     /// Closes the documents opened from window `label`, or every document
     /// opened from a window for `None`.
     pub(crate) fn pdf_shutdown(&self, label: Option<&str>) {
+        let jobs: Vec<JobId> = lock(&self.0.pdf.job_owners)
+            .iter()
+            .filter(|(_, owner)| label.is_none() || Some(owner.as_str()) == label)
+            .map(|(job, _)| *job)
+            .collect();
+        for job in jobs {
+            self.engine().cancel_job(JobRequest { job });
+        }
         let handles: Vec<i64> = {
             let mut owners = lock(&self.0.pdf.owners);
             let handles: Vec<i64> = owners
@@ -524,5 +619,56 @@ mod tests {
         kk.pdf_shutdown(Some("one"));
 
         assert!(lock(&kk.0.pdf.owners).is_empty());
+    }
+
+    fn merge(kk: &Kernkraft<MockRuntime>, dir: &Path, job: u64) -> Result<WirePath, WireError> {
+        let sample = || WirePdfSource {
+            path: WirePath::from(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/kern-sample.pdf"),
+            ),
+            password: None,
+        };
+        kk.pdf_merge(
+            vec![sample(), sample()],
+            WirePath::from(&dir.join(format!("merged-{job}.pdf"))),
+            Some(job),
+            None,
+        )
+    }
+
+    #[test]
+    fn closing_a_window_stops_the_jobs_it_started_that_work_on_no_document() {
+        let (_app, kk) = kk();
+        let dir = tempfile::tempdir().unwrap();
+        let _owned = kk.own_job(Some(5), Some("one".to_owned()));
+
+        kk.pdf_shutdown(Some("one"));
+
+        // The cancel is for job 5, which has not begun in this test: it is
+        // kept, and the merge that takes the number is stopped.
+        assert_eq!(merge(&kk, dir.path(), 5).unwrap_err().kind, "Cancelled");
+        assert!(!dir.path().join("merged-5.pdf").exists());
+    }
+
+    #[test]
+    fn closing_another_window_leaves_the_job_alone() {
+        let (_app, kk) = kk();
+        let dir = tempfile::tempdir().unwrap();
+        let _owned = kk.own_job(Some(6), Some("one".to_owned()));
+
+        kk.pdf_shutdown(Some("two"));
+
+        assert!(merge(&kk, dir.path(), 6).is_ok());
+    }
+
+    #[test]
+    fn a_job_is_no_window_s_once_it_is_over() {
+        let (_app, kk) = kk();
+        let owned = kk.own_job(Some(7), Some("one".to_owned()));
+        assert!(lock(&kk.0.pdf.job_owners).contains_key(&7));
+
+        drop(owned);
+
+        assert!(lock(&kk.0.pdf.job_owners).is_empty());
     }
 }

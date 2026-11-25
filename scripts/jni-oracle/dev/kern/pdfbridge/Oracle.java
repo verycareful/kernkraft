@@ -58,6 +58,22 @@ public final class Oracle {
         System.out.println("append bytes=" + number(appended, "appended"));
         ok(KernkraftPdf.nativeConfirmAppended("{\"handle\":" + handle
             + ",\"length\":" + number(appended, "length") + "}"));
+
+        // A job cancelled before its request begins stops the request, and
+        // the compacted copy it would have made is not there.
+        String copy = prefix + ".compact";
+        String asked = ok(KernkraftPdf.nativeCancelJob("{\"job\":1}"));
+        if (!asked.contains("\"running\":false")) {
+            throw new IllegalStateException("a job that has not begun was running: " + asked);
+        }
+        String stopped = KernkraftPdf.nativeCompact("{\"handle\":" + handle
+            + ",\"out\":" + quote(copy) + ",\"job\":1}");
+        if (!stopped.contains("\"kind\":\"Cancelled\"") || Files.exists(Path.of(copy))) {
+            throw new IllegalStateException("a cancelled compact was not stopped: " + stopped);
+        }
+        ok(KernkraftPdf.nativeJobProgress("{\"job\":1}"));
+        System.out.println("cancelled compact stopped");
+
         ok(KernkraftPdf.nativeClose("{\"handle\":" + handle + "}"));
 
         // A failure comes back as an answer, never as an exception.

@@ -51,7 +51,7 @@ fn stamp_of(opened: &serde_json::Map<String, Value>) -> WireStamp {
 fn rotate(e: &Env, handle: i64, page: u32) {
     let op =
         serde_json::from_value(json!({ "op": "rotate", "pages": [page], "degrees": 90 })).unwrap();
-    e.kk.pdf_apply(handle, op).unwrap();
+    e.kk.pdf_apply(handle, op, None).unwrap();
 }
 
 fn rotation_of(e: &Env, path: &Path, page: u32) -> i64 {
@@ -94,6 +94,7 @@ fn a_save_writes_the_opened_bytes_and_an_update_and_answers_the_new_stamp() {
                 stamp: stamp_of(&opened),
             },
             DATE.to_owned(),
+            None,
         )
         .unwrap();
 
@@ -124,6 +125,7 @@ fn a_file_changed_since_it_was_opened_is_not_replaced() {
                 stamp: stamp_of(&opened),
             },
             DATE.to_owned(),
+            None,
         )
         .unwrap_err();
 
@@ -143,10 +145,16 @@ fn a_save_as_does_not_replace_a_file_and_leaves_the_opened_one() {
     fs::write(&taken, b"mine").unwrap();
 
     let refused =
-        e.kk.pdf_save(handle, w(&taken), WireExpect::Nothing, DATE.to_owned())
-            .unwrap_err();
+        e.kk.pdf_save(
+            handle,
+            w(&taken),
+            WireExpect::Nothing,
+            DATE.to_owned(),
+            None,
+        )
+        .unwrap_err();
     let copy = e.dir("pdf").join("copy.pdf");
-    e.kk.pdf_save(handle, w(&copy), WireExpect::Nothing, DATE.to_owned())
+    e.kk.pdf_save(handle, w(&copy), WireExpect::Nothing, DATE.to_owned(), None)
         .unwrap();
 
     assert_eq!(refused.kind, "Exists");
@@ -170,6 +178,7 @@ fn a_stamp_that_does_not_decode_is_refused_before_anything_is_written() {
             w(&path),
             WireExpect::Unchanged { stamp: bad },
             DATE.to_owned(),
+            None,
         )
         .unwrap_err();
 
@@ -223,6 +232,7 @@ fn a_file_name_that_is_not_utf8_opens_and_saves_over_itself() {
             stamp: stamp_of(&opened),
         },
         DATE.to_owned(),
+        None,
     )
     .unwrap();
 
@@ -255,7 +265,7 @@ fn a_page_is_drawn_to_the_size_it_was_asked_for_on_a_white_page() {
     let handle = handle_of(&e.kk.pdf_open(source(&path), None).unwrap());
 
     let size = e.kk.pdf_render_size(handle, 1, None, 200).unwrap();
-    let picture = e.kk.pdf_render(handle, 1, None, 200).unwrap();
+    let picture = e.kk.pdf_render(handle, 1, None, 200, None).unwrap();
 
     assert_eq!(size["width"], 200);
     let (width, height) = (
@@ -276,7 +286,7 @@ fn the_picture_of_a_page_that_does_not_exist_is_refused() {
     let path = work_copy(&e);
     let handle = handle_of(&e.kk.pdf_open(source(&path), None).unwrap());
 
-    let refused = e.kk.pdf_render(handle, 9, None, 200).unwrap_err();
+    let refused = e.kk.pdf_render(handle, 9, None, 200, None).unwrap_err();
 
     assert_eq!(refused.kind, "PageOutOfRange");
 }
@@ -291,13 +301,21 @@ fn merge_extract_and_split_make_new_files_and_never_replace_one() {
         e.kk.pdf_merge(
             vec![source(&path), source(&path)],
             w(&dir.join("merged.pdf")),
+            None,
+            None,
         )
         .unwrap();
     let extracted =
-        e.kk.pdf_extract(source(&path), vec![2], w(&dir.join("page2.pdf")))
-            .unwrap();
+        e.kk.pdf_extract(
+            source(&path),
+            vec![2],
+            w(&dir.join("page2.pdf")),
+            None,
+            None,
+        )
+        .unwrap();
     let split =
-        e.kk.pdf_split(source(&path), "1,2".to_owned(), w(&dir))
+        e.kk.pdf_split(source(&path), "1,2".to_owned(), w(&dir), None, None)
             .unwrap();
 
     let pages = |file: &Path| {
@@ -313,8 +331,14 @@ fn merge_extract_and_split_make_new_files_and_never_replace_one() {
         vec![dir.join("work_1.pdf"), dir.join("work_2.pdf")]
     );
     let again =
-        e.kk.pdf_extract(source(&path), vec![1], w(&dir.join("page2.pdf")))
-            .unwrap_err();
+        e.kk.pdf_extract(
+            source(&path),
+            vec![1],
+            w(&dir.join("page2.pdf")),
+            None,
+            None,
+        )
+        .unwrap_err();
     assert_eq!(again.kind, "Exists");
 }
 
@@ -331,7 +355,7 @@ fn the_font_folders_are_searched_by_extension_and_what_cannot_be_read_is_counted
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
     let unreadable = fs::read_dir(&locked).is_err();
 
-    let answer = e.kk.pdf_set_system_fonts().unwrap();
+    let answer = e.kk.pdf_set_system_fonts(None).unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
 
     assert_eq!(answer["faces"], 0);
@@ -426,6 +450,61 @@ fn the_commands_take_their_arguments_as_the_frontend_writes_them() {
     invoke(&view, "pdf_undo", json!({ "handle": handle })).unwrap();
     invoke(&view, "pdf_redo", json!({ "handle": handle })).unwrap();
     invoke(&view, "pdf_close", json!({ "handle": handle })).unwrap();
+}
+
+#[test]
+fn a_long_command_given_a_job_stops_when_the_job_is_cancelled() {
+    let e = env();
+    let view = e.webview("pdf");
+    let file = work_copy(&e);
+    let wp = |p: &Path| serde_json::to_value(w(p)).unwrap();
+    let opened = invoke(&view, "pdf_open", json!({ "path": wp(&file) })).unwrap();
+    let handle = opened["handle"].as_i64().unwrap();
+    let dir = e.dir("jobs");
+
+    // A cancel before the command is made is kept for it.
+    for job in 41..=44 {
+        let asked = invoke(&view, "pdf_cancel_job", json!({ "job": job })).unwrap();
+        assert_eq!(asked["running"], false);
+    }
+    let text = invoke(
+        &view,
+        "pdf_text",
+        json!({ "handle": handle, "page": 1, "job": 41 }),
+    )
+    .unwrap_err();
+    let saved = invoke(
+        &view,
+        "pdf_save",
+        json!({ "handle": handle, "path": wp(&file),
+                "expect": { "kind": "unchanged", "stamp": opened["stamp"] },
+                "modified": DATE, "job": 42 }),
+    )
+    .unwrap_err();
+    let merged = invoke(
+        &view,
+        "pdf_merge",
+        json!({ "sources": [{ "path": wp(&file) }, { "path": wp(&file) }],
+                "out": wp(&dir.join("merged.pdf")), "job": 43 }),
+    )
+    .unwrap_err();
+    let drawn = invoke_raw(
+        &view,
+        "pdf_render",
+        json!({ "handle": handle, "page": 1, "widthPx": 120, "job": 44 }),
+    )
+    .unwrap_err();
+
+    for stopped in [&text, &saved, &merged, &drawn] {
+        assert_eq!(stopped["kind"], "Cancelled", "{stopped}");
+    }
+    assert!(!dir.join("merged.pdf").exists());
+    assert_eq!(rotation_of(&e, &file, 1), 0);
+    // A job that is over is not running.
+    let progress = invoke(&view, "pdf_job_progress", json!({ "job": 41 })).unwrap();
+    assert_eq!(progress["running"], false);
+    // The same command without a job is not affected by any of this.
+    invoke(&view, "pdf_text", json!({ "handle": handle, "page": 1 })).unwrap();
 }
 
 #[test]

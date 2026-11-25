@@ -13,13 +13,15 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use kernkraft_fs::{Expect, NoProgress};
-use kernkraft_pdf::doc::{Document, OpenOptions};
+use kernkraft_fs::{Expect, Progress};
+use kernkraft_pdf::doc::Document;
 use kernkraft_pdf::write::save_compact;
 use kernkraft_pdf::{extract, merge, parse_ranges, split_ranges};
 use serde::Deserialize;
 
+use crate::engine::Engine;
 use crate::error::WireError;
+use crate::jobs::JobId;
 use crate::open::{write_options, Source};
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +29,10 @@ use crate::open::{write_options, Source};
 pub struct MergeRequest {
     pub sources: Vec<Source>,
     pub out: PathBuf,
+    /// The job that can cancel this request and watch it (see
+    /// [`crate::jobs`]); `done` counts sources.
+    #[serde(default)]
+    pub job: Option<JobId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +43,11 @@ pub struct ExtractRequest {
     /// 1-based page numbers, in the order the new file shows them.
     pub pages: Vec<u32>,
     pub out: PathBuf,
+    /// The job that can cancel this request and watch it (see
+    /// [`crate::jobs`]). Taking the pages out of the file does not poll the
+    /// job; the write of the new file does.
+    #[serde(default)]
+    pub job: Option<JobId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,45 +58,45 @@ pub struct SplitRequest {
     /// Pages and ranges, `1-3,5,7-9`.
     pub ranges: String,
     pub out_dir: PathBuf,
+    /// The job that can cancel this request and watch it (see
+    /// [`crate::jobs`]). Taking the pages out of the file does not poll the
+    /// job; the write of each new file does.
+    #[serde(default)]
+    pub job: Option<JobId>,
 }
 
 /// Concatenates the sources, in order, into the new file `out`, which is
 /// the one path given back.
-pub fn merge_files(
-    options: &OpenOptions,
-    request: MergeRequest,
-) -> Result<Vec<PathBuf>, WireError> {
+pub fn merge_files(engine: &Engine, request: MergeRequest) -> Result<Vec<PathBuf>, WireError> {
+    let options = engine.options();
+    let running = engine.jobs.begin(request.job, None)?;
     let documents = request
         .sources
         .iter()
         .map(|source| source.open(options))
         .collect::<Result<Vec<Document>, _>>()?;
     let borrowed: Vec<&Document> = documents.iter().collect();
-    let merged = merge(&borrowed, options, &NoProgress)?;
-    save_new(&merged, &request.out)?;
+    let merged = merge(&borrowed, options, &running)?;
+    save_new(&merged, &request.out, &running)?;
     Ok(vec![request.out])
 }
 
 /// The listed pages of the source as the new file `out`, which is the one
 /// path given back.
-pub fn extract_pages(
-    options: &OpenOptions,
-    request: ExtractRequest,
-) -> Result<Vec<PathBuf>, WireError> {
-    let document = request.source.open(options)?;
+pub fn extract_pages(engine: &Engine, request: ExtractRequest) -> Result<Vec<PathBuf>, WireError> {
+    let running = engine.jobs.begin(request.job, None)?;
+    let document = request.source.open(engine.options())?;
     let pages = extract(&document, &request.pages)?;
-    save_new(&pages, &request.out)?;
+    save_new(&pages, &request.out, &running)?;
     Ok(vec![request.out])
 }
 
 /// One new file per range, in `out_dir`, named after the source:
 /// `<stem>_<first>-<last>.pdf`, or `<stem>_<page>.pdf` for a single page.
 /// The files made are given back, in the order of the ranges.
-pub fn split_by_ranges(
-    options: &OpenOptions,
-    request: SplitRequest,
-) -> Result<Vec<PathBuf>, WireError> {
-    let document = request.source.open(options)?;
+pub fn split_by_ranges(engine: &Engine, request: SplitRequest) -> Result<Vec<PathBuf>, WireError> {
+    let running = engine.jobs.begin(request.job, None)?;
+    let document = request.source.open(engine.options())?;
     let ranges = parse_ranges(&request.ranges, document.page_count()?)?;
     let parts = split_ranges(&document, &ranges)?;
 
@@ -116,7 +127,7 @@ pub fn split_by_ranges(
 
     let mut made: Vec<&PathBuf> = Vec::new();
     for (part, name) in parts.iter().zip(&names) {
-        if let Err(error) = save_new(part, name) {
+        if let Err(error) = save_new(part, name, &running) {
             for path in made {
                 // Best effort: the file is one this call just made, and the
                 // error being reported is the one that stopped the split.
@@ -129,14 +140,8 @@ pub fn split_by_ranges(
     Ok(names)
 }
 
-fn save_new(document: &Document, path: &Path) -> Result<(), WireError> {
-    save_compact(
-        document,
-        path,
-        Expect::Nothing,
-        &write_options()?,
-        &NoProgress,
-    )?;
+fn save_new(document: &Document, path: &Path, progress: &dyn Progress) -> Result<(), WireError> {
+    save_compact(document, path, Expect::Nothing, &write_options()?, progress)?;
     Ok(())
 }
 

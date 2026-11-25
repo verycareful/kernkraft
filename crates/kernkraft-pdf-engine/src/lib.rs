@@ -12,6 +12,9 @@
 //! ([`Fields`]) or a [`WireError`] whose `kind` is the name of the error
 //! variant. Geometry is fractions of the displayed page (see [`wire`]).
 //!
+//! A long request may name a job (the `job` field), which the application
+//! can cancel and watch: see [`jobs`].
+//!
 //! The operations that keep nothing (merge, split by ranges, extract) are
 //! free functions in [`stateless`]. Every file is opened under the
 //! [`OpenOptions`](kernkraft_pdf::doc::OpenOptions) the adapter gives:
@@ -27,6 +30,7 @@ pub mod engine;
 pub mod error;
 pub mod fields;
 pub mod fonts;
+pub mod jobs;
 pub mod open;
 pub mod read;
 pub mod registry;
@@ -38,3 +42,4 @@ pub mod wire;
 pub use engine::{Changed, Engine, HandleRequest, PageRequest, Session};
 pub use error::{WireDetails, WireError};
 pub use fields::{field, path_field, paths_field, Fields};
+pub use jobs::{JobId, JobRequest};

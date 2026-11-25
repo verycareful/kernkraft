@@ -2,34 +2,22 @@
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
 //! The operations that keep no session, as request strings: merge, split by
-//! ranges and extract. Files are opened under [`OPEN_OPTIONS`].
+//! ranges and extract. Files are opened under [`OPEN_OPTIONS`](crate::open::OPEN_OPTIONS),
+//! and a request may name a job to cancel it, like any long request.
 
-use kernkraft_pdf_engine::paths_field;
-use kernkraft_pdf_engine::stateless::{self, ExtractRequest, MergeRequest, SplitRequest};
-
-use crate::guard::run;
-use crate::open::OPEN_OPTIONS;
+use crate::bridge::bridge;
 
 /// Concatenates the sources, in order, into the new file `out`.
 pub fn merge_files(request: &str) -> String {
-    run(request, |request: MergeRequest| {
-        paths_field("paths", &stateless::merge_files(&OPEN_OPTIONS, request)?)
-    })
+    bridge().merge_files(request)
 }
 
 /// The listed pages of the source as the new file `out`.
 pub fn extract_pages(request: &str) -> String {
-    run(request, |request: ExtractRequest| {
-        paths_field("paths", &stateless::extract_pages(&OPEN_OPTIONS, request)?)
-    })
+    bridge().extract_pages(request)
 }
 
 /// One new file per range, in `out_dir`, named after the source.
 pub fn split_by_ranges(request: &str) -> String {
-    run(request, |request: SplitRequest| {
-        paths_field(
-            "paths",
-            &stateless::split_by_ranges(&OPEN_OPTIONS, request)?,
-        )
-    })
+    bridge().split_by_ranges(request)
 }

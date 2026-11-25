@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-pdf-job-progress"
+description = "Enables the pdf_job_progress command without any pre-configured scope."
+commands.allow = ["pdf_job_progress"]
+
+[[permission]]
+identifier = "deny-pdf-job-progress"
+description = "Denies the pdf_job_progress command without any pre-configured scope."
+commands.deny = ["pdf_job_progress"]

@@ -10,11 +10,13 @@ use std::sync::OnceLock;
 use kernkraft_pdf_engine::colour::CmykProfileRequest;
 use kernkraft_pdf_engine::edit::ApplyRequest;
 use kernkraft_pdf_engine::fonts::FontsRequest;
+use kernkraft_pdf_engine::jobs::JobRequest;
 use kernkraft_pdf_engine::open::Source;
-use kernkraft_pdf_engine::read::SearchRequest;
+use kernkraft_pdf_engine::read::{SearchRequest, TextRequest};
 use kernkraft_pdf_engine::render::RenderRequest;
 use kernkraft_pdf_engine::save::{AppendRequest, CompactRequest, ConfirmRequest};
-use kernkraft_pdf_engine::{path_field, Engine, HandleRequest, PageRequest};
+use kernkraft_pdf_engine::stateless::{self, ExtractRequest, MergeRequest, SplitRequest};
+use kernkraft_pdf_engine::{path_field, paths_field, Engine, HandleRequest, PageRequest};
 
 use crate::guard::run;
 use crate::open::OPEN_OPTIONS;
@@ -53,7 +55,7 @@ impl Bridge {
     }
 
     pub fn text(&self, request: &str) -> String {
-        run(request, |request: PageRequest| self.engine.text(request))
+        run(request, |request: TextRequest| self.engine.text(request))
     }
 
     pub fn search(&self, request: &str) -> String {
@@ -99,6 +101,42 @@ impl Bridge {
     pub fn compact(&self, request: &str) -> String {
         run(request, |request: CompactRequest| {
             path_field("path", &self.engine.compact(request)?)
+        })
+    }
+
+    /// Stops the job a request was given in its `job` field. The answer has
+    /// `running`.
+    pub fn cancel_job(&self, request: &str) -> String {
+        run(request, |request: JobRequest| {
+            Ok(self.engine.cancel_job(request))
+        })
+    }
+
+    /// How far a job has come: `running`, `done`, `total` and `stage`.
+    pub fn job_progress(&self, request: &str) -> String {
+        run(request, |request: JobRequest| {
+            Ok(self.engine.job_progress(request))
+        })
+    }
+
+    /// Concatenates the sources, in order, into the new file `out`.
+    pub fn merge_files(&self, request: &str) -> String {
+        run(request, |request: MergeRequest| {
+            paths_field("paths", &stateless::merge_files(&self.engine, request)?)
+        })
+    }
+
+    /// The listed pages of the source as the new file `out`.
+    pub fn extract_pages(&self, request: &str) -> String {
+        run(request, |request: ExtractRequest| {
+            paths_field("paths", &stateless::extract_pages(&self.engine, request)?)
+        })
+    }
+
+    /// One new file per range, in `out_dir`, named after the source.
+    pub fn split_by_ranges(&self, request: &str) -> String {
+        run(request, |request: SplitRequest| {
+            paths_field("paths", &stateless::split_by_ranges(&self.engine, request)?)
         })
     }
 

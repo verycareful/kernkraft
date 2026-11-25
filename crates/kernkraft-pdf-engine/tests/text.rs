@@ -13,8 +13,8 @@ use kernkraft_pdf::doc::OpenOptions;
 use kernkraft_pdf::file::ReadLimits;
 use kernkraft_pdf_engine::edit::{ApplyRequest, Op};
 use kernkraft_pdf_engine::open::Source;
-use kernkraft_pdf_engine::read::SearchRequest;
-use kernkraft_pdf_engine::{Engine, HandleRequest, PageRequest};
+use kernkraft_pdf_engine::read::{SearchRequest, TextRequest};
+use kernkraft_pdf_engine::{Engine, HandleRequest};
 
 const OPTIONS: OpenOptions = OpenOptions {
     limits: ReadLimits {
@@ -47,6 +47,7 @@ fn rotate(engine: &Engine, handle: i64) {
                 pages: vec![1],
                 degrees: 90,
             },
+            job: None,
         })
         .unwrap();
 }
@@ -56,7 +57,13 @@ fn reads_of_one_revision_share_one_extractor() {
     let engine = Engine::new(OPTIONS);
     let handle = open(&engine);
     let (_, revision, first) = engine.text_extractor(handle).unwrap();
-    engine.text(PageRequest { handle, page: 1 }).unwrap();
+    engine
+        .text(TextRequest {
+            handle,
+            page: 1,
+            job: None,
+        })
+        .unwrap();
     engine
         .search(SearchRequest {
             handle,
@@ -64,6 +71,7 @@ fn reads_of_one_revision_share_one_extractor() {
             query: "a".to_owned(),
             case_sensitive: false,
             whole_word: false,
+            job: None,
         })
         .unwrap();
     let (_, again, second) = engine.text_extractor(handle).unwrap();
@@ -111,8 +119,20 @@ fn two_sessions_do_not_share_an_extractor() {
 fn the_text_read_through_the_kept_extractor_is_the_same_each_time() {
     let engine = Engine::new(OPTIONS);
     let handle = open(&engine);
-    let first = engine.text(PageRequest { handle, page: 1 }).unwrap();
-    let second = engine.text(PageRequest { handle, page: 1 }).unwrap();
+    let first = engine
+        .text(TextRequest {
+            handle,
+            page: 1,
+            job: None,
+        })
+        .unwrap();
+    let second = engine
+        .text(TextRequest {
+            handle,
+            page: 1,
+            job: None,
+        })
+        .unwrap();
     assert_eq!(first, second);
     assert!(!first["lines"].as_array().unwrap().is_empty());
 }

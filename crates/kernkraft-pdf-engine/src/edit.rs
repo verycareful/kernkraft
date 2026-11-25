@@ -7,7 +7,7 @@
 //! written until a save. A change that changes nothing adds no step, and its
 //! answer lists no changed pages.
 
-use kernkraft_fs::NoProgress;
+use kernkraft_fs::Progress;
 use kernkraft_pdf::doc::Document;
 use kernkraft_pdf::text::TextBlock;
 use kernkraft_pdf::{
@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use crate::engine::{Changed, Engine, HandleRequest, Session};
 use crate::error::WireError;
 use crate::fields::Fields;
+use crate::jobs::JobId;
 use crate::wire::{self, WireId};
 
 /// The opacity of a new annotation that names none: a highlight multiplies
@@ -32,6 +33,13 @@ const DEFAULT_OPACITY: f64 = 1.0;
 pub struct ApplyRequest {
     pub handle: i64,
     pub op: Op,
+    /// The job that can cancel this change and watch it (see
+    /// [`crate::jobs`]). A change that is cancelled leaves the document as
+    /// it was. Only a text edit has a safe point to stop at (reading the
+    /// page and setting the text); the other changes are over before a
+    /// cancel could reach them.
+    #[serde(default)]
+    pub job: Option<JobId>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -136,8 +144,9 @@ impl Made {
 impl Engine {
     pub fn apply(&self, request: ApplyRequest) -> Result<Fields, WireError> {
         let fonts = self.fonts();
+        let running = self.jobs.begin(request.job, Some(request.handle))?;
         self.sessions.with(request.handle, |session| {
-            let made = make(session, request.handle, request.op, &fonts)?;
+            let made = make(session, request.handle, request.op, &fonts, &running)?;
             let pushed = session.edit.push(made.document)?;
             let changed = if pushed {
                 session.did(made.changed);
@@ -171,6 +180,7 @@ fn make(
     handle: i64,
     op: Op,
     fonts: &kernkraft_font::FontList,
+    progress: &dyn Progress,
 ) -> Result<Made, WireError> {
     let snapshot = session.document().clone();
     let document = &snapshot;
@@ -294,7 +304,7 @@ fn make(
                 .extractor()?
                 .lock()
                 .map_err(|_| WireError::session_poisoned(handle))?
-                .page(page, &NoProgress)?;
+                .page(page, progress)?;
             let block: &TextBlock = page_text.blocks.get(block).ok_or_else(|| {
                 WireError::bad_request(format!(
                     "page {page} has {} text blocks, not {}",
@@ -313,7 +323,7 @@ fn make(
                 style = style.with_colour(wire::colour_from(colour));
             }
             let edit = TextEdit::new(text).with_style(style).with_fonts(fonts);
-            let edited = edit_text(document, page, block, &edit, &NoProgress)?;
+            let edited = edit_text(document, page, block, &edit, progress)?;
             let mut made = Made::new(edited.document, Changed::one(page));
             made.extra.insert("lines".to_owned(), json!(edited.lines));
             made.extra.insert(

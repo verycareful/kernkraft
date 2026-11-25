@@ -40,6 +40,8 @@ Allows every kernkraft command
 - `allow-pdf-compact`
 - `allow-pdf-set-system-fonts`
 - `allow-pdf-set-cmyk-profile`
+- `allow-pdf-cancel-job`
+- `allow-pdf-job-progress`
 - `allow-pdf-render-size`
 - `allow-pdf-render`
 - `allow-pdf-merge`
@@ -520,6 +522,32 @@ Denies the pdf_apply command without any pre-configured scope.
 <tr>
 <td>
 
+`kernkraft-tauri:allow-pdf-cancel-job`
+
+</td>
+<td>
+
+Enables the pdf_cancel_job command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-cancel-job`
+
+</td>
+<td>
+
+Denies the pdf_cancel_job command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `kernkraft-tauri:allow-pdf-close`
 
 </td>
@@ -591,6 +619,32 @@ Enables the pdf_extract command without any pre-configured scope.
 <td>
 
 Denies the pdf_extract command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-job-progress`
+
+</td>
+<td>
+
+Enables the pdf_job_progress command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-job-progress`
+
+</td>
+<td>
+
+Denies the pdf_job_progress command without any pre-configured scope.
 
 </td>
 </tr>

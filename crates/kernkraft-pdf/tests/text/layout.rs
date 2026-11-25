@@ -316,6 +316,29 @@ fn a_glyph_with_no_unicode_text_keeps_its_place_as_the_replacement_character() {
 }
 
 #[test]
+fn the_names_of_the_tex_fonts_give_text_and_are_not_unmapped() {
+    // Code 3 of F2 is named `mapsto` (U+21A6), code 4 `parenleftbig` (`0028
+    // FE01` in the TeX file: the character, without the selector for the
+    // size) and code 5 `braceex`, which the Adobe Glyph List gives U+F8F4,
+    // a private use character, and the TeX file U+23AA.
+    let fixture = document(
+        &[PageSpec::of(
+            "BT /F2 10 Tf 100 700 Td (\\003\\004\\005) Tj ET",
+        )],
+        "",
+        "",
+        &[],
+    );
+    let document = open(&fixture);
+    let page = document.text_page(1, &NoProgress).unwrap();
+    assert_eq!(page.text(), "\u{21A6}(\u{23AA}");
+    assert!(document
+        .diagnostics()
+        .into_iter()
+        .all(|d| d.kind != DiagnosticKind::TextUnmapped));
+}
+
+#[test]
 fn a_glyph_the_page_shows_beyond_the_limit_is_refused() {
     let fixture = one_page(HELLO);
     let document = open(&fixture);

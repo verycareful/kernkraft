@@ -44,8 +44,9 @@ pub const PAGE_WIDTH: f64 = 612.0;
 pub const PAGE_HEIGHT: f64 = 792.0;
 
 /// Courier (600 units for every glyph) and the same font with code 1 named
-/// `fi` (the ligature U+FB01) and code 2 named `zzz`, a name no list maps
-/// to text.
+/// `fi` (the ligature U+FB01), code 2 named `zzz`, a name no list maps to
+/// text, and codes 3 to 5 named `mapsto`, `parenleftbig` and `braceex`, names
+/// of the TeX fonts.
 pub const FONT_OBJECTS: [(u32, &[u8]); 2] = [
     (
         60,
@@ -54,7 +55,7 @@ pub const FONT_OBJECTS: [(u32, &[u8]); 2] = [
     (
         61,
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier \
-          /Encoding << /BaseEncoding /WinAnsiEncoding /Differences [1 /fi 2 /zzz] >> >>",
+          /Encoding << /BaseEncoding /WinAnsiEncoding /Differences [1 /fi 2 /zzz 3 /mapsto 4 /parenleftbig 5 /braceex] >> >>",
     ),
 ];
 

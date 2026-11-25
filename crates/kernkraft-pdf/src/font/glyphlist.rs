@@ -10,8 +10,13 @@
 //! followed by groups of four uppercase hexadecimal digits, or as `u`
 //! followed by four to six. A component that is none of these stands for
 //! nothing; a name none of whose components stand for anything has no text.
+//!
+//! The names of the TeX fonts that the list lacks, or gives only private use
+//! characters for, are read from [`TEX_GLYPH_LIST`] first (the list's value
+//! for any other name is the one used).
 
 use super::data::glyphlist::GLYPH_LIST;
+use super::data::texglyphs::TEX_GLYPH_LIST;
 
 /// The code units one `uni` group stands for.
 const UNI_GROUP_DIGITS: usize = 4;
@@ -31,7 +36,9 @@ pub(crate) fn text_for_name(name: &str) -> Option<String> {
 }
 
 fn push_component(component: &str, text: &mut String) {
-    if let Ok(index) = GLYPH_LIST.binary_search_by(|(name, _)| (*name).cmp(component)) {
+    if let Ok(index) = TEX_GLYPH_LIST.binary_search_by(|(name, _)| (*name).cmp(component)) {
+        text.push_str(TEX_GLYPH_LIST[index].1);
+    } else if let Ok(index) = GLYPH_LIST.binary_search_by(|(name, _)| (*name).cmp(component)) {
         text.push_str(GLYPH_LIST[index].1);
     } else if let Some(digits) = component.strip_prefix("uni") {
         push_uni(digits, text);
@@ -89,6 +96,60 @@ mod tests {
     #[test]
     fn the_list_is_sorted_for_binary_search() {
         assert!(GLYPH_LIST.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert!(TEX_GLYPH_LIST.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    }
+
+    fn private_use(text: &str) -> bool {
+        text.chars().all(|c| ('\u{E000}'..='\u{F8FF}').contains(&c))
+    }
+
+    /// The table of the TeX names holds only what the Adobe Glyph List lacks
+    /// or gives private use characters for, no variation selector, and no
+    /// name of a letter and a number.
+    #[test]
+    fn the_tex_names_add_to_the_list_and_never_replace_text() {
+        for (name, text) in TEX_GLYPH_LIST {
+            if let Ok(index) = GLYPH_LIST.binary_search_by(|(listed, _)| listed.cmp(&name)) {
+                assert!(private_use(GLYPH_LIST[index].1), "{name}");
+            }
+            assert!(
+                !text.chars().any(|c| ('\u{FE00}'..='\u{FE0F}').contains(&c)),
+                "{name}"
+            );
+            assert!(!private_use(text), "{name}");
+            let numbered = name.len() > 1
+                && name.as_bytes()[0].is_ascii_alphabetic()
+                && name[1..].bytes().all(|b| b.is_ascii_digit());
+            assert!(!numbered, "{name}");
+        }
+    }
+
+    /// Values of the `pdfx` package's glyphtounicode-cmr.tex: `mapsto` is
+    /// U+21A6, `vextendsingle` U+20D3, `parenleftbig` is `0028 FE01` (the
+    /// selector for the size is not text) and `bracketleftBigg` `005B FE04`.
+    #[test]
+    fn the_names_of_the_tex_fonts_have_their_text() {
+        assert_eq!(text_for_name("mapsto").as_deref(), Some("\u{21A6}"));
+        assert_eq!(text_for_name("vextendsingle").as_deref(), Some("\u{20D3}"));
+        assert_eq!(text_for_name("parenleftbig").as_deref(), Some("("));
+        assert_eq!(text_for_name("bracketleftBigg").as_deref(), Some("["));
+    }
+
+    /// The Adobe Glyph List gives `braceex` U+F8F4 and `arrowvertex` U+F8E6,
+    /// in the private use area; the TeX file gives U+23AA and U+23D0.
+    #[test]
+    fn a_private_use_value_of_the_list_gives_way_to_the_tex_text() {
+        assert_eq!(text_for_name("braceex").as_deref(), Some("\u{23AA}"));
+        assert_eq!(text_for_name("arrowvertex").as_deref(), Some("\u{23D0}"));
+    }
+
+    /// A name the list has with text of its own is not overridden, and a
+    /// numbered name stays unmapped (ZapfDingbats names `a1`).
+    #[test]
+    fn other_names_are_as_before() {
+        assert_eq!(text_for_name("parenleft").as_deref(), Some("("));
+        assert_eq!(text_for_name("a1"), None);
+        assert_eq!(text_for_name("d47"), None);
     }
 
     /// The examples of the Adobe Glyph List Specification, section 2.

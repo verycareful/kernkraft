@@ -8,6 +8,7 @@ pub(crate) mod cmaps;
 pub(crate) mod encodings;
 pub(crate) mod glyphlist;
 pub(crate) mod standard14;
+pub(crate) mod texglyphs;
 
 /// A range of a predefined CMap: the `span + 1` codes of `len` bytes from
 /// `code` map to the CIDs from `cid` on.

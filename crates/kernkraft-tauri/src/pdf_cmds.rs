@@ -12,8 +12,8 @@
 //! fractions of the displayed page (see `kernkraft_pdf_engine::wire`).
 //!
 //! A command that can take long (`pdf_text`, `pdf_search`, `pdf_apply`,
-//! `pdf_save`, `pdf_compact`, `pdf_render`, `pdf_merge`, `pdf_extract`,
-//! `pdf_split`, `pdf_set_system_fonts`) takes an optional `job`, a number the
+//! `pdf_save`, `pdf_compact`, `pdf_compact_file`, `pdf_render`, `pdf_merge`,
+//! `pdf_extract`, `pdf_split`, `pdf_set_system_fonts`) takes an optional `job`, a number the
 //! webview chooses and never uses twice. [`Kernkraft::pdf_cancel_job`] stops
 //! the command with that number (it fails with `Cancelled` and leaves
 //! nothing behind) and [`Kernkraft::pdf_job_progress`] says how far it has
@@ -45,7 +45,9 @@ use kernkraft_pdf_engine::jobs::{JobId, JobRequest};
 use kernkraft_pdf_engine::open::Source;
 use kernkraft_pdf_engine::read::{SearchRequest, TextRequest};
 use kernkraft_pdf_engine::render::RenderRequest;
-use kernkraft_pdf_engine::stateless::{self, ExtractRequest, MergeRequest, SplitRequest};
+use kernkraft_pdf_engine::stateless::{
+    self, CompactFileRequest, ExtractRequest, MergeRequest, SplitRequest,
+};
 use kernkraft_pdf_engine::{Engine, Fields, HandleRequest, PageRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -297,6 +299,26 @@ impl<R: Runtime> Kernkraft<R> {
         let written = self
             .engine()
             .compact(kernkraft_pdf_engine::save::CompactRequest { handle, out, job })?;
+        Ok(WirePath::from(&written))
+    }
+
+    /// The file `source` written as a new compacted file `out` that must not
+    /// exist; the source is untouched. For a file that `pdf_open` refuses
+    /// with `RebuiltNotEditable`, which has no session to `pdf_compact`.
+    pub fn pdf_compact_file(
+        &self,
+        source: WirePdfSource,
+        out: WirePath,
+        job: Option<JobId>,
+        origin: Option<String>,
+    ) -> Result<WirePath, WireError> {
+        let request = CompactFileRequest {
+            source: source.into_source()?,
+            out: PathBuf::try_from(out)?,
+            job,
+        };
+        let _owned = self.own_job(job, origin);
+        let written = stateless::compact_file(self.engine(), request)?;
         Ok(WirePath::from(&written))
     }
 

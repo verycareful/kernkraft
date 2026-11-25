@@ -40,6 +40,23 @@ fn work_copy(e: &Env) -> PathBuf {
     path
 }
 
+/// A copy of the sample whose `startxref` names an offset past the end of
+/// the file, so that it opens only after its cross-reference is rebuilt.
+fn rebuilt_copy(e: &Env) -> PathBuf {
+    const MARKER: &[u8] = b"startxref\n";
+    const PAST_THE_END: &[u8] = b"7777777\n%%EOF\n";
+    let mut bytes = fs::read(sample()).unwrap();
+    let at = bytes
+        .windows(MARKER.len())
+        .rposition(|window| window == MARKER)
+        .unwrap();
+    bytes.truncate(at + MARKER.len());
+    bytes.extend_from_slice(PAST_THE_END);
+    let path = e.dir("pdf").join("rebuilt.pdf");
+    fs::write(&path, bytes).unwrap();
+    path
+}
+
 fn handle_of(opened: &serde_json::Map<String, Value>) -> i64 {
     opened["handle"].as_i64().unwrap()
 }
@@ -339,6 +356,29 @@ fn merge_extract_and_split_make_new_files_and_never_replace_one() {
             None,
         )
         .unwrap_err();
+    assert_eq!(again.kind, "Exists");
+}
+
+#[test]
+fn a_file_with_a_rebuilt_cross_reference_compacts_to_a_new_file_and_the_original_is_untouched() {
+    let e = env();
+    let path = rebuilt_copy(&e);
+    let before = fs::read(&path).unwrap();
+    let out = e.dir("out").join("repaired.pdf");
+
+    let refused = e.kk.pdf_open(source(&path), None).unwrap_err();
+    assert_eq!(refused.kind, "RebuiltNotEditable");
+    let written =
+        e.kk.pdf_compact_file(source(&path), w(&out), None, None)
+            .unwrap();
+
+    assert_eq!(to_path(&written), out);
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let opened = e.kk.pdf_open(source(&out), None).unwrap();
+    assert_eq!(opened["pages"], 2);
+    let again =
+        e.kk.pdf_compact_file(source(&path), w(&out), None, None)
+            .unwrap_err();
     assert_eq!(again.kind, "Exists");
 }
 

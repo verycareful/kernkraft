@@ -71,6 +71,10 @@ export!(
     Java_dev_kern_pdfbridge_KernkraftPdf_nativeExtract,
     stateless::extract_pages
 );
+export!(
+    Java_dev_kern_pdfbridge_KernkraftPdf_nativeCompactFile,
+    stateless::compact_file
+);
 export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeOpen, |r| bridge(
 )
 .open(r));

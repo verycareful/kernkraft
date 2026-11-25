@@ -51,6 +51,7 @@ pub const COMMANDS: &[&str] = &[
     "pdf_render",
     "pdf_merge",
     "pdf_extract",
+    "pdf_compact_file",
     "pdf_split",
     "thumb_request",
     "thumb_cancel",

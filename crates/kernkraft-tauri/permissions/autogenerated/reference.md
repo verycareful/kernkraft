@@ -46,6 +46,7 @@ Allows every kernkraft command
 - `allow-pdf-render`
 - `allow-pdf-merge`
 - `allow-pdf-extract`
+- `allow-pdf-compact-file`
 - `allow-pdf-split`
 - `allow-thumb-request`
 - `allow-thumb-cancel`
@@ -593,6 +594,32 @@ Enables the pdf_compact command without any pre-configured scope.
 <td>
 
 Denies the pdf_compact command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:allow-pdf-compact-file`
+
+</td>
+<td>
+
+Enables the pdf_compact_file command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`kernkraft-tauri:deny-pdf-compact-file`
+
+</td>
+<td>
+
+Denies the pdf_compact_file command without any pre-configured scope.
 
 </td>
 </tr>

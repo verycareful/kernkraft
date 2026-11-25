@@ -119,6 +119,7 @@ pub fn init_with<R: Runtime>(config: Config) -> TauriPlugin<R> {
             commands::pdf_render,
             commands::pdf_merge,
             commands::pdf_extract,
+            commands::pdf_compact_file,
             commands::pdf_split,
             commands::thumb_request,
             commands::thumb_cancel,

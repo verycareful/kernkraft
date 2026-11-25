@@ -46,6 +46,7 @@ permissions = [
     "allow-pdf-render",
     "allow-pdf-merge",
     "allow-pdf-extract",
+    "allow-pdf-compact-file",
     "allow-pdf-split",
     "allow-thumb-request",
     "allow-thumb-cancel",

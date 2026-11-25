@@ -15,7 +15,8 @@
 //! A long request may name a job (the `job` field), which the application
 //! can cancel and watch: see [`jobs`].
 //!
-//! The operations that keep nothing (merge, split by ranges, extract) are
+//! The operations that keep nothing (merge, split by ranges, extract, compact
+//! a file) are
 //! free functions in [`stateless`]. Every file is opened under the
 //! [`OpenOptions`](kernkraft_pdf::doc::OpenOptions) the adapter gives:
 //! what a document may cost depends on the device.

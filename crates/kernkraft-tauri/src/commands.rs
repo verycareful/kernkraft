@@ -668,6 +668,19 @@ pub(crate) async fn pdf_extract<R: Runtime>(
 }
 
 #[tauri::command]
+pub(crate) async fn pdf_compact_file<R: Runtime>(
+    app: AppHandle<R>,
+    window: Window<R>,
+    source: WirePdfSource,
+    out: WirePath,
+    job: Option<u64>,
+) -> Result<WirePath, WireError> {
+    let kk = app.kernkraft();
+    let origin = origin(&window);
+    blocking(move || kk.pdf_compact_file(source, out, job, origin)).await
+}
+
+#[tauri::command]
 pub(crate) async fn pdf_split<R: Runtime>(
     app: AppHandle<R>,
     window: Window<R>,

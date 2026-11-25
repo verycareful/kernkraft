@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
 
 //! The operations that open a file, make new ones and keep nothing: merge,
-//! split by ranges and extract.
+//! split by ranges, extract and compact a file.
 //!
 //! Each output is a new file made through `kernkraft-fs`'s atomic writer
 //! with `Expect::Nothing`: it is created, never replaces anything, and a
@@ -52,6 +52,18 @@ pub struct ExtractRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CompactFileRequest {
+    #[serde(flatten)]
+    pub source: Source,
+    pub out: PathBuf,
+    /// The job that can cancel this request and watch it (see
+    /// [`crate::jobs`]); `done` counts objects.
+    #[serde(default)]
+    pub job: Option<JobId>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SplitRequest {
     #[serde(flatten)]
     pub source: Source,
@@ -89,6 +101,17 @@ pub fn extract_pages(engine: &Engine, request: ExtractRequest) -> Result<Vec<Pat
     let pages = extract(&document, &request.pages)?;
     save_new(&pages, &request.out, &running)?;
     Ok(vec![request.out])
+}
+
+/// The source written as the new, compacted file `out`, which is given
+/// back. The source is read and never changed, and it need not open for
+/// editing: a file whose cross-reference was rebuilt is written out whole,
+/// with a cross-reference that is not rebuilt.
+pub fn compact_file(engine: &Engine, request: CompactFileRequest) -> Result<PathBuf, WireError> {
+    let running = engine.jobs.begin(request.job, None)?;
+    let document = request.source.open(engine.options())?;
+    save_new(&document, &request.out, &running)?;
+    Ok(request.out)
 }
 
 /// One new file per range, in `out_dir`, named after the source:

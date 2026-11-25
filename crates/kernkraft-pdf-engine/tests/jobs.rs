@@ -26,7 +26,9 @@ use kernkraft_pdf_engine::open::Source;
 use kernkraft_pdf_engine::read::{SearchRequest, TextRequest};
 use kernkraft_pdf_engine::render::RenderRequest;
 use kernkraft_pdf_engine::save::{AppendRequest, CompactRequest};
-use kernkraft_pdf_engine::stateless::{self, ExtractRequest, MergeRequest, SplitRequest};
+use kernkraft_pdf_engine::stateless::{
+    self, CompactFileRequest, ExtractRequest, MergeRequest, SplitRequest,
+};
 use kernkraft_pdf_engine::Engine;
 
 const OPTIONS: OpenOptions = OpenOptions {
@@ -216,6 +218,27 @@ fn a_cancelled_extract_and_a_cancelled_split_make_no_file() {
     assert_eq!(extract.kind, "Cancelled");
     assert_eq!(split.kind, "Cancelled");
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn a_cancelled_compact_of_a_file_makes_no_file() {
+    let engine = Engine::new(OPTIONS);
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("compacted.pdf");
+    cancel(&engine, 6);
+
+    let stopped = stateless::compact_file(
+        &engine,
+        CompactFileRequest {
+            source: source(),
+            out: out.clone(),
+            job: Some(6),
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(stopped.kind, "Cancelled");
+    assert!(!out.exists());
 }
 
 #[test]

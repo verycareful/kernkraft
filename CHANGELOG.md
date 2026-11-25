@@ -2,6 +2,25 @@
 
 All notable changes documented here. Format: [Keep a Changelog](https://keepachangelog.com/), with one deviation: dated release entries are timestamped to the minute with timezone (`YYYY-MM-DD HH:MM (TZ)`).
 
+## [0.2.1.0] - 2026-11-25 23:18 (IST)
+
+A file whose cross-reference was rebuilt can now be repaired by an application. Still alpha; one operation is added and nothing existing changes.
+
+### Added
+- **`compact_file`, a compacted copy of a file by path**: a file whose cross-reference was rebuilt is refused by `open` with `RebuiltNotEditable`, so it has no session and `compact` could not be reached for the very files the error says to compact. `compact_file` takes `path`, `password`, `out` and an optional `job`, reads the file as `merge` and `extract` do, and writes it whole as the new file `out`, with a cross-reference that is not rebuilt. The source is read and never changed, `out` is created and never replaces a file (`Exists`), and a failure or a cancelled job leaves no file behind. The copy opens as an editable session, so an application repairs a file by writing the copy to a new path and editing that.
+  - `kernkraft-pdf-engine`: `stateless::{CompactFileRequest, compact_file}`, which returns `out`.
+  - `kernkraft-jni`: the native `nativeCompactFile`, and `Bridge::compact_file` and `stateless::compact_file` as request strings; the answer has `path`, as `compact` does.
+  - `kernkraft-tauri`: the command `pdf_compact_file`, `Kernkraft::pdf_compact_file`, and the permission `allow-pdf-compact-file`, which the default permission set grants.
+
+### Tests
+- `a_file_with_a_rebuilt_cross_reference_compacts_to_a_new_file_that_opens_for_editing` in `kernkraft-jni`: a copy of `testdata/kern-sample.pdf` whose `startxref` names an offset past the end of the file is refused by `open` with `RebuiltNotEditable`; `compact_file` writes a copy of 2 pages that opens as a session, and the source is byte for byte what it was.
+- `compact_of_a_file_never_replaces_a_file_that_is_there` and `compact_of_a_file_that_is_not_there_makes_no_file` in `kernkraft-jni`: a taken `out` is `Exists` and keeps its bytes; a missing source is `NotFound` and makes no file.
+- `a_file_with_a_rebuilt_cross_reference_compacts_to_a_new_file_and_the_original_is_untouched` in `kernkraft-tauri`: the same through `pdf_open` and `pdf_compact_file`, with the page count of the copy and a second call refused as `Exists`.
+- `a_cancelled_compact_of_a_file_makes_no_file` in `kernkraft-pdf-engine`: a job cancelled before the request begins stops it with `Cancelled` and writes no file.
+
+### Results
+- 2659 tests across 108 suites, all passed (326s, CachyOS x86-64, rustc 1.99.1).
+
 ## [0.2.0.0] - 2026-11-25 19:15 (IST)
 
 kernkraft reads, edits, writes and renders PDF with code of its own. `lopdf`, MuPDF and the code derived from Qyra are gone, and no part of the PDF stack is ported from another suite: every format is implemented from its specification, cited by clause in the file headers. Three crates are new (`kernkraft-font`, `kernkraft-pdf-engine`, `kernkraft-jni`), `kernkraft-pdf` is rewritten and its API changes throughout, and `kernkraft-tauri` gains the PDF commands. Still alpha: a direct Rust caller of `kernkraft-pdf` must port to the new API.

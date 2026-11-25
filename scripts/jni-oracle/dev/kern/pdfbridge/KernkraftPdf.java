@@ -14,6 +14,7 @@ final class KernkraftPdf {
     static native String nativeMerge(String request);
     static native String nativeSplitRanges(String request);
     static native String nativeExtract(String request);
+    static native String nativeCompactFile(String request);
     static native String nativeOpen(String request);
     static native String nativeClose(String request);
     static native String nativePageInfo(String request);

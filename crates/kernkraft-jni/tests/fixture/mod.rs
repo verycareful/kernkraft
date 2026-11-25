@@ -40,3 +40,21 @@ pub fn open(engine: &kernkraft_jni::bridge::Bridge) -> i64 {
 pub fn sample_length() -> u64 {
     std::fs::metadata(sample()).unwrap().len()
 }
+
+/// A copy of the sample in `dir` whose `startxref` names an offset past the
+/// end of the file, so that the file opens only after its cross-reference
+/// is rebuilt. The pages are the sample's.
+pub fn rebuilt_sample(dir: &Path) -> PathBuf {
+    const MARKER: &[u8] = b"startxref\n";
+    const PAST_THE_END: &[u8] = b"7777777\n%%EOF\n";
+    let mut bytes = std::fs::read(sample()).unwrap();
+    let at = bytes
+        .windows(MARKER.len())
+        .rposition(|window| window == MARKER)
+        .unwrap();
+    bytes.truncate(at + MARKER.len());
+    bytes.extend_from_slice(PAST_THE_END);
+    let path = dir.join("rebuilt.pdf");
+    std::fs::write(&path, bytes).unwrap();
+    path
+}

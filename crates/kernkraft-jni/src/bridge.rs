@@ -15,7 +15,9 @@ use kernkraft_pdf_engine::open::Source;
 use kernkraft_pdf_engine::read::{SearchRequest, TextRequest};
 use kernkraft_pdf_engine::render::RenderRequest;
 use kernkraft_pdf_engine::save::{AppendRequest, CompactRequest, ConfirmRequest};
-use kernkraft_pdf_engine::stateless::{self, ExtractRequest, MergeRequest, SplitRequest};
+use kernkraft_pdf_engine::stateless::{
+    self, CompactFileRequest, ExtractRequest, MergeRequest, SplitRequest,
+};
 use kernkraft_pdf_engine::{path_field, paths_field, Engine, HandleRequest, PageRequest};
 
 use crate::guard::run;
@@ -130,6 +132,14 @@ impl Bridge {
     pub fn extract_pages(&self, request: &str) -> String {
         run(request, |request: ExtractRequest| {
             paths_field("paths", &stateless::extract_pages(&self.engine, request)?)
+        })
+    }
+
+    /// The source as the new, compacted file `out`, for a file that cannot
+    /// be opened for editing. The answer has `path`.
+    pub fn compact_file(&self, request: &str) -> String {
+        run(request, |request: CompactFileRequest| {
+            path_field("path", &stateless::compact_file(&self.engine, request)?)
         })
     }
 

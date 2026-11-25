@@ -5,7 +5,7 @@
 //! CID-to-Unicode maps of the Adobe character collections.
 //!
 //! Generated from the sources named here; do not edit by hand.
-//! Source: Adobe's cmap-resources, Copyright 1990-2019 Adobe, BSD-3-Clause.
+//! Source: Adobe's cmap-resources, Copyright 1990-2023 Adobe, BSD-3-Clause.
 //! Each CMap's ranges are sorted by (code length, code), with no overlap and
 //! none longer than 256 codes.
 

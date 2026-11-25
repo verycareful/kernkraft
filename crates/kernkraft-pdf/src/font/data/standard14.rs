@@ -4,7 +4,7 @@
 //! The metrics of the 14 standard fonts.
 //!
 //! Generated from the sources named here; do not edit by hand.
-//! Source: Adobe's AFM files for the 14 fonts (Copyright 1985-1990 Adobe
+//! Source: Adobe's AFM files for the 14 fonts (Copyright 1985-1991 Adobe
 //! Systems Incorporated). Widths are in thousandths of an em, by glyph
 //! name, sorted bytewise for binary search.
 

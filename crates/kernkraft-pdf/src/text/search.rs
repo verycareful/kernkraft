@@ -258,6 +258,7 @@ mod tests {
                             rect: Rect::default(),
                             quad: [(0.0, 0.0); 4],
                             synthetic: false,
+                            sizeless: false,
                             source: None,
                         })
                         .collect(),

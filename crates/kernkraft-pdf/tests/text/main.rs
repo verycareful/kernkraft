@@ -23,6 +23,7 @@ mod layout;
 mod links;
 mod robustness;
 mod search;
+mod sizeless;
 mod structure;
 
 use kernkraft_fs::NoProgress;

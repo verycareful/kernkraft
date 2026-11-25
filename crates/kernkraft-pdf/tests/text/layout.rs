@@ -278,11 +278,6 @@ fn text_wholly_off_the_page_is_not_text() {
 }
 
 #[test]
-fn text_of_no_size_is_not_text() {
-    assert!(page("BT /F1 0 Tf 100 700 Td (Hi) Tj ET").is_empty());
-}
-
-#[test]
 fn text_that_optional_content_hides_is_not_text() {
     let fixture = document(
         &[PageSpec::of(

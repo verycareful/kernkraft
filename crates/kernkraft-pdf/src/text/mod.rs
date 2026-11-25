@@ -95,6 +95,13 @@ pub struct TextChar {
     /// Whether the character is a space the layout read between two
     /// glyphs that no space glyph separates, so that it covers no glyph.
     pub synthetic: bool,
+    /// Whether the glyph has no size: it was shown at a font size of 0, or
+    /// under a text matrix that leaves it no height or no width. Its text
+    /// is on the page and a search finds it, but nothing of it is drawn, so
+    /// [`rect`](Self::rect) and [`quad`](Self::quad) are the point its
+    /// origin is at, and it is not a character a point can hit or a
+    /// selection can start at. A page's sizeless text is its last block.
+    pub sizeless: bool,
     /// The glyph the character stands for; `None` for a synthetic space.
     pub source: Option<GlyphSource>,
 }
@@ -295,7 +302,7 @@ impl TextPage {
     pub fn char_at(&self, x: f64, y: f64) -> Option<usize> {
         (0..self.places.len()).find(|&index| {
             self.char(index)
-                .is_some_and(|ch| !ch.synthetic && ch.rect.contains(x, y))
+                .is_some_and(|ch| !ch.synthetic && !ch.sizeless && ch.rect.contains(x, y))
         })
     }
 
@@ -305,7 +312,7 @@ impl TextPage {
     pub fn nearest_char(&self, x: f64, y: f64) -> Option<usize> {
         let mut best: Option<(usize, f64)> = None;
         for index in 0..self.places.len() {
-            let Some(ch) = self.char(index).filter(|ch| !ch.synthetic) else {
+            let Some(ch) = self.char(index).filter(|ch| !ch.synthetic && !ch.sizeless) else {
                 continue;
             };
             let distance = ch.rect.distance_to(x, y);
@@ -407,7 +414,9 @@ impl TextExtractor {
         diagnostics.set_object(None);
         self.doc.record_diagnostics(diagnostics);
         result?;
-        let laid = layout::lay_out(&collected.glyphs, &collected.rules, &view);
+        let mut laid = layout::lay_out(&collected.glyphs, &collected.rules, &view);
+        laid.blocks
+            .extend(layout::sizeless_block(&collected.sizeless, &view));
         Ok(TextPage::new(number, laid.blocks, laid.tagged))
     }
 }

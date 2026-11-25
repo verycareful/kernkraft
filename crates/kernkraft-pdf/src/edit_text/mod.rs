@@ -18,8 +18,10 @@
 //! block holds them. An edit of a block takes with it the glyphs of the
 //! showing operations the block's glyphs are in that lie wholly off the page:
 //! they are the rest of the line the block is. Text that is hidden by an
-//! optional content group, has no size, or is shown by an operation none of
-//! the block's glyphs are in is other text, and stays.
+//! optional content group, or is shown by an operation none of the block's
+//! glyphs are in, is other text, and stays. So does text that has no size:
+//! the text layer holds it in a block of its own, which is refused
+//! ([`EditBlocker::NoSize`]).
 //!
 //! [`Document::text_block_editability`] says whether a block of a
 //! [`TextPage`](crate::text::TextPage) can be edited, and when it cannot,
@@ -69,6 +71,10 @@ pub enum EditBlocker {
     /// The block has no glyph that was shown by an operator: it holds only
     /// spaces the layout read between glyphs.
     NoGlyphs,
+    /// The block's text has no size (a font size of 0, or a text matrix
+    /// that collapses it): nothing of it is drawn, so there is no text on
+    /// the page to change, and the glyphs stay in the file.
+    NoSize,
     /// An operation that showed the block's glyphs is not on the page as
     /// the document now has it: the block comes from another snapshot.
     NotOnPage,
@@ -146,6 +152,13 @@ fn inspect(
     block: &TextBlock,
     progress: &dyn Progress,
 ) -> Result<Result<Inspected, EditBlocker>, PdfError> {
+    if block
+        .lines
+        .iter()
+        .any(|line| line.chars.iter().any(|ch| ch.sizeless))
+    {
+        return Ok(Err(EditBlocker::NoSize));
+    }
     let page = doc.page(page_number)?;
     let sources: Vec<GlyphSource> = block
         .lines

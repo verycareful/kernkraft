@@ -280,3 +280,30 @@ fn an_edit_takes_the_off_page_glyphs_with_the_text_it_replaces() {
     assert!(content.starts_with("BT /F1 10 Tf 590 700 Td [-4800] TJ ET "));
     assert!(!content.contains("EFGH"));
 }
+
+#[test]
+fn a_block_of_text_with_no_size_is_refused() {
+    let fixture = one_page("BT /F1 0 Tf 100 700 Td (Hidden) Tj ET");
+    let doc = fixture.open();
+    let page = doc.text_page(1, &NoProgress).unwrap();
+    assert_eq!(
+        doc.text_block_editability(1, &page.blocks[0], &NoProgress)
+            .unwrap(),
+        kernkraft_pdf::Editability::Blocked(EditBlocker::NoSize)
+    );
+    match delete_text_block(&doc, 1, &page.blocks[0], &NoProgress) {
+        Err(PdfError::TextNotEditable { reason }) => assert_eq!(reason, EditBlocker::NoSize),
+        other => panic!("not refused: {:?}", other.map(|_| ())),
+    }
+}
+
+#[test]
+fn text_with_no_size_stays_when_the_text_beside_it_goes() {
+    let fixture =
+        one_page("BT /F1 10 Tf 100 700 Td (Seen) Tj ET BT /F1 0 Tf 100 650 Td (Size zero) Tj ET");
+    let (doc, before, after) = delete(&fixture, 0);
+    assert_eq!(before.blocks.len(), 2);
+    assert!(content(&doc).contains("(Size zero) Tj"));
+    assert_eq!(after.blocks.len(), 1);
+    assert_eq!(after.blocks[0].lines[0].text(), "Size zero");
+}

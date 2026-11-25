@@ -114,11 +114,15 @@ fn a_save_with_a_job_that_is_not_cancelled_is_the_save_without_one() {
         .unwrap();
 
     // The same update on the same opened bytes: the file's identifier is the
-    // one thing that differs between two saves, and it has one length.
+    // one thing that differs between two saves. It is 16 bytes written as a
+    // literal string, in which a parenthesis, a backslash or a carriage
+    // return takes two bytes, so the two files differ in length by at most
+    // 16.
+    const ID_BYTES: usize = 16;
     let original = fs::read(sample()).unwrap();
     let (plain, named) = (fs::read(&plain).unwrap(), fs::read(&named).unwrap());
     assert!(plain.starts_with(&original) && named.starts_with(&original));
-    assert_eq!(plain.len(), named.len());
+    assert!(plain.len().abs_diff(named.len()) <= ID_BYTES);
     // Over, the job is not running and has nothing counted against it.
     let progress = engine.job_progress(JobRequest { job: 1 });
     assert_eq!(progress["running"], false);

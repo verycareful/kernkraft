@@ -14,9 +14,9 @@
 //! structure tree when the page is tagged (see [`super::structure`]), and
 //! by recursive cuts at the widest gap otherwise.
 
-use crate::display::PageView;
+use crate::display::{PageView, Rect};
 use crate::text::bidi;
-use crate::text::collect::{RawGlyph, RawRule};
+use crate::text::collect::{RawGlyph, RawRule, RawSizeless};
 use crate::text::{TextBlock, TextChar, TextLine};
 
 /// The sine of the angle two glyphs' directions may differ by and still
@@ -698,6 +698,7 @@ fn build_line(glyphs: &[RawGlyph], line: &Line, view: &PageView) -> TextLine {
                 rect: view.rect_of(gap).unwrap_or_default(),
                 quad: gap.map(|(x, y)| view.fraction(x, y)),
                 synthetic: true,
+                sizeless: false,
                 source: None,
             });
         }
@@ -706,6 +707,7 @@ fn build_line(glyphs: &[RawGlyph], line: &Line, view: &PageView) -> TextLine {
             rect: view.rect_of(glyph.corners).unwrap_or_default(),
             quad: glyph.corners.map(|(x, y)| view.fraction(x, y)),
             synthetic: false,
+            sizeless: false,
             source: Some(glyph.source),
         });
         previous = Some(glyph);
@@ -717,4 +719,45 @@ fn build_line(glyphs: &[RawGlyph], line: &Line, view: &PageView) -> TextLine {
         ])
         .unwrap_or_default();
     TextLine::new(rect, chars)
+}
+
+/// The block of the glyphs that have no size, in the order they were shown:
+/// one line for each showing operation, each character a point at the
+/// glyph's origin. `None` when the page has none.
+pub(super) fn sizeless_block(glyphs: &[RawSizeless], view: &PageView) -> Option<TextBlock> {
+    let operation = |glyph: &RawSizeless| {
+        (
+            glyph.source.span.stream,
+            glyph.source.span.index,
+            glyph.source.invocation,
+        )
+    };
+    let mut lines: Vec<TextLine> = Vec::new();
+    let mut previous = None;
+    for glyph in glyphs {
+        let at = view.fraction(glyph.origin.0, glyph.origin.1);
+        let rect = Rect::around([at]).unwrap_or_default();
+        let ch = TextChar {
+            text: glyph.text.clone(),
+            rect,
+            quad: [at; 4],
+            synthetic: false,
+            sizeless: true,
+            source: Some(glyph.source),
+        };
+        if previous == Some(operation(glyph)) {
+            if let Some(line) = lines.last_mut() {
+                line.rect = line.rect.union(&rect);
+                line.chars.push(ch);
+            }
+        } else {
+            lines.push(TextLine::new(rect, vec![ch]));
+        }
+        previous = Some(operation(glyph));
+    }
+    let rect = lines
+        .iter()
+        .map(|line| line.rect)
+        .reduce(|a, b| a.union(&b))?;
+    Some(TextBlock { rect, lines })
 }

@@ -81,9 +81,22 @@ pub(super) struct RawGlyph {
     pub source: GlyphSource,
 }
 
+/// One glyph of the page that has no size: the text of a font size of 0, or
+/// of a text matrix that collapses the glyph to a line or a point. It has a
+/// place, the point its origin is at, and no box or direction.
+#[derive(Debug, Clone)]
+pub(super) struct RawSizeless {
+    pub text: String,
+    /// The glyph's origin, on the displayed page in points.
+    pub origin: (f64, f64),
+    pub source: GlyphSource,
+}
+
 /// What the page's glyphs came to.
 pub(super) struct Collected {
     pub glyphs: Vec<RawGlyph>,
+    /// The glyphs that have no size, in the order they were shown.
+    pub sizeless: Vec<RawSizeless>,
     /// The thin straight lines the page paints. They are kept without a
     /// bound of their own: a page's operators are already bounded by the
     /// interpreter, and a rule is a few numbers.
@@ -140,6 +153,7 @@ impl<'a> Collector<'a> {
             invocations: Vec::new(),
             out: Collected {
                 glyphs: Vec::new(),
+                sizeless: Vec::new(),
                 rules: Vec::new(),
                 unmapped: None,
                 overflow: None,
@@ -221,7 +235,7 @@ struct Placement {
 }
 
 /// The place of `glyph`, which `run` shows. `None` for a glyph of no size,
-/// which the text layer leaves out.
+/// which [`sizeless_origin`] places instead.
 fn placement(view: &PageView, run: &TextRun, glyph: &PlacedGlyph) -> Option<Placement> {
     let matrix = glyph.matrix.then(view.matrix);
     let (ex, ey) = ((matrix.a, matrix.b), (matrix.c, matrix.d));
@@ -268,6 +282,26 @@ fn placement(view: &PageView, run: &TextRun, glyph: &PlacedGlyph) -> Option<Plac
         extent,
         corners,
     })
+}
+
+/// Where `glyph`, which `run` shows, has its origin on the displayed page,
+/// when it has no size: its font size or its text matrix leaves it no
+/// height or no width along the flow. `None` for a glyph that has a size,
+/// for one whose place is not a finite point, and for one whose origin
+/// lies outside the displayed page.
+fn sizeless_origin(view: &PageView, run: &TextRun, glyph: &PlacedGlyph) -> Option<(f64, f64)> {
+    let matrix = glyph.matrix.then(view.matrix);
+    let size = matrix.c.hypot(matrix.d);
+    let flow_length = if run.font.is_vertical() {
+        size
+    } else {
+        matrix.a.hypot(matrix.b)
+    };
+    let origin = matrix.apply(0.0, 0.0);
+    let placed =
+        size.is_finite() && flow_length.is_finite() && origin.0.is_finite() && origin.1.is_finite();
+    (placed && (size == 0.0 || flow_length == 0.0) && !off_page(view, &[origin; 4]))
+        .then_some(origin)
 }
 
 /// Whether the box lies wholly outside the displayed page.
@@ -519,8 +553,19 @@ impl Device for Collector<'_> {
                     }
                 }
             };
-            if let Some(raw) = self.glyph(run, glyph, text, slot, source) {
-                if self.out.glyphs.len() >= self.max_glyphs {
+            let held = self.out.glyphs.len() + self.out.sizeless.len();
+            if let Some(origin) = sizeless_origin(self.view, run, glyph) {
+                if held >= self.max_glyphs {
+                    self.out.overflow = Some(ctx.span);
+                    return;
+                }
+                self.out.sizeless.push(RawSizeless {
+                    text,
+                    origin,
+                    source,
+                });
+            } else if let Some(raw) = self.glyph(run, glyph, text, slot, source) {
+                if held >= self.max_glyphs {
                     self.out.overflow = Some(ctx.span);
                     return;
                 }

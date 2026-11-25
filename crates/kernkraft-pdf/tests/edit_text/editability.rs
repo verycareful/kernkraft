@@ -147,6 +147,7 @@ fn a_block_of_only_synthetic_spaces_has_no_glyphs() {
         rect: Rect::default(),
         quad: [(0.0, 0.0); 4],
         synthetic: true,
+        sizeless: false,
         source: None,
     };
     let block = TextBlock {

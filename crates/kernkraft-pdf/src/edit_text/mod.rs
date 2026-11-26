@@ -30,6 +30,7 @@
 //! when that font can show it, else in a face of the font list handed in;
 //! in the block's width, after the `ET` of its last text object.
 
+mod add;
 mod arrange;
 mod collect;
 mod face;
@@ -37,6 +38,8 @@ mod insert;
 mod mirrored_table;
 mod splice;
 mod typeset;
+
+pub use add::{add_text, block_style, blocks_by_distance, BlockStyle, Follow, NewText, TextAdded};
 
 use std::collections::{HashMap, HashSet};
 
@@ -48,7 +51,7 @@ use crate::build::ContentBuilder;
 use crate::colour::Rgb;
 use crate::content::{
     ContentParser, ContentStream, GraphicsState, InterpretOptions, Interpreter, Matrix, StreamId,
-    DEFAULT_MAX_CONTENT_BYTES,
+    DEFAULT_MAX_CONTENT_BYTES, GLYPH_UNITS_PER_EM,
 };
 use crate::diagnostic::{DiagnosticKind, Diagnostics};
 use crate::display::PageView;
@@ -631,6 +634,22 @@ pub struct Edited {
     pub document: Document,
     /// How many lines the new text took.
     pub lines: usize,
+    /// The fonts of the block that were replaced by one of the font list
+    /// for this edit: empty when the text was set in the block's own font or
+    /// the style named the family. Each is also a
+    /// [`FontSubstituted`](crate::DiagnosticKind::FontSubstituted)
+    /// diagnostic of `document`, but a diagnostic already logged is not
+    /// logged again, so this is the answer for this edit alone.
+    pub substitutions: Vec<FontSubstitution>,
+}
+
+/// A font of a block that an edit replaced with a face of the font list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontSubstitution {
+    /// The `BaseFont` name of the font the block was shown in.
+    pub name: Name,
+    /// The family of the face that was used instead.
+    pub family: String,
 }
 
 /// Whether two graphics states paint alike, in what a text object leaves
@@ -799,9 +818,12 @@ fn frame_of(inspected: &Inspected, block: &TextBlock) -> Result<Frame, PdfError>
 }
 
 /// The face the new text is set in, and a note of it for the diagnostics.
+/// `op` is the showing operation whose font and style the text follows;
+/// with none (new text on a page that has no text) the face is the list's
+/// closest to Helvetica, regular.
 fn choose_face(
     document: &Document,
-    op: &ShowOp,
+    op: Option<&ShowOp>,
     edit: &TextEdit<'_>,
     diagnostics: &mut Diagnostics,
 ) -> Result<Face, PdfError> {
@@ -809,7 +831,7 @@ fn choose_face(
     // A bracket in a right-to-left run is drawn as its mirror image, so the
     // face needs that glyph too.
     let shown = arrange::with_mirror_images(&typeset::shown(&edit.text));
-    if edit.style.family.is_none() {
+    if let (None, Some(op)) = (&edit.style.family, op) {
         if let Some(reused) = face::reuse(document, op, &shown, diagnostics)? {
             return Ok(Face::Reused(reused));
         }
@@ -817,7 +839,9 @@ fn choose_face(
     let Some(list) = edit.fonts else {
         return Err(PdfError::FontListRequired);
     };
-    let wanted = crate::render::glyphs::wanted_style(&op.run.font);
+    let wanted = op.map_or_else(crate::render::glyphs::Wanted::plain_sans, |op| {
+        crate::render::glyphs::wanted_style(&op.run.font)
+    });
     let named;
     let families: &[&str] = match &edit.style.family {
         Some(family) => {
@@ -836,12 +860,12 @@ fn choose_face(
         italic: wanted.italic,
         ..Query::default()
     };
-    let postscript = match edit.style.family {
-        Some(_) => None,
-        None => face::postscript_name(op),
+    let postscript = match (&edit.style.family, op) {
+        (None, Some(op)) => face::postscript_name(op),
+        _ => None,
     };
     let embedded = face::embed(list, &query, &shown, postscript.as_deref())?;
-    if edit.style.family.is_none() {
+    if let (None, Some(op)) = (&edit.style.family, op) {
         diagnostics.push(
             DiagnosticKind::FontSubstituted {
                 name: op.run.font_name.clone(),
@@ -861,32 +885,73 @@ struct Place<'a> {
     cm: Option<Matrix>,
 }
 
-/// The bytes of the new text and the number of its lines, with the font
-/// it needs added to the page.
+/// What [`compose`] made: the bytes of the new text, the number of its
+/// lines, the page resources with the font it needs added (when it needs
+/// one), and the fonts it substituted.
+struct Composed {
+    bytes: Vec<u8>,
+    lines: usize,
+    /// The family of the face the text is set in: the list face's, or the
+    /// name of the page's font that was used again.
+    family: String,
+    resources: Option<Dictionary>,
+    substitutions: Vec<FontSubstitution>,
+}
+
+/// What the new text is set after: the showing operation whose font it
+/// follows (`None` for a page with no text), the graphics state it takes
+/// its spacing, scaling, rise and render mode from, the font size, and where
+/// the lines go.
+struct Model<'a> {
+    op: Option<&'a ShowOp>,
+    state: &'a GraphicsState,
+    size: f64,
+    frame: Frame,
+    /// Where the first baseline is when it depends on the font: the top of
+    /// the box on the displayed page, in points, and the matrix from the
+    /// displayed page to user space. The text matrix of the first line is
+    /// then made once the face is known, and `frame.first` is not used.
+    top: Option<(Matrix, (f64, f64))>,
+}
+
+/// The new text as content bytes, with the font it needs added to the page.
 fn compose(
     document: &Document,
     page: &Page,
-    inspected: &Inspected,
-    block: &TextBlock,
+    model: &Model<'_>,
     edit: &TextEdit<'_>,
     place: &Place<'_>,
     rewriter: &mut Rewriter<'_>,
-) -> Result<(Vec<u8>, usize, Option<Dictionary>), PdfError> {
+) -> Result<Composed, PdfError> {
     let Place { resources, cm } = *place;
-    let first_source = inspected.sources[0];
-    let op = &inspected.ops[&key_of(&first_source)];
-    let size = edit.style.size.unwrap_or(op.run.font_size);
+    let Model {
+        op,
+        state,
+        size,
+        frame,
+        top,
+    } = model;
+    let (op, state, size) = (*op, *state, *size);
     if !(size.is_finite() && size > 0.0) {
         return Err(PdfError::Invalid(format!(
             "{size} is not a font size a text can be set at"
         )));
     }
-    let frame = frame_of(inspected, block)?;
     let mut diagnostics = Diagnostics::new();
     diagnostics.set_object(Some(page.id));
     let mut face = choose_face(document, op, edit, &mut diagnostics)?;
+    let first = match top {
+        // The text stands upright on the displayed page (text space's y
+        // points up, the displayed page's down), its baseline the face's
+        // ascent below the top of the box.
+        Some((to_user, (x, top))) => {
+            let baseline = top + face.ascent()? / GLYPH_UNITS_PER_EM * size;
+            Matrix::new(1.0, 0.0, 0.0, -1.0, *x, baseline).then(*to_user)
+        }
+        None => frame.first,
+    };
 
-    let spacing = &op.state.text;
+    let spacing = &state.text;
     let (tc, tw, th) = (
         spacing.char_spacing,
         spacing.word_spacing,
@@ -922,6 +987,10 @@ fn compose(
         codes.push(row);
     }
 
+    let family = match &face {
+        Face::Embedded(embedded) => embedded.family.clone(),
+        Face::Reused(_) => op.and_then(face::postscript_name).unwrap_or_default(),
+    };
     let (name, new_resources) = match &mut face {
         Face::Reused(reused) => (reused.name.clone(), None),
         Face::Embedded(Embedded { embedder, .. }) => {
@@ -931,19 +1000,41 @@ fn compose(
             (name, Some(copy))
         }
     };
+    let substitutions = substitutions_in(&diagnostics);
     document.record_diagnostics(diagnostics);
     let setting = insert::Setting {
         font: &name,
         size,
-        state: &op.state,
+        state,
         colour: edit.style.colour,
-        first: frame.first,
+        first,
         pitch,
         cm,
     };
     let mut bytes = vec![b'\n'];
     bytes.extend(insert::show(&setting, &codes)?);
-    Ok((bytes, set.lines.len(), new_resources))
+    Ok(Composed {
+        bytes,
+        lines: set.lines.len(),
+        family,
+        resources: new_resources,
+        substitutions,
+    })
+}
+
+/// The fonts `diagnostics` says were substituted, in the order raised.
+fn substitutions_in(diagnostics: &Diagnostics) -> Vec<FontSubstitution> {
+    diagnostics
+        .as_slice()
+        .iter()
+        .filter_map(|diagnostic| match &diagnostic.kind {
+            DiagnosticKind::FontSubstituted { name, family } => Some(FontSubstitution {
+                name: name.clone(),
+                family: family.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Replaces the text of `block`, a block of page `page` (counted from 1)
@@ -989,6 +1080,7 @@ pub fn edit_text(
         return Ok(Edited {
             document: delete_text_block(document, page, block, progress)?,
             lines: 0,
+            substitutions: Vec::new(),
         });
     }
     let inspected = match inspect(document, page, block, progress)? {
@@ -1006,11 +1098,24 @@ pub fn edit_text(
     let mut rewriter = Rewriter::new(document);
     let chain = inspected.chain().to_vec();
     let resources = effective_resources(document, &page, &chain, chain.len())?;
-    let (bytes, lines, new_resources) = compose(
+    let first = &inspected.ops[&key_of(&inspected.sources[0])];
+    let model = Model {
+        op: Some(first),
+        state: &first.state,
+        size: edit.style.size.unwrap_or(first.run.font_size),
+        frame: frame_of(&inspected, block)?,
+        top: None,
+    };
+    let Composed {
+        bytes,
+        lines,
+        resources: new_resources,
+        substitutions,
+        ..
+    } = compose(
         document,
         &page,
-        &inspected,
-        block,
+        &model,
         edit,
         &Place {
             resources: &resources,
@@ -1036,5 +1141,6 @@ pub fn edit_text(
     Ok(Edited {
         document: document.apply(rewriter.finish())?,
         lines,
+        substitutions,
     })
 }

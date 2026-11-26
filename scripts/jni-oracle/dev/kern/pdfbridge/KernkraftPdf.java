@@ -19,6 +19,7 @@ final class KernkraftPdf {
     static native String nativeClose(String request);
     static native String nativePageInfo(String request);
     static native String nativeText(String request);
+    static native String nativePageFonts(String request);
     static native String nativeSearch(String request);
     static native String nativeLinks(String request);
     static native String nativeAnnotations(String request);

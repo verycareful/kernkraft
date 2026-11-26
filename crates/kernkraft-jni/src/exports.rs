@@ -87,6 +87,9 @@ export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativePageInfo, |r| {
 export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeText, |r| bridge(
 )
 .text(r));
+export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativePageFonts, |r| {
+    bridge().page_fonts(r)
+});
 export!(Java_dev_kern_pdfbridge_KernkraftPdf_nativeSearch, |r| {
     bridge().search(r)
 });

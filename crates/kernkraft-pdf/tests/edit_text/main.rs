@@ -13,6 +13,7 @@
 #[path = "../pdf_fixture/mod.rs"]
 mod pdf_fixture;
 
+mod add;
 mod bidi;
 mod edit;
 mod editability;

@@ -102,7 +102,9 @@ pub use diagnostic::{
 };
 pub use display::{PageGeometry, Rect};
 pub use edit_text::{
-    delete_text_block, edit_text, EditBlocker, Editability, Edited, TextEdit, TextStyle,
+    add_text, block_style, blocks_by_distance, delete_text_block, edit_text, BlockStyle,
+    EditBlocker, Editability, Edited, Follow, FontSubstitution, NewText, TextAdded, TextEdit,
+    TextStyle,
 };
 pub use error::{Limit, PdfError};
 pub use filespec::FileSpec;

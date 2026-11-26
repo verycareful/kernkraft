@@ -315,6 +315,10 @@ pub enum PdfError {
     /// A character the font being embedded has no glyph for.
     #[error("the font has no glyph for U+{:04X}", u32::from(*.character))]
     NoGlyphForCharacter { character: char },
+    /// New text on a page that has no text to take a size from, and none
+    /// was given.
+    #[error("the new text has no size: the page has no text to follow and none was given")]
+    NoSizeForNewText,
     /// The operation was cancelled through its progress handle.
     #[error("the operation was cancelled")]
     Cancelled,

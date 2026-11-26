@@ -58,3 +58,49 @@ pub fn rebuilt_sample(dir: &Path) -> PathBuf {
     std::fs::write(&path, bytes).unwrap();
     path
 }
+
+/// A one-page PDF of `lines` in 10 point Courier, 12 points apart, so that
+/// they are one block of the text layer; each line is a string of the page's
+/// content, which must not hold a parenthesis or a backslash.
+pub fn lines_page(dir: &Path, lines: &[&str]) -> PathBuf {
+    let mut content = String::from("BT /F1 10 Tf 100 700 Td");
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            content.push_str(" 0 -12 Td");
+        }
+        content.push_str(&format!(" ({line}) Tj"));
+    }
+    content.push_str(" ET");
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+         /Resources << /Font << /F1 5 0 R >> >> >>"
+            .to_owned(),
+        format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len()
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>"
+            .to_owned(),
+    ];
+    let mut file = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(file.len());
+        file.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+    }
+    let table = file.len();
+    let mut xref = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
+    for offset in offsets {
+        xref.push_str(&format!("{offset:010} 00000 n \n"));
+    }
+    xref.push_str(&format!(
+        "trailer\n<< /Root 1 0 R /Size {} >>\nstartxref\n{table}\n%%EOF\n",
+        objects.len() + 1
+    ));
+    file.extend_from_slice(xref.as_bytes());
+    let path = dir.join("lines.pdf");
+    std::fs::write(&path, file).unwrap();
+    path
+}

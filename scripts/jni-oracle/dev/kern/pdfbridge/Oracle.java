@@ -47,6 +47,7 @@ public final class Oracle {
         System.out.println("render " + width + "x" + height);
 
         ok(KernkraftPdf.nativeText("{\"handle\":" + handle + ",\"page\":1}"));
+        ok(KernkraftPdf.nativePageFonts("{\"handle\":" + handle + ",\"page\":1,\"near\":[0.5,0.5]}"));
         ok(KernkraftPdf.nativeLinks("{\"handle\":" + handle + ",\"page\":1}"));
         ok(KernkraftPdf.nativeAnnotations("{\"handle\":" + handle + ",\"page\":1}"));
 

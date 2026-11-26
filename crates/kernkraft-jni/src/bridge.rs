@@ -12,7 +12,7 @@ use kernkraft_pdf_engine::edit::ApplyRequest;
 use kernkraft_pdf_engine::fonts::FontsRequest;
 use kernkraft_pdf_engine::jobs::JobRequest;
 use kernkraft_pdf_engine::open::Source;
-use kernkraft_pdf_engine::read::{SearchRequest, TextRequest};
+use kernkraft_pdf_engine::read::{PageFontsRequest, SearchRequest, TextRequest};
 use kernkraft_pdf_engine::render::RenderRequest;
 use kernkraft_pdf_engine::save::{AppendRequest, CompactRequest, ConfirmRequest};
 use kernkraft_pdf_engine::stateless::{
@@ -58,6 +58,12 @@ impl Bridge {
 
     pub fn text(&self, request: &str) -> String {
         run(request, |request: TextRequest| self.engine.text(request))
+    }
+
+    pub fn page_fonts(&self, request: &str) -> String {
+        run(request, |request: PageFontsRequest| {
+            self.engine.page_fonts(request)
+        })
     }
 
     pub fn search(&self, request: &str) -> String {

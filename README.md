@@ -36,7 +36,7 @@
 [![read-fonts](https://img.shields.io/badge/read--fonts-0.41-informational?style=flat-square)](https://crates.io/crates/read-fonts)
 [![subsetter](https://img.shields.io/badge/subsetter-0.2-informational?style=flat-square)](https://crates.io/crates/subsetter)
 [![jni](https://img.shields.io/badge/jni-0.21-informational?style=flat-square)](https://crates.io/crates/jni)
-[![Version](https://img.shields.io/badge/Version-0.2.1.0-informational?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/Version-0.2.2.0-informational?style=flat-square)](VERSION)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](#)
 

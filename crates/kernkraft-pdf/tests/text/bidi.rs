@@ -302,3 +302,54 @@ fn an_actual_text_of_several_glyphs_is_the_text_of_the_first_and_the_rest_keep_t
         "second",
     );
 }
+
+/// Lines of a right-to-left paragraph, each drawn from the left at the given
+/// point as `hex` (the code string of one `Tj`): the words last first and
+/// the letters of each reversed.
+fn drawn_lines(lines: &[((f64, f64), &str)]) -> TextPage {
+    let mut content = String::from("BT /F3 10 Tf");
+    for ((x, y), hex) in lines {
+        content.push_str(&format!(" 1 0 0 1 {x} {y} Tm <{hex}> Tj"));
+    }
+    content.push_str(" ET");
+    let fixture = document(
+        &[PageSpec {
+            content: &content,
+            entries: "/Resources << /Font << /F3 80 0 R >> >>",
+        }],
+        "",
+        "",
+        &[(80, hebrew_font().1.as_slice())],
+    );
+    text_of(&fixture)
+}
+
+/// Olam shalom olam shalom, 19 characters from x 100 to 214 (the words
+/// last first, each reversed), and shalom or olam alone, right-aligned at
+/// 214, as the lines of a right-to-left paragraph.
+const FOUR_WORDS: &str = "04020305200403020120040203052004030201";
+const SHALOM_ALONE: &str = "04030201";
+const OLAM_ALONE: &str = "04020305";
+
+#[test]
+fn the_lines_of_a_right_to_left_paragraph_wrap_at_its_left_edge() {
+    // The first line is at the left edge, 0 points short, and shalom, 24
+    // points with its space 30, does not fit in that.
+    let page = drawn_lines(&[((100.0, 700.0), FOUR_WORDS), ((190.0, 688.0), SHALOM_ALONE)]);
+    assert_eq!(page.blocks.len(), 1);
+    assert_eq!(page.blocks[0].lines[0].text().chars().count(), 19);
+    assert_eq!(page.blocks[0].wrapped_lines(), vec![true, false]);
+}
+
+#[test]
+fn a_short_line_in_a_right_to_left_block_is_a_break() {
+    // The second line stops 90 points short of the left edge, room for
+    // the 30 that shalom and a space take.
+    let page = drawn_lines(&[
+        ((100.0, 700.0), FOUR_WORDS),
+        ((190.0, 688.0), OLAM_ALONE),
+        ((190.0, 676.0), SHALOM_ALONE),
+    ]);
+    assert_eq!(page.blocks.len(), 1);
+    assert_eq!(page.blocks[0].wrapped_lines(), vec![false, false, false]);
+}

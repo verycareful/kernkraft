@@ -38,6 +38,8 @@ pub(super) struct Reused {
     /// The name the page's `Font` resources give it.
     pub name: Name,
     codes: HashMap<char, (u8, f64)>,
+    /// `Ascent` of Table 122, in thousandths of an em.
+    ascent: f64,
     /// `Ascent`, `Descent` and `Leading` of Table 122, in thousandths of
     /// an em.
     line: f64,
@@ -86,6 +88,15 @@ impl Face {
                 })
                 .collect(),
             Face::Embedded(embedded) => embedded.embedder.encode(text),
+        }
+    }
+
+    /// How far the font reaches above the baseline, in thousandths of an
+    /// em.
+    pub(super) fn ascent(&self) -> Result<f64, PdfError> {
+        match self {
+            Face::Reused(reused) => Ok(reused.ascent),
+            Face::Embedded(embedded) => embedded.embedder.ascent(),
         }
     }
 
@@ -162,6 +173,7 @@ pub(super) fn reuse(
     Ok(Some(Reused {
         name: show.run.font_name.clone(),
         codes,
+        ascent,
         line: ascent - descent + leading,
     }))
 }

@@ -11,8 +11,9 @@ use kernkraft_fs::Progress;
 use kernkraft_pdf::doc::Document;
 use kernkraft_pdf::text::TextBlock;
 use kernkraft_pdf::{
-    add_annotation, delete_annotation, edit_annotation, edit_text, remove, reorder, rotate,
-    AnnotationEdit, DiagnosticKind, NewAnnotation, NewShape, Rotation, TextEdit, TextStyle,
+    add_annotation, add_text, delete_annotation, edit_annotation, edit_text, remove, reorder,
+    rotate, AnnotationEdit, Follow, FontSubstitution, NewAnnotation, NewShape, NewText, Rotation,
+    TextEdit, TextStyle,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -121,6 +122,30 @@ pub enum Op {
         size: Option<f64>,
         colour: Option<[f64; 3]>,
     },
+    /// Puts new text on a page. `at` is the top left corner of its box and
+    /// `width` the box's width, as fractions of the displayed page; the lines
+    /// grow down from the top. The font, size and colour are those of the
+    /// text block nearest `at`, or of the block `like` names (read by `text`
+    /// at its `revision`); `family`, `size` and `colour` replace each. A page
+    /// with no text to follow needs the `size`.
+    AddText {
+        page: u32,
+        at: (f64, f64),
+        width: f64,
+        text: String,
+        like: Option<Like>,
+        family: Option<String>,
+        size: Option<f64>,
+        colour: Option<[f64; 3]>,
+    },
+}
+
+/// A block of text read by `text` at `revision`.
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+pub struct Like {
+    pub block: usize,
+    pub revision: u64,
 }
 
 /// What a change made: the new snapshot, the pages it changed and what the
@@ -324,11 +349,65 @@ fn make(
             }
             let edit = TextEdit::new(text).with_style(style).with_fonts(fonts);
             let edited = edit_text(document, page, block, &edit, progress)?;
+            let (lines, substituted) = (edited.lines, edited.substitutions);
             let mut made = Made::new(edited.document, Changed::one(page));
-            made.extra.insert("lines".to_owned(), json!(edited.lines));
+            made.extra.insert("lines".to_owned(), json!(lines));
+            made.extra
+                .insert("notes".to_owned(), Value::Array(notes(&substituted)));
+            made
+        }
+        Op::AddText {
+            page,
+            at,
+            width,
+            text,
+            like,
+            family,
+            size,
+            colour,
+        } => {
+            if let Some(like) = like {
+                if like.revision != session.revision {
+                    return Err(WireError::stale_block(like.revision, session.revision));
+                }
+            }
+            let page_text = session
+                .extractor()?
+                .lock()
+                .map_err(|_| WireError::session_poisoned(handle))?
+                .page(page, progress)?;
+            let followed = match like {
+                Some(like) => Follow::Block(page_text.blocks.get(like.block).ok_or_else(|| {
+                    WireError::bad_request(format!(
+                        "page {page} has {} text blocks, not {}",
+                        page_text.blocks.len(),
+                        like.block + 1
+                    ))
+                })?),
+                None => Follow::Nearest(&page_text),
+            };
+            let mut style = TextStyle::default();
+            if let Some(family) = family {
+                style = style.with_family(family);
+            }
+            if let Some(size) = size {
+                style = style.with_size(size);
+            }
+            if let Some(colour) = colour {
+                style = style.with_colour(wire::colour_from(colour));
+            }
+            let new = NewText::new(text, at, width)
+                .with_style(style)
+                .with_fonts(fonts);
+            let added = add_text(document, page, followed, &new, progress)?;
+            let block = like.map(|like| like.block).or(added.followed);
+            let mut made = Made::new(added.document, Changed::one(page));
+            made.extra.insert("lines".to_owned(), json!(added.lines));
+            made.extra.insert("family".to_owned(), json!(added.family));
+            made.extra.insert("followed".to_owned(), json!(block));
             made.extra.insert(
                 "notes".to_owned(),
-                Value::Array(substitutions(document, &made.document)),
+                Value::Array(notes(&added.substitutions)),
             );
             made
         }
@@ -362,24 +441,16 @@ fn added(
     Ok(made)
 }
 
-/// The fonts the edit had to substitute, as notes for the user: the
-/// diagnostics `after` has and `before` did not.
-fn substitutions(before: &Document, after: &Document) -> Vec<Value> {
-    let known: Vec<String> = before
-        .diagnostics()
+/// The fonts the edit had to substitute, as notes for the user.
+fn notes(substitutions: &[FontSubstitution]) -> Vec<Value> {
+    substitutions
         .iter()
-        .map(|d| format!("{:?}", d.kind))
-        .collect();
-    after
-        .diagnostics()
-        .iter()
-        .filter(|d| !known.contains(&format!("{:?}", d.kind)))
-        .filter_map(|d| match &d.kind {
-            DiagnosticKind::FontSubstituted { name, family } => Some(json!(format!(
-                "substitute font used for: {} ({family})",
-                String::from_utf8_lossy(name.as_bytes())
-            ))),
-            _ => None,
+        .map(|substitution| {
+            json!(format!(
+                "substitute font used for: {} ({})",
+                String::from_utf8_lossy(substitution.name.as_bytes()),
+                substitution.family
+            ))
         })
         .collect()
 }

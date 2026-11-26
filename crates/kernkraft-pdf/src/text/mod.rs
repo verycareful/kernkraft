@@ -31,6 +31,7 @@ pub(crate) mod collect;
 mod layout;
 mod search;
 mod structure;
+mod wrap;
 
 use kernkraft_fs::Progress;
 
@@ -160,6 +161,27 @@ impl TextLine {
 pub struct TextBlock {
     pub rect: Rect,
     pub lines: Vec<TextLine>,
+}
+
+impl TextBlock {
+    /// For each line, whether it ended where the text wrapped (`true`) or
+    /// where its writer broke the line or the block ended (`false`). The
+    /// last line is always `false`.
+    ///
+    /// A PDF holds only where each glyph was drawn, so this is a judgement
+    /// from the geometry, made so that a doubtful block is read as lines:
+    /// a line is called a wrap when it stops short of the block's end
+    /// edge by less than the first word of the next line takes, and a
+    /// block that has a line the writer certainly ended (the next word
+    /// would have fitted, or the next line starts with a list marker) has
+    /// no wrapped line, as an address or a list has none. A block whose
+    /// lines do not all run along the page horizontally, in one direction,
+    /// has none either. Text centred or set against the right edge reads as
+    /// lines, and so does a block of two lines whose first is the longer
+    /// (it looks like a paragraph of two lines).
+    pub fn wrapped_lines(&self) -> Vec<bool> {
+        wrap::wrapped_lines(self)
+    }
 }
 
 /// Where a character of a page is: its block, line and place in the line.

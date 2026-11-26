@@ -14,8 +14,12 @@ use kernkraft_font::FontList;
 use kernkraft_pdf::colour::Rgb;
 use kernkraft_pdf::content::StreamId;
 use kernkraft_pdf::doc::Document;
+use kernkraft_pdf::syntax::Name;
 use kernkraft_pdf::syntax::{ObjectId, Value};
-use kernkraft_pdf::{edit_text, EditBlocker, Editability, PdfError, TextEdit, TextStyle};
+use kernkraft_pdf::{
+    edit_text, DiagnosticKind, EditBlocker, Editability, FontSubstitution, PdfError, TextEdit,
+    TextStyle,
+};
 
 fn page_stream() -> StreamId {
     StreamId::Page(ObjectId {
@@ -26,7 +30,7 @@ fn page_stream() -> StreamId {
 
 /// The page's decoded content with every run of white space as one space
 /// and none inside brackets.
-fn content(doc: &Document) -> String {
+pub(super) fn content(doc: &Document) -> String {
     let data = doc.content_stream(page_stream(), 1 << 20).unwrap().data;
     String::from_utf8(data)
         .unwrap()
@@ -38,7 +42,7 @@ fn content(doc: &Document) -> String {
 }
 
 /// The face list of the one test font, "Test Sans", kept in `dir`.
-fn font_list(dir: &tempfile::TempDir) -> FontList {
+pub(super) fn font_list(dir: &tempfile::TempDir) -> FontList {
     let path = dir.path().join("test-sans.ttf");
     std::fs::write(&path, embed_truetype(true)).unwrap();
     FontList::index(&[path], &NoProgress).unwrap()
@@ -561,6 +565,107 @@ fn other_sans() -> Vec<u8> {
     spec.full = "Other Sans Regular";
     spec.postscript = "OtherSans-Regular";
     sfnt::build(&spec)
+}
+
+/// A font of the space and the Cyrillic letter U+0416, which Courier's
+/// WinAnsi encoding cannot show.
+fn cyrillic_sans() -> Vec<u8> {
+    use fontkit::sfnt::{self, Glyph, SfntSpec};
+    let glyph = |name: &'static str, advance: u16, contours| Glyph {
+        name,
+        advance,
+        contours,
+    };
+    let square = vec![vec![
+        (0, 0, true),
+        (500, 0, true),
+        (500, 500, true),
+        (0, 500, true),
+    ]];
+    let mut spec = SfntSpec::new(vec![
+        glyph(".notdef", 500, vec![]),
+        glyph("uni0416", 600, square),
+        glyph("space", 250, vec![]),
+    ]);
+    spec.unicode = vec![(0x416, 1), (0x20, 2)];
+    spec.family = "Cyrillic Sans";
+    spec.full = "Cyrillic Sans Regular";
+    spec.postscript = "CyrillicSans-Regular";
+    sfnt::build(&spec)
+}
+
+pub(super) fn cyrillic_list(dir: &tempfile::TempDir) -> FontList {
+    let path = dir.path().join("cyrillic-sans.ttf");
+    std::fs::write(&path, cyrillic_sans()).unwrap();
+    FontList::index(&[path], &NoProgress).unwrap()
+}
+
+/// The substitutions of `doc`'s log.
+fn logged_substitutions(doc: &Document) -> usize {
+    doc.diagnostics()
+        .iter()
+        .filter(|d| matches!(d.kind, DiagnosticKind::FontSubstituted { .. }))
+        .count()
+}
+
+#[test]
+fn an_edit_that_needs_a_face_of_the_list_reports_the_font_it_replaced() {
+    // Tf names the font by the page's resource name, `F1`; that is the name
+    // the substitution carries (ISO 32000-1, 9.3.1).
+    let dir = tempfile::tempdir().unwrap();
+    let list = cyrillic_list(&dir);
+    let fixture = one_page("BT /F1 10 Tf 100 700 Td (Hello) Tj ET");
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    let edit = TextEdit::new("\u{416}").with_fonts(&list);
+    let edited = edit_text(&doc, 1, &block, &edit, &NoProgress).unwrap();
+    assert_eq!(
+        edited.substitutions,
+        vec![FontSubstitution {
+            name: Name::new(&b"F1"[..]),
+            family: "Cyrillic Sans".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn an_edit_in_the_blocks_own_font_reports_no_substitution() {
+    let fixture = one_page("BT /F1 10 Tf 100 700 Td (Hello) Tj ET");
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    let edited = edit_text(&doc, 1, &block, &TextEdit::new("Howdy"), &NoProgress).unwrap();
+    assert!(edited.substitutions.is_empty());
+    let deleted = edit_text(&doc, 1, &block, &TextEdit::new(""), &NoProgress).unwrap();
+    assert!(deleted.substitutions.is_empty());
+}
+
+#[test]
+fn a_family_the_style_names_is_a_choice_and_not_a_substitution() {
+    let dir = tempfile::tempdir().unwrap();
+    let list = font_list(&dir);
+    let fixture = one_page("BT /F1 10 Tf 100 700 Td (Hello) Tj ET");
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    let style = TextStyle::default().with_family("Test Sans");
+    let edit = TextEdit::new("AB").with_style(style).with_fonts(&list);
+    let edited = edit_text(&doc, 1, &block, &edit, &NoProgress).unwrap();
+    assert!(edited.substitutions.is_empty());
+}
+
+#[test]
+fn the_same_substitution_is_reported_by_each_edit_though_the_log_keeps_it_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let list = cyrillic_list(&dir);
+    let fixture = one_page("BT /F1 10 Tf 100 700 Td (Hello) Tj ET");
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    let edit = TextEdit::new("\u{416}").with_fonts(&list);
+    // An undo and a new edit of the block start from the same document.
+    let first = edit_text(&doc, 1, &block, &edit, &NoProgress).unwrap();
+    let second = edit_text(&doc, 1, &block, &edit, &NoProgress).unwrap();
+    assert_eq!(first.substitutions.len(), 1);
+    assert_eq!(second.substitutions, first.substitutions);
+    assert_eq!(logged_substitutions(&doc), 1);
 }
 
 #[test]

@@ -25,6 +25,7 @@ mod robustness;
 mod search;
 mod sizeless;
 mod structure;
+mod wrapped;
 
 use kernkraft_fs::NoProgress;
 use kernkraft_pdf::doc::Document;

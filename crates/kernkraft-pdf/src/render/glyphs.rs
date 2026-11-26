@@ -410,6 +410,18 @@ pub(crate) struct Wanted {
     pub italic: bool,
 }
 
+impl Wanted {
+    /// A regular sans serif face: what new text takes when there is no font
+    /// to follow.
+    pub(crate) fn plain_sans() -> Wanted {
+        Wanted {
+            families: SANS,
+            bold: false,
+            italic: false,
+        }
+    }
+}
+
 /// The family list and style for a font with no program of its own: the
 /// standard 14 names, then the descriptor's flags (Table 123).
 pub(crate) fn wanted_style(font: &Font) -> Wanted {

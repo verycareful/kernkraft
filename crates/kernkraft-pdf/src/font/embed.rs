@@ -154,6 +154,14 @@ impl FontEmbedder {
         Ok(codes)
     }
 
+    /// The ascent (Table 122) of the font's own metrics, in thousandths of
+    /// an em: how far the tallest glyphs reach above the baseline.
+    pub fn ascent(&self) -> Result<f64, PdfError> {
+        let program = self.parsed()?;
+        let scale = glyph_scale(&program);
+        Ok(f64::from(program.metrics().ascent.unwrap_or(0.0)) * scale)
+    }
+
     /// The distance between two lines of text set in the font, in
     /// thousandths of an em: the ascent less the descent (Table 122) of
     /// the font's own metrics.

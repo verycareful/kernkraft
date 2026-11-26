@@ -2,6 +2,27 @@
 
 All notable changes documented here. Format: [Keep a Changelog](https://keepachangelog.com/), with one deviation: dated release entries are timestamped to the minute with timezone (`YYYY-MM-DD HH:MM (TZ)`).
 
+## [0.2.4.0] - 2026-11-26 23:07 (IST)
+
+The text of a page is read once while no step changes it, and an annotation no longer makes the next text read start over. Still alpha; nothing existing changes except as listed under Changed.
+
+### Changed
+- **The kept text extractor survives a step that writes only annotations**: `kernkraft-pdf-engine` keeps, for each session, a text epoch for every snapshot. `addMarkup`, `addInk`, `addNote`, `editAnnotation` and `deleteAnnotation`, and the undo and redo of each, leave the epoch as it was; every other step (`rotate`, `reorder`, `remove`, `editText`, `addText`, and any kind of step added later) gives its snapshot an epoch nobody has had, and an epoch is never reused, so a step made after an undo cannot match one that was dropped. The `TextExtractor` the engine keeps is now keyed on the epoch and no longer on the revision, so an ink stroke does not throw away the structure-tree walk that building an extractor costs. Before, every step, an undo and a redo included, built a new extractor on the next read of the text. The annotation steps write the annotation's own objects, its appearance form and the page's `Annots`, and none of the page's content, resources, structure parents, structure tree or optional content, which are what the text layer reads; the kept extractor reads the snapshot it was built from, which differs from the session's only in annotations.
+- **A page's text is kept**: the engine keeps the text of up to 8 pages for each session, the least recently used going first, keyed on the epoch and the page. A second `text` of a page, a `search` or `pageFonts` after it, and the page read again after an ink stroke, undo or redo of an annotation do not read the page again. The answer of `text` still carries the current `revision`, and a block index is still good only at the revision it was read at (`StaleBlock` otherwise). The editability of each block is worked out on every `text` call, as before.
+- A build of the extractor that overlaps another request is kept when no step changed the text meanwhile; before, it was kept only when the revision had not moved.
+- `Session::did` takes a second argument, `keeps_text`, and `Engine::text_page` returns `Arc<TextPage>`. Rust code that calls either directly needs the change; the wire does not change and `kernkraft-tauri` and `kernkraft-jni` need none.
+- The doc comment of `text` says that one answer carries both the `lines` and the `blocks`, so an application that wants both asks once.
+
+### Tests
+- `crates/kernkraft-pdf-engine/tests/text.rs` (10, new): each of the five annotation steps keeps the extractor; the text read after an ink stroke equals a new extractor's; a content step builds a new extractor and an annotation after it keeps that one; an undo and a redo of an annotation keep it; an undo across a content step does not; a step made after an undo does not take the epoch of the one undone; a block read after an annotation is edited at the revision it was read at; a page is read once per epoch (the same page after an ink stroke, a new one after a rotation, the first again after an undo back); and the answer of `text` is the same before and after an annotation but for its `revision`.
+- `crates/kernkraft-pdf-engine/src/engine.rs` (4, new): the cap of 8 pages and which goes first, a page kept twice is kept once, a page read at an epoch the session has left is not kept, and which steps get a new epoch.
+
+### Handover
+Nothing to change in Kern Desktop or Kern Android to take the tag `0.2.4.0` (no wire change; bump the pin and build). Kern Android can send one `text` request for a page where it sends two (`lines` and `blocks` are in one answer). After an annotation step the next `text` of a page costs the editability of its blocks only.
+
+### Results
+- 2741 tests across 109 suites, all passed (296s, CachyOS x86-64, rustc 1.99.1).
+
 ## [0.2.3.0] - 2026-11-26 19:11 (IST)
 
 The size and place of an existing block of text can be set by an edit: both apps drag both sides of a block's box. Still alpha; nothing existing changes except as listed under Changed.

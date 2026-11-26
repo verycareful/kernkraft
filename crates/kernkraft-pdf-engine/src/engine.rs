@@ -55,10 +55,23 @@ impl Changed {
 /// page is read.
 pub type SharedExtractor = Arc<Mutex<TextExtractor>>;
 
-/// A [`TextExtractor`] and the revision of the snapshot it reads.
+/// The text pages a session keeps. The page a reader is on, the pages next
+/// to it that it reads ahead, and a page read for its lines and then for its
+/// blocks are all in reach; the bound keeps a search of a long document from
+/// holding every page it passes.
+const TEXT_PAGES_KEPT: usize = 8;
+
+/// A [`TextExtractor`] and the text epoch of the snapshots it reads.
 struct TextCache {
-    revision: u64,
+    epoch: u64,
     extractor: SharedExtractor,
+}
+
+/// The text of one page, read at a text epoch.
+struct KeptPage {
+    epoch: u64,
+    page: u32,
+    text: Arc<TextPage>,
 }
 
 /// One open document.
@@ -72,11 +85,24 @@ pub struct Session {
     steps: Vec<Changed>,
     /// The snapshot the session stands on.
     at: usize,
-    /// The extractor of the snapshot at `revision`. Building one costs the
+    /// The text epoch of each snapshot: `epochs[i]` is snapshot `i`'s. A
+    /// step that leaves the text of every page as it was (an annotation
+    /// added, changed or taken away) gives the snapshot it makes the epoch
+    /// of the one it leaves; any other step gives it one nobody has had. So
+    /// two snapshots of one epoch have the same page contents, fonts and
+    /// structure tree, and what was read from one is true of the other.
+    epochs: Vec<u64>,
+    /// The last epoch given out. Epochs are never reused, so a snapshot
+    /// made after an undo does not take the epoch of one that was dropped.
+    last_epoch: u64,
+    /// The extractor of the snapshots of one epoch. Building one costs the
     /// walk of the structure tree and of the optional-content
     /// configuration, which is far more than reading a page, so it is kept
-    /// until the revision moves.
+    /// until a step changes the text. It reads the snapshot it was built
+    /// from, which differs from the session's only in annotations.
     text: Option<TextCache>,
+    /// The text of the pages read lately, the least recently used first.
+    pages: Vec<KeptPage>,
 }
 
 impl Session {
@@ -86,17 +112,35 @@ impl Session {
             revision: 0,
             steps: Vec::new(),
             at: 0,
+            epochs: vec![0],
+            last_epoch: 0,
             text: None,
+            pages: Vec::new(),
         }
     }
 
     /// Records a step the session took: `changed`, and drops the steps that
-    /// could have been redone.
-    pub fn did(&mut self, changed: Changed) {
+    /// could have been redone. `keeps_text` says that the step left the text
+    /// of every page as it was; a step is taken to change it unless the
+    /// caller knows it does not.
+    pub fn did(&mut self, changed: Changed, keeps_text: bool) {
         self.steps.truncate(self.at);
+        self.epochs.truncate(self.at + 1);
+        let epoch = if keeps_text {
+            self.text_epoch()
+        } else {
+            self.last_epoch += 1;
+            self.last_epoch
+        };
+        self.epochs.push(epoch);
         self.steps.push(changed);
         self.at += 1;
         self.revision += 1;
+    }
+
+    /// The text epoch of the snapshot the session stands on.
+    pub fn text_epoch(&self) -> u64 {
+        self.epochs[self.at]
     }
 
     /// Goes back one step. What it changed, `None` when there is none.
@@ -133,17 +177,54 @@ impl Session {
     /// session, such as a text edit; a read builds it outside the lock
     /// ([`Engine::text_extractor`]).
     pub fn extractor(&mut self) -> Result<SharedExtractor, PdfError> {
-        if let Some(cache) = &self.text {
-            if cache.revision == self.revision {
-                return Ok(cache.extractor.clone());
-            }
+        if let Some(extractor) = self.kept_extractor() {
+            return Ok(extractor);
         }
         let extractor: SharedExtractor = Arc::new(Mutex::new(TextExtractor::new(self.document())?));
         self.text = Some(TextCache {
-            revision: self.revision,
+            epoch: self.text_epoch(),
             extractor: extractor.clone(),
         });
         Ok(extractor)
+    }
+
+    /// The extractor kept for the snapshot the session stands on, if there
+    /// is one.
+    fn kept_extractor(&self) -> Option<SharedExtractor> {
+        let epoch = self.text_epoch();
+        self.text
+            .as_ref()
+            .filter(|cache| cache.epoch == epoch)
+            .map(|cache| cache.extractor.clone())
+    }
+
+    /// The text of `page` read at `epoch`, if it is kept; it is then the
+    /// most recently used.
+    fn kept_page(&mut self, epoch: u64, page: u32) -> Option<Arc<TextPage>> {
+        let at = self
+            .pages
+            .iter()
+            .position(|kept| kept.epoch == epoch && kept.page == page)?;
+        let kept = self.pages.remove(at);
+        let text = kept.text.clone();
+        self.pages.push(kept);
+        Some(text)
+    }
+
+    /// Keeps `text`, read at `epoch`, unless a step has since changed the
+    /// text, and lets the least recently used page go when there are too
+    /// many.
+    fn keep_page(&mut self, epoch: u64, text: Arc<TextPage>) {
+        if self.text_epoch() != epoch {
+            return;
+        }
+        let page = text.page;
+        self.pages
+            .retain(|kept| !(kept.epoch == epoch && kept.page == page));
+        self.pages.push(KeptPage { epoch, page, text });
+        if self.pages.len() > TEXT_PAGES_KEPT {
+            self.pages.remove(0);
+        }
     }
 
     pub fn document(&self) -> &Document {
@@ -262,58 +343,189 @@ impl Engine {
         })
     }
 
-    /// The document as it stands, its revision, and the extractor of that
-    /// snapshot: the one the last read made if the revision has not moved
-    /// since, else a new one. The new one is built outside the session's
-    /// lock, so a long build does not hold up another request; if the
-    /// revision moved meanwhile it is used for this request and not kept.
+    /// The document as it stands, its revision, and the extractor for its
+    /// text: the one kept if no step has changed the text since it was
+    /// built (a step that only adds, changes or takes away an annotation does
+    /// not), else a new one. The new one is built outside the session's lock,
+    /// so a long build does not hold up another request; if a step changed
+    /// the text meanwhile it is used for this request and not kept.
     pub fn text_extractor(
         &self,
         handle: i64,
     ) -> Result<(Document, u64, SharedExtractor), WireError> {
-        let (document, revision, kept) = self.sessions.with(handle, |session| {
-            let kept = session
-                .text
-                .as_ref()
-                .filter(|cache| cache.revision == session.revision)
-                .map(|cache| cache.extractor.clone());
-            Ok((session.document().clone(), session.revision, kept))
+        let (document, revision, epoch, kept) = self.sessions.with(handle, |session| {
+            Ok((
+                session.document().clone(),
+                session.revision,
+                session.text_epoch(),
+                session.kept_extractor(),
+            ))
         })?;
-        if let Some(extractor) = kept {
-            return Ok((document, revision, extractor));
-        }
-        let built: SharedExtractor = Arc::new(Mutex::new(TextExtractor::new(&document)?));
-        let extractor = self.sessions.with(handle, |session| {
-            if session.revision != revision {
+        let extractor = match kept {
+            Some(extractor) => extractor,
+            None => self.built_extractor(handle, &document, epoch)?,
+        };
+        Ok((document, revision, extractor))
+    }
+
+    /// An extractor for `document`, of text epoch `epoch`, built outside the
+    /// session's lock and kept if the session is still at that epoch.
+    fn built_extractor(
+        &self,
+        handle: i64,
+        document: &Document,
+        epoch: u64,
+    ) -> Result<SharedExtractor, WireError> {
+        let built: SharedExtractor = Arc::new(Mutex::new(TextExtractor::new(document)?));
+        self.sessions.with(handle, |session| {
+            if session.text_epoch() != epoch {
                 return Ok(built.clone());
             }
             Ok(match &session.text {
-                Some(cache) if cache.revision == revision => cache.extractor.clone(),
+                Some(cache) if cache.epoch == epoch => cache.extractor.clone(),
                 _ => {
                     session.text = Some(TextCache {
-                        revision,
+                        epoch,
                         extractor: built.clone(),
                     });
                     built.clone()
                 }
             })
-        })?;
-        Ok((document, revision, extractor))
+        })
     }
 
-    /// Page `page` of the session's text, read through the kept extractor.
-    /// The document and revision are the ones the text was read at.
+    /// Page `page` of the session's text, read through the kept extractor,
+    /// or the page as already read if no step has changed the text since.
+    /// The document and revision are those the request ran at; a block
+    /// index is good only at that revision, though the text is the same at
+    /// every revision of one text epoch.
     pub fn text_page(
         &self,
         handle: i64,
         page: u32,
         progress: &dyn Progress,
-    ) -> Result<(Document, u64, TextPage), WireError> {
-        let (document, revision, extractor) = self.text_extractor(handle)?;
-        let text = extractor
-            .lock()
-            .map_err(|_| WireError::session_poisoned(handle))?
-            .page(page, progress)?;
+    ) -> Result<(Document, u64, Arc<TextPage>), WireError> {
+        let (document, revision, epoch, kept_extractor, kept_page) =
+            self.sessions.with(handle, |session| {
+                let epoch = session.text_epoch();
+                Ok((
+                    session.document().clone(),
+                    session.revision,
+                    epoch,
+                    session.kept_extractor(),
+                    session.kept_page(epoch, page),
+                ))
+            })?;
+        if let Some(text) = kept_page {
+            return Ok((document, revision, text));
+        }
+        let extractor = match kept_extractor {
+            Some(extractor) => extractor,
+            None => self.built_extractor(handle, &document, epoch)?,
+        };
+        let text = Arc::new(
+            extractor
+                .lock()
+                .map_err(|_| WireError::session_poisoned(handle))?
+                .page(page, progress)?,
+        );
+        self.sessions.with(handle, |session| {
+            session.keep_page(epoch, text.clone());
+            Ok(())
+        })?;
         Ok((document, revision, text))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::path::Path;
+
+    use kernkraft_fs::NoProgress;
+    use kernkraft_pdf::file::ReadLimits;
+
+    use super::*;
+
+    const OPTIONS: OpenOptions = OpenOptions {
+        limits: ReadLimits {
+            max_object_elements: 1 << 20,
+            max_xref_entries: 1 << 24,
+            max_object_stream_bytes: 1 << 26,
+        },
+        cached_objects: 64,
+        cached_object_streams: 4,
+        max_diagnostics: 100,
+    };
+
+    fn session() -> Session {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/kern-sample.pdf");
+        let document = Document::open(&path, &OPTIONS, "").unwrap();
+        Session::new(EditSession::new(document).unwrap())
+    }
+
+    /// A page of text numbered `page`, whatever it holds.
+    fn text_of(session: &Session, page: u32) -> Arc<TextPage> {
+        let mut text = TextExtractor::new(session.document())
+            .unwrap()
+            .page(1, &NoProgress)
+            .unwrap();
+        text.page = page;
+        Arc::new(text)
+    }
+
+    fn kept_numbers(session: &Session) -> Vec<u32> {
+        session.pages.iter().map(|kept| kept.page).collect()
+    }
+
+    #[test]
+    fn a_ninth_page_takes_the_place_of_the_one_used_longest_ago() {
+        let mut session = session();
+        let epoch = session.text_epoch();
+        for page in 1..=TEXT_PAGES_KEPT as u32 {
+            session.keep_page(epoch, text_of(&session, page));
+        }
+        assert_eq!(kept_numbers(&session), (1..=8).collect::<Vec<_>>());
+
+        // Reading page 1 makes it the most recent, so page 2 goes next.
+        assert!(session.kept_page(epoch, 1).is_some());
+        session.keep_page(epoch, text_of(&session, 9));
+        assert_eq!(kept_numbers(&session), vec![3, 4, 5, 6, 7, 8, 1, 9]);
+        assert!(session.kept_page(epoch, 2).is_none());
+    }
+
+    #[test]
+    fn a_page_kept_again_is_kept_once() {
+        let mut session = session();
+        let epoch = session.text_epoch();
+        session.keep_page(epoch, text_of(&session, 1));
+        session.keep_page(epoch, text_of(&session, 2));
+        session.keep_page(epoch, text_of(&session, 1));
+        assert_eq!(kept_numbers(&session), vec![2, 1]);
+    }
+
+    #[test]
+    fn a_page_read_at_an_epoch_the_session_has_left_is_not_kept() {
+        let mut session = session();
+        let old = session.text_epoch();
+        let text = text_of(&session, 1);
+        session.did(Changed::All, false);
+        assert_ne!(session.text_epoch(), old);
+        session.keep_page(old, text);
+        assert!(session.pages.is_empty());
+    }
+
+    #[test]
+    fn a_text_epoch_is_given_to_a_step_only_when_it_changes_the_text() {
+        let mut session = session();
+        let first = session.text_epoch();
+        session.did(Changed::one(1), true);
+        assert_eq!(session.text_epoch(), first);
+        session.did(Changed::one(1), false);
+        let changed = session.text_epoch();
+        assert_ne!(changed, first);
+        session.did(Changed::one(1), true);
+        assert_eq!(session.text_epoch(), changed);
     }
 }

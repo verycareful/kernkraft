@@ -165,6 +165,10 @@ pub struct Like {
 struct Made {
     document: Document,
     changed: Changed,
+    /// Whether the text of every page is as it was. Only a step that
+    /// writes nothing but annotations says so: any other step is taken to
+    /// change the text, so a kind of step added later is safe by default.
+    keeps_text: bool,
     extra: Fields,
 }
 
@@ -173,8 +177,16 @@ impl Made {
         Self {
             document,
             changed,
+            keeps_text: false,
             extra: Fields::new(),
         }
+    }
+
+    /// The step wrote annotations only: no page's content, fonts or
+    /// structure tree.
+    fn keeping_text(mut self) -> Self {
+        self.keeps_text = true;
+        self
     }
 }
 
@@ -186,7 +198,7 @@ impl Engine {
             let made = make(session, request.handle, request.op, &fonts, &running)?;
             let pushed = session.edit.push(made.document)?;
             let changed = if pushed {
-                session.did(made.changed);
+                session.did(made.changed, made.keeps_text);
                 session.last_changed()
             } else {
                 Changed::Pages(Vec::new())
@@ -319,12 +331,13 @@ fn make(
             };
             let edited =
                 edit_annotation(document, page, id.into(), &edit, &wire::date(&modified)?)?;
-            Made::new(edited, Changed::one(page))
+            Made::new(edited, Changed::one(page)).keeping_text()
         }
         Op::DeleteAnnotation { page, id } => Made::new(
             delete_annotation(document, page, id.into())?,
             Changed::one(page),
-        ),
+        )
+        .keeping_text(),
         Op::EditText {
             page,
             block,
@@ -455,7 +468,7 @@ fn added(
         modified: wire::date(modified)?,
     };
     let added = add_annotation(document, page, &new)?;
-    let mut made = Made::new(added.document, Changed::one(page));
+    let mut made = Made::new(added.document, Changed::one(page)).keeping_text();
     made.extra
         .insert("annotation".to_owned(), wire::object(added.id));
     Ok(made)

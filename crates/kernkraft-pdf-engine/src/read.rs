@@ -121,6 +121,13 @@ impl Engine {
     /// `TextBlock::wrapped_lines`); `blocks` say whether each can be edited
     /// and, when not, why. The `revision` is the one a block index is good
     /// at.
+    ///
+    /// One answer carries both the `lines` and the `blocks`, so an
+    /// application that wants both asks once. The page is read once for
+    /// every text epoch (a step that adds, changes or deletes an annotation
+    /// leaves the epoch as it was), so asking again after such a step costs
+    /// no new read of the page; each block's editability is worked out on
+    /// every call.
     pub fn text(&self, request: TextRequest) -> Result<Fields, WireError> {
         let running = self.jobs.begin(request.job, Some(request.handle))?;
         let (document, revision, page) = self.text_page(request.handle, request.page, &running)?;

@@ -317,6 +317,8 @@ fn a_cancelled_text_edit_leaves_the_document_at_its_revision() {
                 family: None,
                 size: None,
                 colour: None,
+                left: None,
+                width: None,
             },
             job: Some(10),
         })

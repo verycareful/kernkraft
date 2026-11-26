@@ -218,3 +218,81 @@ fn deleting_does_not_depend_on_the_matrix() {
         assert!(done.text_page(1, &NoProgress).unwrap().blocks.is_empty());
     }
 }
+
+// The box of an edit on a turned page is the displayed page's: the page is
+// 612 by 792 points in user space, and `Rotate` turns it clockwise, so a
+// quarter turn is 792 across (ISO 32000-1, 7.7.3.3 and 8.3.2.3). Text that
+// stands upright on the displayed page has text space's x along the
+// displayed x: user (x, y) is displayed at
+//   90:  (y, x)          text matrix `0 1 -1 0`
+//   180: (612 - x, y)    text matrix `-1 0 0 -1`
+//   270: (792 - y, 612 - x)   text matrix `0 -1 1 0`
+// (the page's top left corner is the displayed origin, y down). A line is
+// 10 points after the one before along text space's `-y`.
+
+/// The content of a page turned `turn` degrees, with `Hello` upright at
+/// `matrix`, after the block is edited to `text` with `edit`'s box.
+fn turned(
+    turn: u16,
+    matrix: &str,
+    text: &str,
+    edit: impl Fn(TextEdit<'_>) -> TextEdit<'_>,
+) -> String {
+    let content_of_page = format!("BT /F1 10 Tf {matrix} Tm (Hello) Tj ET");
+    let fixture = build(&content_of_page, "", &format!("/Rotate {turn}"), None, &[]);
+    let doc = fixture.open();
+    let block = text_of(&fixture).blocks.remove(0);
+    let done = edit_text(&doc, 1, &block, &edit(TextEdit::new(text)), &NoProgress).unwrap();
+    content(&done.document)
+}
+
+#[test]
+fn a_left_on_a_turned_page_moves_the_block_across_the_displayed_page() {
+    // 50 points more displayed x, taken as the page is turned: along user
+    // +y at 90, user -x at 180, user -y at 270. The lines are along text
+    // space's -y: user +x at 90, +y at 180, -x at 270.
+    // At 90, Hello is at user (100, 50): displayed (50, 100), 792 across,
+    // so 150 is 100 / 792 further.
+    let at_90 = turned(90, "0 1 -1 0 100 50", "ab\ncd", |e| {
+        e.with_left(150.0 / 792.0)
+    });
+    assert!(at_90.ends_with("0 1 -1 0 100 150 Tm (ab) Tj 0 1 -1 0 110 150 Tm (cd) Tj ET Q"));
+    // At 180, Hello is at user (500, 100): displayed (112, 100), 612 across.
+    let at_180 = turned(180, "-1 0 0 -1 500 100", "ab\ncd", |e| {
+        e.with_left(162.0 / 612.0)
+    });
+    assert!(at_180.ends_with("-1 0 0 -1 450 100 Tm (ab) Tj -1 0 0 -1 450 110 Tm (cd) Tj ET Q"));
+    // At 270, Hello is at user (500, 600): displayed (192, 112), 792 across.
+    let at_270 = turned(270, "0 -1 1 0 500 600", "ab\ncd", |e| {
+        e.with_left(232.0 / 792.0)
+    });
+    assert!(at_270.ends_with("0 -1 1 0 500 560 Tm (ab) Tj 0 -1 1 0 490 560 Tm (cd) Tj ET Q"));
+}
+
+#[test]
+fn a_width_on_a_turned_page_is_of_the_displayed_page() {
+    // The same 31 points across, as a fraction of 792 or of 612: `ab cd`
+    // fits and `ab cd ef` does not.
+    let at_90 = turned(90, "0 1 -1 0 100 50", "ab cd ef gh", |e| {
+        e.with_width(31.0 / 792.0)
+    });
+    assert!(at_90.ends_with("0 1 -1 0 100 50 Tm (ab cd) Tj 0 1 -1 0 110 50 Tm (ef gh) Tj ET Q"));
+    let at_180 = turned(180, "-1 0 0 -1 500 100", "ab cd ef gh", |e| {
+        e.with_width(31.0 / 612.0)
+    });
+    assert!(
+        at_180.ends_with("-1 0 0 -1 500 100 Tm (ab cd) Tj -1 0 0 -1 500 110 Tm (ef gh) Tj ET Q")
+    );
+    let at_270 = turned(270, "0 -1 1 0 500 600", "ab cd ef gh", |e| {
+        e.with_width(31.0 / 792.0)
+    });
+    assert!(at_270.ends_with("0 -1 1 0 500 600 Tm (ab cd) Tj 0 -1 1 0 490 600 Tm (ef gh) Tj ET Q"));
+}
+
+#[test]
+fn a_box_on_a_page_that_is_not_turned_is_in_the_same_units() {
+    let upright = turned(0, "1 0 0 1 100 700", "ab\ncd", |e| {
+        e.with_left(150.0 / 612.0)
+    });
+    assert!(upright.ends_with("1 0 0 1 150 700 Tm (ab) Tj 1 0 0 1 150 690 Tm (cd) Tj ET Q"));
+}

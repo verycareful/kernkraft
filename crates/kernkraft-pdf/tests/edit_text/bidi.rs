@@ -188,3 +188,78 @@ fn the_result_of_a_right_to_left_edit_can_be_edited_again() {
     let page = second.document.text_page(1, &NoProgress).unwrap();
     assert_left(&page, 0, 110.0);
 }
+
+/// `Hello` edited to `text` in a box: `left` and `width` as fractions of
+/// the page, `None` for the block's own.
+fn edited_in_box(text: &str, list: &FontList, left: Option<f64>, width: Option<f64>) -> Document {
+    let fixture = one_page("BT /F1 10 Tf 100 700 Td (Hello) Tj ET");
+    let doc = fixture.open();
+    let block = doc.text_page(1, &NoProgress).unwrap().blocks.remove(0);
+    let style = TextStyle::default().with_family("Bidi Sans");
+    let mut edit = TextEdit::new(text).with_style(style).with_fonts(list);
+    if let Some(left) = left {
+        edit = edit.with_left(left);
+    }
+    if let Some(width) = width {
+        edit = edit.with_width(width);
+    }
+    edit_text(&doc, 1, &block, &edit, &NoProgress)
+        .unwrap()
+        .document
+}
+
+/// The four letters of a Hebrew word, whose line ends where the box does.
+fn assert_word_ends_at(doc: &Document, right: f64) {
+    let page = doc.text_page(1, &NoProgress).unwrap();
+    assert_eq!(page.text(), format!("{SHIN}{LAMED}{VAV}{FINAL_MEM}"));
+    for index in 0..4 {
+        assert_left(&page, index, right - ADVANCE * (index + 1) as f64);
+    }
+}
+
+#[test]
+fn a_right_to_left_line_follows_the_right_edge_of_a_wider_box() {
+    // The block starts at 100: a box 40 points wide ends at 140, where the
+    // line of four 5 point glyphs ends; it was 130 without a width.
+    let dir = tempfile::tempdir().unwrap();
+    let word = format!("{SHIN}{LAMED}{VAV}{FINAL_MEM}");
+    let doc = edited_in_box(&word, &font_list(&dir), None, Some(40.0 / PAGE_WIDTH));
+    assert_word_ends_at(&doc, 140.0);
+}
+
+#[test]
+fn a_left_moves_a_right_to_left_block_as_a_whole() {
+    // 50 points further: the right edge, 130, is 180.
+    let dir = tempfile::tempdir().unwrap();
+    let word = format!("{SHIN}{LAMED}{VAV}{FINAL_MEM}");
+    let doc = edited_in_box(&word, &font_list(&dir), Some(150.0 / PAGE_WIDTH), None);
+    assert_word_ends_at(&doc, 180.0);
+}
+
+#[test]
+fn a_left_and_a_width_set_the_box_a_right_to_left_line_ends_at() {
+    // From 150 and 40 wide: the box ends at 190.
+    let dir = tempfile::tempdir().unwrap();
+    let word = format!("{SHIN}{LAMED}{VAV}{FINAL_MEM}");
+    let doc = edited_in_box(
+        &word,
+        &font_list(&dir),
+        Some(150.0 / PAGE_WIDTH),
+        Some(40.0 / PAGE_WIDTH),
+    );
+    assert_word_ends_at(&doc, 190.0);
+}
+
+#[test]
+fn a_narrower_box_breaks_a_right_to_left_paragraph_and_keeps_its_right_edge_in_it() {
+    // Two words of two letters, each 10 points, with a 5 point space: 25
+    // points, in a box 20 wide from 100. The words are on two lines, each
+    // against 120, the box's right edge.
+    let dir = tempfile::tempdir().unwrap();
+    let text = format!("{SHIN}{LAMED} {VAV}{FINAL_MEM}");
+    let doc = edited_in_box(&text, &font_list(&dir), None, Some(20.0 / PAGE_WIDTH));
+    let page = doc.text_page(1, &NoProgress).unwrap();
+    assert_eq!(page.blocks[0].lines.len(), 2);
+    let right = page.blocks[0].rect.right * PAGE_WIDTH;
+    assert!((right - 120.0).abs() < 1e-6, "{right}");
+}

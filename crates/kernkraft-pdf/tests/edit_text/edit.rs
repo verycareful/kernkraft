@@ -17,8 +17,8 @@ use kernkraft_pdf::doc::Document;
 use kernkraft_pdf::syntax::Name;
 use kernkraft_pdf::syntax::{ObjectId, Value};
 use kernkraft_pdf::{
-    edit_text, DiagnosticKind, EditBlocker, Editability, FontSubstitution, PdfError, TextEdit,
-    TextStyle,
+    delete_text_block, edit_text, DiagnosticKind, EditBlocker, Editability, FontSubstitution,
+    PdfError, TextEdit, TextStyle,
 };
 
 fn page_stream() -> StreamId {
@@ -865,4 +865,191 @@ fn a_regular_block_is_set_in_the_default_face_of_a_variable_font() {
     .unwrap();
     let base = base_font_of(&edited.document, b"KernFont1");
     assert!(base.ends_with("+TestSans-Regular"), "{base}");
+}
+
+// The box of an edit: `with_left` and `with_width`. The page is 612 points
+// wide and a Courier glyph is 6 points at 10, so `ab cd` is 30 points,
+// `ab cd ef gh` 66, and a fraction of the page is `points / 612`. A width
+// is given a point more or less than the line it should or should not hold,
+// so that no result rests on the last digit of a division.
+
+const PAGE_POINTS: f64 = 612.0;
+const HELLO: &str = "BT /F1 10 Tf 100 700 Td (Hello) Tj ET";
+const HELLO_AND_WORLD: &str = "BT /F1 10 Tf 14 TL 100 700 Td (Hello) Tj T* (World) Tj ET";
+
+fn boxed(content_of_page: &str, edit: &TextEdit<'_>) -> Result<(String, usize), PdfError> {
+    let fixture = one_page(content_of_page);
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    let done = edit_text(&doc, 1, &block, edit, &NoProgress)?;
+    Ok((content(&done.document), done.lines))
+}
+
+#[test]
+fn a_width_breaks_the_text_where_it_says() {
+    let text = "ab cd ef gh";
+    let wide = boxed(HELLO, &TextEdit::new(text).with_width(72.0 / PAGE_POINTS)).unwrap();
+    assert_eq!(wide.1, 1);
+    assert!(wide.0.ends_with("1 0 0 1 100 700 Tm (ab cd ef gh) Tj ET Q"));
+    let two = boxed(HELLO, &TextEdit::new(text).with_width(31.0 / PAGE_POINTS)).unwrap();
+    assert_eq!(two.1, 2);
+    assert!(two
+        .0
+        .ends_with("1 0 0 1 100 700 Tm (ab cd) Tj 1 0 0 1 100 690 Tm (ef gh) Tj ET Q"));
+    // 29 points hold `ab` but not `ab cd`.
+    let four = boxed(HELLO, &TextEdit::new(text).with_width(29.0 / PAGE_POINTS)).unwrap();
+    assert_eq!(four.1, 4);
+    assert!(four.0.ends_with(
+        "1 0 0 1 100 700 Tm (ab) Tj 1 0 0 1 100 690 Tm (cd) Tj \
+         1 0 0 1 100 680 Tm (ef) Tj 1 0 0 1 100 670 Tm (gh) Tj ET Q"
+    ));
+}
+
+#[test]
+fn a_width_is_the_width_of_the_box_and_not_of_the_blocks_widest_line() {
+    // The block is 30 points wide; `ab cd ef` needs 48 and the box gives it.
+    let plain = boxed(HELLO, &TextEdit::new("ab cd ef")).unwrap();
+    assert_eq!(plain.1, 2);
+    let wider = boxed(
+        HELLO,
+        &TextEdit::new("ab cd ef").with_width(49.0 / PAGE_POINTS),
+    )
+    .unwrap();
+    assert_eq!(wider.1, 1);
+}
+
+#[test]
+fn a_left_moves_every_line_by_the_same_distance_and_nothing_else() {
+    let plain = boxed(HELLO_AND_WORLD, &TextEdit::new("ab cd ef")).unwrap();
+    // Hello begins at 100; its box's left edge stands at 100 / 612, and 150
+    // is 50 points to the right. The lines are 14 points apart.
+    let moved = boxed(
+        HELLO_AND_WORLD,
+        &TextEdit::new("ab cd ef").with_left(150.0 / PAGE_POINTS),
+    )
+    .unwrap();
+    assert_eq!(moved.1, plain.1);
+    assert!(moved
+        .0
+        .ends_with("1 0 0 1 150 700 Tm (ab cd) Tj 1 0 0 1 150 686 Tm (ef) Tj ET Q"));
+    let same_but_x = plain
+        .0
+        .replace("1 0 0 1 100 700 Tm", "1 0 0 1 150 700 Tm")
+        .replace("1 0 0 1 100 686 Tm", "1 0 0 1 150 686 Tm");
+    assert_eq!(moved.0, same_but_x);
+}
+
+#[test]
+fn a_left_and_a_width_set_both() {
+    let both = boxed(
+        HELLO,
+        &TextEdit::new("ab cd ef gh")
+            .with_left(50.0 / PAGE_POINTS)
+            .with_width(31.0 / PAGE_POINTS),
+    )
+    .unwrap();
+    assert_eq!(both.1, 2);
+    assert!(both
+        .0
+        .ends_with("1 0 0 1 50 700 Tm (ab cd) Tj 1 0 0 1 50 690 Tm (ef gh) Tj ET Q"));
+}
+
+#[test]
+fn the_left_edge_the_text_layer_gave_is_no_move() {
+    let fixture = one_page(HELLO);
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    assert!((block.rect.left * PAGE_POINTS - 100.0).abs() < 1e-9);
+    let plain = edit_text(&doc, 1, &block, &TextEdit::new("Hi"), &NoProgress).unwrap();
+    let echoed = edit_text(
+        &doc,
+        1,
+        &block,
+        &TextEdit::new("Hi").with_left(block.rect.left),
+        &NoProgress,
+    )
+    .unwrap();
+    assert_eq!(content(&echoed.document), content(&plain.document));
+}
+
+#[test]
+fn a_left_moves_the_block_by_the_distance_of_its_rectangle_not_of_its_first_glyph() {
+    // The second line starts at 90, left of the first glyph's origin at 100,
+    // so the rectangle's left edge is 90 and not the origin.
+    let fixture = one_page("BT /F1 10 Tf 100 700 Td (Hello) Tj -10 -10 Td (World) Tj ET");
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    assert!((block.rect.left * PAGE_POINTS - 90.0).abs() < 1e-9);
+    let done = edit_text(
+        &doc,
+        1,
+        &block,
+        &TextEdit::new("ab\ncd").with_left(200.0 / PAGE_POINTS),
+        &NoProgress,
+    )
+    .unwrap();
+    // The edge moves from 90 to 200, 110 points, and the origin with it,
+    // from 100 to 210; the lines are set from the origin.
+    assert!(content(&done.document)
+        .ends_with("1 0 0 1 210 700 Tm (ab) Tj 1 0 0 1 210 690 Tm (cd) Tj ET Q"));
+}
+
+#[test]
+fn a_text_of_no_characters_ignores_the_box() {
+    let fixture = one_page(HELLO);
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    let deleted = delete_text_block(&doc, 1, &block, &NoProgress).unwrap();
+    let ignored = edit_text(
+        &doc,
+        1,
+        &block,
+        &TextEdit::new("").with_left(f64::NAN).with_width(-1.0),
+        &NoProgress,
+    )
+    .unwrap();
+    assert_eq!(ignored.lines, 0);
+    assert_eq!(content(&ignored.document), content(&deleted));
+}
+
+#[test]
+fn a_box_that_is_not_on_the_page_is_refused() {
+    let off = [
+        (Some(f64::NAN), None),
+        (Some(f64::INFINITY), None),
+        (None, Some(f64::NAN)),
+        (None, Some(f64::INFINITY)),
+        (None, Some(0.0)),
+        (None, Some(-0.1)),
+        // Wholly to the left of the page, and wholly to the right.
+        (Some(-2.0), Some(1.0)),
+        (Some(1.0), Some(0.5)),
+        (Some(1.5), None),
+    ];
+    for (left, width) in off {
+        let mut edit = TextEdit::new("Hi");
+        if let Some(left) = left {
+            edit = edit.with_left(left);
+        }
+        if let Some(width) = width {
+            edit = edit.with_width(width);
+        }
+        match boxed(HELLO, &edit) {
+            Err(PdfError::Invalid(_)) => {}
+            other => panic!("{left:?} {width:?}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_box_that_reaches_the_page_only_in_part_is_allowed() {
+    // From 20 points left of the page to 30 points in.
+    let done = boxed(
+        HELLO,
+        &TextEdit::new("Hi")
+            .with_left(-20.0 / PAGE_POINTS)
+            .with_width(50.0 / PAGE_POINTS),
+    )
+    .unwrap();
+    assert!(done.0.ends_with("1 0 0 1 -20 700 Tm (Hi) Tj ET Q"));
 }

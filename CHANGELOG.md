@@ -2,6 +2,29 @@
 
 All notable changes documented here. Format: [Keep a Changelog](https://keepachangelog.com/), with one deviation: dated release entries are timestamped to the minute with timezone (`YYYY-MM-DD HH:MM (TZ)`).
 
+## [0.2.3.0] - 2026-11-26 19:11 (IST)
+
+The size and place of an existing block of text can be set by an edit: both apps drag both sides of a block's box. Still alpha; nothing existing changes except as listed under Changed.
+
+### Added
+- **`left` and `width` on an edit of text**: `kernkraft-pdf`'s `TextEdit` gains `with_left` and `with_width`, and the `editText` op of `kernkraft-pdf-engine` gains the optional fields `left` and `width`. Both are fractions of the displayed page's width, the units of `addText`'s `at` and `width`. `width` is the width the text is broken to (it was the width of the block's widest line), and where a right-to-left paragraph ends: the start of its leftmost line plus the width. `left` is where the left edge of the block's rectangle stands: the whole block moves sideways by the distance from its rectangle's left edge to `left`, the first glyph keeping its place in the block, so a `left` read from the text layer moves nothing. A `width` alone keeps the left edge and a `left` alone keeps the width. The vertical position never changes. Both are measured on the displayed page: a turned page (`Rotate` 90, 180 and 270), a scaled or skewed text matrix and a form drawn under a `cm` are carried through the matrices to the units the lines are set in. With neither, an edit is as it was, byte for byte, and an empty text, which deletes the block, ignores both. A `left` or `width` that is not finite, a `width` of 0 or less, or a box wholly to the left or to the right of the page is `PdfError::Invalid`, which is kind `Invalid` on the wire as for `addText`; an unknown field is `BadRequest`, as every op's is. No adapter changes: `kernkraft-tauri` and `kernkraft-jni` pass the op as JSON.
+  - Limit: an edit sets every line from the first glyph's origin, as it always did, so for a block whose first glyph is not its leftmost (an indented first line, or right-to-left text) the new rectangle's left can differ from the `left` asked for by that indent.
+
+### Changed
+- `Op::EditText` gains `left` and `width`, so Rust code that builds the op by hand needs the two fields. `TextEdit` is `non_exhaustive`, so its new fields break nobody.
+
+### Tests
+- `crates/kernkraft-pdf/tests/edit_text/edit.rs` (9): a width breaks the text at 72, 31 and 29 points, a width wider than the block's, a `left` moves every line by one distance and nothing else (against the plain edit's bytes), both, a `left` equal to the block's own is no move, a `left` moves by the rectangle's distance and not the first glyph's, an empty text ignores the box, nine boxes that are refused, and a box partly off the page is allowed.
+- `rotated.rs` (3): `left` and `width` on a page turned 90, 180 and 270 with upright text, and on a page not turned. `bidi.rs` (4): a right-to-left line follows a wider box's right edge, `left` moves the block as a whole, both, and a narrower box breaks a paragraph with its right edge in the box. `form.rs` (1): a block in a form drawn under a `cm`, the form object unchanged.
+- `crates/kernkraft-pdf-engine/tests/edit.rs` (7, new): the op parses with both fields, absent fields are unset, an unknown or mistyped field is refused, a width changes the lines, a `left` puts the block's left edge there, a box off the page is `Invalid` and changes nothing, and an empty text ignores the box.
+- `crates/kernkraft-jni/tests/edit.rs` (2): both fields as JSON through the bridge, and a box off the page is `Invalid` while an unknown field is `BadRequest`.
+
+### Handover
+For Kern Desktop and Kern Android, tag `0.2.3.0`. The op: `{"op":"editText","page":1,"block":3,"revision":12,"text":"...","left":0.1,"width":0.5}`, `left` and `width` optional. Send the `rect` left the text read gave as `left` to move nothing; the left side of a box dragged sets `left`, the right side sets `width` (the new right edge minus `left`, or minus the rectangle's left when `left` is not sent). Kern Desktop bumps the five `tag =` lines in `src-tauri/Cargo.toml`, runs `tools/lock-git-form.sh`, adds `left` and `width` to `editText` in `src/ipc/pdf.ts` and builds the block box's two side handles. Type 3 text is still refused (`Type3Font`), so the apps keep their message for it.
+
+### Results
+- 2727 tests across 109 suites, all passed (305s, CachyOS x86-64, rustc 1.99.1).
+
 ## [0.2.2.0] - 2026-11-26 16:34 (IST)
 
 What Kern Android's PDF editor needs from the engine: new text on a page, the fonts of a page, which lines of a block wrapped, and a substitute-font note that is no longer empty. Still alpha; nothing existing changes except as listed under Changed.

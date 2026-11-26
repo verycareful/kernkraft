@@ -112,7 +112,17 @@ pub enum Op {
         id: WireId,
     },
     /// Sets the text of a block read by `text` at `revision`. An empty text
-    /// removes the block's text.
+    /// removes the block's text, whatever `left` and `width` say.
+    ///
+    /// The text is set in the box the block stands in unless `left` and
+    /// `width` say otherwise, both fractions of the displayed page's width
+    /// (the units of [`AddText`](Op::AddText)'s `at` and `width`): `width`
+    /// is the width the text is broken to, where a right-to-left paragraph
+    /// ends, and `left` is where the left edge of the block's rectangle
+    /// stands, so the whole block moves sideways. `width` alone keeps the
+    /// left edge and `left` alone keeps the width. The block never moves
+    /// vertically. A `left` or `width` that is not finite, a `width` of 0
+    /// or less, or a box wholly off the page is refused as `Invalid`.
     EditText {
         page: u32,
         block: usize,
@@ -121,6 +131,8 @@ pub enum Op {
         family: Option<String>,
         size: Option<f64>,
         colour: Option<[f64; 3]>,
+        left: Option<f64>,
+        width: Option<f64>,
     },
     /// Puts new text on a page. `at` is the top left corner of its box and
     /// `width` the box's width, as fractions of the displayed page; the lines
@@ -321,6 +333,8 @@ fn make(
             family,
             size,
             colour,
+            left,
+            width,
         } => {
             if revision != session.revision {
                 return Err(WireError::stale_block(revision, session.revision));
@@ -347,7 +361,13 @@ fn make(
             if let Some(colour) = colour {
                 style = style.with_colour(wire::colour_from(colour));
             }
-            let edit = TextEdit::new(text).with_style(style).with_fonts(fonts);
+            let mut edit = TextEdit::new(text).with_style(style).with_fonts(fonts);
+            if let Some(left) = left {
+                edit = edit.with_left(left);
+            }
+            if let Some(width) = width {
+                edit = edit.with_width(width);
+            }
             let edited = edit_text(document, page, block, &edit, progress)?;
             let (lines, substituted) = (edited.lines, edited.substitutions);
             let mut made = Made::new(edited.document, Changed::one(page));

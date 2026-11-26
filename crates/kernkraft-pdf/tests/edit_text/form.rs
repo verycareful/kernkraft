@@ -201,3 +201,33 @@ fn a_form_with_no_resources_keeps_the_ones_it_inherits() {
     let edited = edit_text(&doc, 1, &before.blocks[0], &edit, &NoProgress).unwrap();
     assert_eq!(texts(&page_of(&edited.document)), ["AB", "World"]);
 }
+
+#[test]
+fn a_box_of_a_block_in_a_form_is_the_pages() {
+    // The form is drawn 20 points to the right, so Hello is at 120 on the
+    // page; the form's own space is 20 points left of that. A left of 170
+    // is 50 further, in the form's space too (the form is not scaled), and
+    // a width of 31 points holds `ab cd` and not `ab cd ef`.
+    let fixture = with_form(
+        "q 1 0 0 1 20 0 cm /Fm1 Do Q",
+        "BT /F1 10 Tf 100 700 Td (Hello) Tj ET",
+    );
+    let doc = fixture.open();
+    let block = page_of(&doc).blocks.remove(0);
+    assert!((block.rect.left * 612.0 - 120.0).abs() < 1e-9);
+    let edit = TextEdit::new("ab cd ef")
+        .with_left(170.0 / 612.0)
+        .with_width(31.0 / 612.0);
+    let done = edit_text(&doc, 1, &block, &edit, &NoProgress).unwrap();
+    assert_eq!(done.lines, 2);
+    let after = page_of(&done.document);
+    assert_eq!(after.blocks.len(), 1);
+    assert!((after.blocks[0].rect.left * 612.0 - 170.0).abs() < 1e-9);
+    assert_eq!(after.blocks[0].lines.len(), 2);
+    assert_eq!(after.blocks[0].lines[0].text(), "ab cd");
+    // The original form is as it was.
+    assert_eq!(
+        doc.required(id(70)).unwrap().stream(),
+        done.document.required(id(70)).unwrap().stream()
+    );
+}

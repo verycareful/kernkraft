@@ -28,7 +28,8 @@
 //! why ([`EditBlocker`]). [`delete_text_block`] takes a block's text out
 //! and [`edit_text`] puts new text in its place: set in the block's font
 //! when that font can show it, else in a face of the font list handed in;
-//! in the block's width, after the `ET` of its last text object.
+//! in the block's width, or the width and left edge asked for, after the
+//! `ET` of its last text object.
 
 mod add;
 mod arrange;
@@ -54,7 +55,7 @@ use crate::content::{
     DEFAULT_MAX_CONTENT_BYTES, GLYPH_UNITS_PER_EM,
 };
 use crate::diagnostic::{DiagnosticKind, Diagnostics};
-use crate::display::PageView;
+use crate::display::{PageView, Rect};
 use crate::doc::{Document, Page, StreamEncoding};
 use crate::edit_text::collect::{FormUse, OpKey, ShowCollector, ShowOp, TextEnd};
 use crate::edit_text::face::{Embedded, Face};
@@ -604,6 +605,12 @@ pub struct TextEdit<'f> {
     /// show the text, or the style names a family. A face is embedded
     /// whole as a subset of the glyphs the text uses.
     pub fonts: Option<&'f FontList>,
+    /// Where the block's left edge stands, as a fraction of the displayed
+    /// page's width. `None` leaves the block where it is.
+    pub left: Option<f64>,
+    /// The width the text is broken to, as a fraction of the displayed
+    /// page's width. `None` keeps the width of the block's widest line.
+    pub width: Option<f64>,
 }
 
 impl<'f> TextEdit<'f> {
@@ -612,7 +619,28 @@ impl<'f> TextEdit<'f> {
             text: text.into(),
             style: TextStyle::default(),
             fonts: None,
+            left: None,
+            width: None,
         }
+    }
+
+    /// Moves the block sideways so that the left edge of its rectangle on
+    /// the displayed page stands at `left`, a fraction of the displayed
+    /// page's width (the units of [`NewText::at`]'s first number). A text
+    /// of no characters, which deletes the block, ignores it.
+    pub fn with_left(mut self, left: f64) -> Self {
+        self.left = Some(left);
+        self
+    }
+
+    /// Breaks the text to `width`, a fraction of the displayed page's width
+    /// (the units of [`NewText::width`]), instead of the width of the
+    /// block's widest line; the left edge stays unless
+    /// [`with_left`](Self::with_left) moves it. A text of no characters
+    /// ignores it.
+    pub fn with_width(mut self, width: f64) -> Self {
+        self.width = Some(width);
+        self
     }
 
     pub fn with_style(mut self, style: TextStyle) -> Self {
@@ -757,6 +785,71 @@ struct Frame {
     pitch: Option<f64>,
     /// The size the glyphs were set at.
     size: f64,
+    /// How far the leftmost line starts from the first glyph's origin, in
+    /// text space units: zero or less.
+    left: f64,
+    /// Text space to user space (`first` then the current transformation
+    /// matrix), to carry a box measured on the displayed page into the
+    /// units the lines are set in.
+    to_user: Matrix,
+}
+
+impl Frame {
+    /// The frame with the box the edit names. `rect` is the block's
+    /// rectangle on the displayed page, and `left` and `width` are as
+    /// [`TextEdit::with_left`] and [`TextEdit::with_width`] say.
+    ///
+    /// A `left` moves the whole block sideways on the displayed page by the
+    /// distance from the block's rectangle to `left`, so the first glyph
+    /// keeps its place in the block; a `width` is the width the lines are
+    /// broken to, and where a right-to-left paragraph ends: its leftmost
+    /// line's start plus the width.
+    fn placed(
+        mut self,
+        view: &PageView,
+        rect: &Rect,
+        left: Option<f64>,
+        width: Option<f64>,
+    ) -> Result<Frame, PdfError> {
+        if left.is_none() && width.is_none() {
+            return Ok(self);
+        }
+        let box_left = left.unwrap_or(rect.left);
+        let box_width = width.unwrap_or(rect.right - rect.left);
+        let on_page = box_left.is_finite()
+            && box_width.is_finite()
+            && box_width > 0.0
+            && box_left + box_width > 0.0
+            && box_left < 1.0;
+        if !on_page {
+            return Err(PdfError::Invalid(format!(
+                "a box from {box_left} and {box_width} wide is not on the page"
+            )));
+        }
+        let invalid = || {
+            PdfError::Invalid(
+                "the text to edit: a text matrix that cannot be placed on the page".to_owned(),
+            )
+        };
+        let to_displayed = self.to_user.then(view.matrix);
+        let (Some(to_text), unit) = (to_displayed.inverse(), to_displayed.a.hypot(to_displayed.b))
+        else {
+            return Err(invalid());
+        };
+        if !(unit.is_finite() && unit > 0.0) {
+            return Err(invalid());
+        }
+        if let Some(width) = width {
+            self.width = width * view.width / unit;
+            self.right = self.left + self.width;
+        }
+        if let Some(left) = left {
+            let moved = (left - rect.left) * view.width;
+            let shift = Matrix::translation(to_text.a * moved, to_text.b * moved);
+            self.first = shift.then(self.first);
+        }
+        Ok(self)
+    }
 }
 
 fn frame_of(inspected: &Inspected, block: &TextBlock) -> Result<Frame, PdfError> {
@@ -785,6 +878,7 @@ fn frame_of(inspected: &Inspected, block: &TextBlock) -> Result<Frame, PdfError>
     };
     let mut width = 0.0f64;
     let mut right = f64::NEG_INFINITY;
+    let mut left = f64::INFINITY;
     let mut starts = Vec::new();
     for line in &block.lines {
         let mut sources = line.visual_chars().into_iter().filter_map(|ch| ch.source);
@@ -802,6 +896,7 @@ fn frame_of(inspected: &Inspected, block: &TextBlock) -> Result<Frame, PdfError>
         let end = to_text.apply(end_point.0, end_point.1);
         width = width.max(end.0 - start.0);
         right = right.max(end.0);
+        left = left.min(start.0);
         starts.push(start);
     }
     let pitch = match starts.as_slice() {
@@ -814,6 +909,8 @@ fn frame_of(inspected: &Inspected, block: &TextBlock) -> Result<Frame, PdfError>
         right: if right.is_finite() { right } else { width },
         pitch,
         size,
+        left: if left.is_finite() { left.min(0.0) } else { 0.0 },
+        to_user: tm.then(ctm),
     })
 }
 
@@ -1051,6 +1148,11 @@ fn substitutions_in(diagnostics: &Diagnostics) -> Vec<FontSubstitution> {
 /// glyph did, is broken to the width of the block's widest line, and goes
 /// after the `ET` of the block's last text object, in a `q ... Q` of its
 /// own with the block's spacing, scaling, rise, render mode and colours.
+/// [`TextEdit::with_left`] and [`TextEdit::with_width`] move the block
+/// sideways and set the width the text is broken to; a turned page is
+/// measured as displayed, as for [`add_text`]. A `left` or `width` that is
+/// not finite, a `width` of 0 or less, or a box that does not reach the
+/// displayed page is [`PdfError::Invalid`].
 /// Lines are as far apart as the block's first two were, or as the font's
 /// ascent, descent and leading say.
 ///
@@ -1099,11 +1201,12 @@ pub fn edit_text(
     let chain = inspected.chain().to_vec();
     let resources = effective_resources(document, &page, &chain, chain.len())?;
     let first = &inspected.ops[&key_of(&inspected.sources[0])];
+    let view = PageView::of(&page, &mut Diagnostics::new());
     let model = Model {
         op: Some(first),
         state: &first.state,
         size: edit.style.size.unwrap_or(first.run.font_size),
-        frame: frame_of(&inspected, block)?,
+        frame: frame_of(&inspected, block)?.placed(&view, &block.rect, edit.left, edit.width)?,
         top: None,
     };
     let Composed {

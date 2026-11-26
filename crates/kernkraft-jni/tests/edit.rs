@@ -340,6 +340,58 @@ fn editing_a_block_replaces_its_text() {
 }
 
 #[test]
+fn editing_a_block_takes_a_left_and_a_width_as_json() {
+    let engine = Bridge::new();
+    let handle = open(&engine);
+    let block = heading_block(&engine, handle);
+    let (revision, _) = text_of(&engine, handle);
+
+    // Three two-letter words in a box 0.01 of the page across take a line
+    // each or more; the same text in a box 0.95 across takes one.
+    let narrow = ok(&apply(
+        &engine,
+        handle,
+        json!({ "op": "editText", "page": 1, "block": block, "revision": revision,
+                "text": "ab cd ef", "left": 0.25, "width": 0.01 }),
+    ));
+    assert!(narrow["lines"].as_u64().unwrap() >= 3, "{narrow}");
+    step(&engine, Bridge::undo, handle);
+    let block = heading_block(&engine, handle);
+    let (revision, _) = text_of(&engine, handle);
+    let wide = ok(&apply(
+        &engine,
+        handle,
+        json!({ "op": "editText", "page": 1, "block": block, "revision": revision,
+                "text": "ab cd ef", "left": 0.25, "width": 0.95 }),
+    ));
+    assert_eq!(wide["lines"], 1);
+}
+
+#[test]
+fn a_box_off_the_page_is_refused_and_an_unknown_field_is_a_bad_request() {
+    let engine = Bridge::new();
+    let handle = open(&engine);
+    let block = heading_block(&engine, handle);
+    let (revision, _) = text_of(&engine, handle);
+
+    let off = apply(
+        &engine,
+        handle,
+        json!({ "op": "editText", "page": 1, "block": block, "revision": revision,
+                "text": "X", "width": 0.0 }),
+    );
+    assert_eq!(failure_kind(&off), "Invalid");
+    let unknown = apply(
+        &engine,
+        handle,
+        json!({ "op": "editText", "page": 1, "block": block, "revision": revision,
+                "text": "X", "right": 0.9 }),
+    );
+    assert_eq!(failure_kind(&unknown), "BadRequest");
+    assert!(text_of(&engine, handle).1.contains("Project Architecture"));
+}
+
+#[test]
 fn a_block_read_before_a_change_is_stale() {
     let engine = Bridge::new();
     let handle = open(&engine);

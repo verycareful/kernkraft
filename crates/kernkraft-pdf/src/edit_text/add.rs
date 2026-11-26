@@ -328,6 +328,8 @@ pub fn add_text(
         text: new.text.clone(),
         style,
         fonts: new.fonts,
+        left: None,
+        width: None,
     };
 
     let page_object = document.page(page)?;
@@ -349,6 +351,8 @@ pub fn add_text(
             right: wide,
             pitch: None,
             size,
+            left: 0.0,
+            to_user: Matrix::IDENTITY,
         },
         top: Some((to_user, (at.0 * view.width, at.1 * view.height))),
     };
